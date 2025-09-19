@@ -1,0 +1,3 @@
+# NNX-PPO
+
+Experimental implementation of [Proximal Policy Optimization](https://en.wikipedia.org/wiki/Proximal_policy_optimization) in [JAX](https://github.com/google/jax), with first-class support for recurrent/stateful networks. Networks are implemented using [flax.nnx](https://flax.readthedocs.io) and environments are expected to follow the API used by [MuJoCo Playground](https://playground.mujoco.org/).
