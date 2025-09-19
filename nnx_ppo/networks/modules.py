@@ -5,8 +5,8 @@ import jax.flatten_util
 import jax.numpy as jp
 from flax import nnx
 
-from .sampling_layers import ActionSampler, NormalTanhSampler
-from .types import AbstractPPOActorCritic, PPONetworkOutput, StatefulModule
+from nnx_ppo.networks.sampling_layers import ActionSampler, NormalTanhSampler
+from nnx_ppo.networks.types import AbstractPPOActorCritic, PPONetworkOutput, StatefulModule
 
 class PPOActorCritic(AbstractPPOActorCritic, nnx.Module):
 

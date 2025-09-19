@@ -1,4 +1,4 @@
-from typing import Union, Dict, Any, Tuple, Optional
+from typing import Union, Dict, Any, Tuple
 import abc
 import jax
 import flax.struct

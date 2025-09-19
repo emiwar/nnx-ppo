@@ -1,9 +1,9 @@
-from absl.testing import absltest, parameterized
+from absl.testing import absltest
 import jax
 import jax.numpy as jp
 from flax import nnx
 
-from networks import modules, types
+from nnx_ppo.networks import modules, types
 
 class ModulesTest(absltest.TestCase):
 
@@ -24,7 +24,8 @@ class ModulesTest(absltest.TestCase):
         
         # Test actor and critic were independently initialized
         for actor_layer, critic_layer in zip(net.actor.layers, net.critic.layers):
-            self.assertFalse(jp.allclose(actor_layer.kernel, critic_layer.kernel))
+            self.assertFalse(jp.allclose(actor_layer.kernel.raw_value,
+                                         critic_layer.kernel.raw_value))
             #self.assertFalse(jp.allclose(actor_layer.bias, critic_layer.bias))
 
 

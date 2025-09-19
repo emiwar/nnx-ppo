@@ -2,10 +2,8 @@ from typing import Tuple
 
 import jax
 import jax.numpy as jp
-from flax import struct
-from flax import nnx
 
-from .types import StatefulModule
+from nnx_ppo.networks.types import StatefulModule
 
 class ActionSampler(StatefulModule):
   pass

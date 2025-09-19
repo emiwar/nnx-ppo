@@ -7,8 +7,8 @@ import jax.numpy as jp
 from flax import nnx
 import mujoco_playground
 
-from networks import modules, types
-from algorithms.rollout import unroll_env
+from nnx_ppo.networks import modules, types
+from nnx_ppo.algorithms.rollout import unroll_env
 
 class ModulesTest(absltest.TestCase):
 
@@ -108,9 +108,9 @@ class ModulesTest(absltest.TestCase):
         net_state = dummy_nets.initialize_state(net_key)
         env_state = dummy_env.reset(env_key)
 
-        unroll_env_jit = nnx.jit(functools.partial(unroll_env, dummy_env), static_argnames=("unroll_length"))
+        unroll_env_jit = nnx.jit(unroll_env, static_argnames=("env", "unroll_length"))
         next_net_state, next_env_state, rollout_data = unroll_env_jit(
-            env_state, dummy_nets, net_state, N_STEPS, reset_key)
+            dummy_env, env_state, dummy_nets, net_state, N_STEPS, reset_key)
         self.assertEquals(rollout_data.done.shape, (N_STEPS,))
         self.assertEquals(rollout_data.rewards.shape, (N_STEPS,))
         self.assertEquals(rollout_data.network_output.loglikelihoods.shape, (N_STEPS,))
