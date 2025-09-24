@@ -1,0 +1,16 @@
+[project]
+name = "nnx_ppo"
+version = "0.1.0"
+description = "Implementation of PPO for recurrent/stateful networks using JAX and flax.nnx."
+authors = [
+    { name="Emil Wärnberg", email="ewarnberg@fas.harvard.edu" }
+]
+
+dependencies = [
+    "flax>=0.10.0",
+    "jax[cuda12]",  # For CUDA 12 support, adjust for your CUDA version
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
