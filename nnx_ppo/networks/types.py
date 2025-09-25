@@ -9,11 +9,11 @@ from flax import nnx
 # for large (absolute) values
 @flax.struct.dataclass
 class PPONetworkOutput:
-  actions: Union[Dict, jax.Array]
+  actions: jax.Array#Union[Dict, jax.Array]
   #raw_actions: Union[Dict, jax.Array]
-  loglikelihoods: Union[float, Dict, jax.Array]
-  regularization_loss: Union[float, Dict, jax.Array]
-  value_estimates: Union[float, Dict, jax.Array]
+  loglikelihoods: jax.Array#Union[float, Dict, jax.Array]
+  regularization_loss: jax.Array#Union[float, Dict, jax.Array]
+  value_estimates: jax.Array#Union[float, Dict, jax.Array]
   metrics: Dict[str, Any]
 
 class AbstractPPOActorCritic(abc.ABC):

@@ -10,7 +10,7 @@ import mujoco_playground
 from nnx_ppo.networks import modules, types
 from nnx_ppo.algorithms.rollout import unroll_env
 
-class ModulesTest(absltest.TestCase):
+class RolloutTest(absltest.TestCase):
 
     def setUp(self):
         SEED = 17
@@ -79,6 +79,9 @@ class ModulesTest(absltest.TestCase):
         self.assertEquals(rollout_data.next_obs.shape, (N_ENVS, N_STEPS, self.env.observation_size))
         self.assertEquals(rollout_data.network_output.actions.shape, (N_ENVS, N_STEPS, self.env.action_size))
         self.assertEquals(rollout_data.network_output.loglikelihoods.shape, (N_ENVS, N_STEPS,))
+        jax.tree.map(lambda a, b: self.assertEquals(a.shape, b.shape), net_states, next_net_state)
+        jax.tree.map(lambda a, b: self.assertEquals(a.shape, b.shape), env_states, next_env_state)
+        unroll_vmap(self.env, next_env_state, self.nets, next_net_state, N_STEPS, reset_keys)
 
     def test_dummy_env_rollout(self):
         N_STEPS = 24
@@ -144,6 +147,8 @@ class ModulesTest(absltest.TestCase):
         self.assertGreaterEqual(jp.sum(rollout_data.done), 2*N_ENVS)
         self.assertLess(jp.sum(rollout_data.done), 10*N_ENVS)
         self.assertEqual(jp.sum(rollout_data.rewards), N_STEPS*N_ENVS)
+        jax.tree.map(lambda a, b: self.assertEquals(a.shape, b.shape), net_states, next_net_state)
+        jax.tree.map(lambda a, b: self.assertEquals(a.shape, b.shape), env_states, next_env_state)
 
 class DummyCounterEnv:
     '''Dummy environment that gives reward 1.0 if the action is the number
@@ -194,4 +199,3 @@ class DummyCounterNet(types.AbstractPPOActorCritic, nnx.Module):
     
     def reset_state(self, old_state) -> Dict:
         return {"counter_state": {"counter": 0}}
-

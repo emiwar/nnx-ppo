@@ -8,7 +8,9 @@ authors = [
 
 dependencies = [
     "flax>=0.10.0",
-    "jax[cuda12]",  # For CUDA 12 support, adjust for your CUDA version
+    "jax[cuda12]",
+    "ml_collections",
+    "playground",
 ]
 
 [build-system]
