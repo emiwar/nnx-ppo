@@ -5,6 +5,7 @@ from flax import nnx
 from nnx_ppo.networks.modules import MLPActorCritic
 from nnx_ppo.algorithms import ppo, rollout
 
+
 SEED = 42
 env = mujoco_playground.registry.load("CartpoleBalance")
 nets = MLPActorCritic(env.observation_size, env.action_size,
@@ -17,7 +18,7 @@ training_state = ppo.new_training_state(env, nets, n_envs=config.n_envs, seed=SE
 ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3))
 eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3))
 for iter in range(1000):
-    training_state = ppo_step_jit(env, training_state, 
+    training_state, _ = ppo_step_jit(env, training_state, 
                                   config.n_envs, config.rollout_length,
                                   config.gae_lambda, config.discounting_factor,
                                   config.clip_range)

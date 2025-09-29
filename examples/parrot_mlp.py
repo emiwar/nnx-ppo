@@ -19,7 +19,7 @@ training_state = ppo.new_training_state(env, nets, n_envs=config.n_envs, seed=SE
 ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3))
 eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3))
 for iter in range(5000):
-    training_state = ppo_step_jit(env, training_state, 
+    training_state, _ = ppo_step_jit(env, training_state, 
                                   config.n_envs, config.rollout_length,
                                   config.gae_lambda, config.discounting_factor,
                                   config.clip_range)

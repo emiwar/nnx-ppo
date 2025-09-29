@@ -27,8 +27,8 @@ class PPOTest(absltest.TestCase):
         config = ppo.default_config()
         training_state = ppo.new_training_state(self.env, self.nets, config.n_envs, SEED)
         self.assertEquals(training_state.steps_taken, 0)
-        training_state = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
-                                      config.gae_lambda, config.discounting_factor, config.clip_range)
+        training_state, _ = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
+                                         config.gae_lambda, config.discounting_factor, config.clip_range)
         self.assertEquals(training_state.steps_taken, config.n_envs*config.rollout_length)
 
     def test_ppo_step_twice(self):
@@ -36,11 +36,11 @@ class PPOTest(absltest.TestCase):
         config = ppo.default_config()
         training_state = ppo.new_training_state(self.env, self.nets, config.n_envs, SEED)
         self.assertEquals(training_state.steps_taken, 0)
-        training_state = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
-                                      config.gae_lambda, config.discounting_factor, config.clip_range)
+        training_state, _ = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
+                                         config.gae_lambda, config.discounting_factor, config.clip_range)
         self.assertEquals(training_state.steps_taken, config.n_envs*config.rollout_length)
-        training_state = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
-                                      config.gae_lambda, config.discounting_factor, config.clip_range)
+        training_state, _ = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
+                                         config.gae_lambda, config.discounting_factor, config.clip_range)
         self.assertEquals(training_state.steps_taken, config.n_envs*config.rollout_length*2)
 
     def test_ppo_step_jit(self):
@@ -51,12 +51,12 @@ class PPOTest(absltest.TestCase):
         #ppo_step_fcn = functools.partial(ppo.ppo_step, self.env)
         ppo_step_fcn = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3))
         #ppo_step_fcn = checkify.checkify(ppo_step_fcn)
-        training_state = ppo_step_fcn(self.env, training_state, config.n_envs, config.rollout_length,
-                                      config.gae_lambda, config.discounting_factor, config.clip_range)
+        training_state, _ = ppo_step_fcn(self.env, training_state, config.n_envs, config.rollout_length,
+                                         config.gae_lambda, config.discounting_factor, config.clip_range)
         #err.throw()
         self.assertEquals(training_state.steps_taken, config.n_envs*config.rollout_length)
-        training_state = ppo_step_fcn(self.env, training_state, config.n_envs, config.rollout_length,
-                                      config.gae_lambda, config.discounting_factor, config.clip_range)
+        training_state, _ = ppo_step_fcn(self.env, training_state, config.n_envs, config.rollout_length,
+                                         config.gae_lambda, config.discounting_factor, config.clip_range)
         #err.throw()
         self.assertEquals(training_state.steps_taken, config.n_envs*config.rollout_length*2)
 

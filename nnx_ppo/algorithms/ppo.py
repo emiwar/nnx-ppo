@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any, Optional, Tuple, Dict
 
 from ml_collections import config_dict
 import mujoco_playground
@@ -40,10 +40,12 @@ def train_ppo(env: mujoco_playground.MjxEnv,
     training_state = new_training_state(env, networks, config.n_envs, seed)
     ppo_step_jit = nnx.jit(ppo_step, static_argnums=(0, 2, 3))
     while training_state.steps_taken < config.n_steps:
-        training_state = ppo_step_jit(env, training_state, 
-                                      config.n_envs, config.rollout_length,
-                                      config.gae_lambda, config.discounting_factor,
-                                      config.clip_range)
+        training_state, metrics = ppo_step_jit(
+            env, training_state, 
+            config.n_envs, config.rollout_length,
+            config.gae_lambda, config.discounting_factor,
+            config.clip_range
+        )
 
 #@nnx.jit
 def ppo_step(env: mujoco_playground.MjxEnv,
@@ -52,7 +54,7 @@ def ppo_step(env: mujoco_playground.MjxEnv,
              rollout_length: int,
              gae_lambda: float,
              discounting_factor: float,
-             clip_range: float) -> TrainingState:
+             clip_range: float) -> Tuple[TrainingState, Dict]:
     reset_key, new_key = jax.random.split(training_state.rng_key)
     reset_keys = jax.random.split(reset_key, n_envs)
 
@@ -68,28 +70,27 @@ def ppo_step(env: mujoco_playground.MjxEnv,
         rollout_length,
         reset_keys
     )
-    
+    loss_metrics = ppo_update(training_state, rollout_data, next_net_state,
+                              gae_lambda, discounting_factor, clip_range)
+
     # An important trick here is that ppo_update is run _before_ updating
     # the training state. This ensures the updates start from the same
     # `network_states` as the rollouts did, which is necessary for the gradients
     # to be correct.
-    ppo_update(training_state, rollout_data, next_net_state,
-               gae_lambda, discounting_factor, clip_range)
-
     training_state = training_state.replace(
         network_states = next_net_state,
         env_states = next_env_state,
         rng_key = new_key,
         steps_taken = training_state.steps_taken + rollout_length * n_envs,
     )
-    return training_state
+    return training_state, loss_metrics
 
 def ppo_update(training_state: TrainingState,
                rollout_data: rollout.Transition,
                next_net_state,
                gae_lambda: float,
                discounting_factor: float,
-               clip_range: float) -> None:
+               clip_range: float) -> Dict:
     # We need the value of the final observation
     #@nnx.split_rngs(splits=rollout_data.done.shape[0])
     @nnx.vmap(in_axes=(None, 0, 0), out_axes=0)
@@ -110,16 +111,21 @@ def ppo_update(training_state: TrainingState,
                      gamma = discounting_factor)
     assert advantages.shape == values_excl_last.shape
     target_values = values_excl_last + advantages
-    grads = nnx.grad(ppo_loss)(networks = training_state.networks,
-                               network_state = training_state.network_states,
-                               observations = rollout_data.obs,
-                               actions = rollout_data.network_output.actions,
-                               old_loglikelihoods = rollout_data.network_output.loglikelihoods,
-                               target_values = target_values,
-                               advantages = advantages,
-                               next_net_state = next_net_state,
-                               clip_range = clip_range)
+    grads, loss_metrics = nnx.grad(ppo_loss, has_aux=True)(
+        networks = training_state.networks,
+        network_state = training_state.network_states,
+        observations = rollout_data.obs,
+        actions = rollout_data.network_output.actions,
+        old_loglikelihoods = rollout_data.network_output.loglikelihoods,
+        target_values = target_values,
+        advantages = advantages,
+        next_net_state = next_net_state,
+        clip_range = clip_range
+    )
+    loss_metrics["avg_advantage"] = advantages.mean()
+    loss_metrics["action_std"] = rollout_data.network_output.actions.std()
     training_state.optimizer.update(grads)
+    return loss_metrics
 
 def gae(rewards, values, done, truncation, lambda_: float, gamma: float):
     assert values.shape == (rewards.shape[0], rewards.shape[1]+1)
@@ -147,6 +153,8 @@ def gae(rewards, values, done, truncation, lambda_: float, gamma: float):
 def ppo_loss(networks: AbstractPPOActorCritic, network_state,
              observations, actions, old_loglikelihoods, target_values,
              advantages, next_net_state, clip_range):
+    metrics = dict()
+
     time_scan = nnx.scan(lambda networks, net_state, obs: networks(net_state, obs),
                          in_axes=(nnx.StateAxes({...: nnx.Carry}), nnx.Carry, 0),
                          out_axes=(nnx.Carry, 0))
@@ -160,29 +168,30 @@ def ppo_loss(networks: AbstractPPOActorCritic, network_state,
             value_estimates = network_output.value_estimates[:, :, 0]
         )
 
-    #checkify.check(jp.allclose(network_output.actions, actions),
-    #               "Networks produce different actions.")
-    #checkify.check(jp.allclose(network_output.loglikelihoods, old_loglikelihoods),
-    #               "Networks produce different likelihoods.")
-    #checkify.check(jp.allclose(network_output.value_estimates, (target_values-advantages)),
-    #               "Networks produce different values.")
-    #checkify_tree_equals(next_net_state_again, next_net_state,
-    #                     "Network state not equal after rollout.")
-    likelihood_ratios = jp.exp(network_output.loglikelihoods - old_loglikelihoods)
+    # These "asserts" are for debugging. They should always be True.
+    metrics["asserts/actions_max_diff"] = jp.max(jp.abs(network_output.actions - actions))
+    metrics["asserts/likelihoods_max_diff"] = jp.max(jp.abs(network_output.loglikelihoods - old_loglikelihoods))
+    metrics["asserts/critic_values_max_diff"] = jp.max(jp.abs(network_output.value_estimates - (target_values-advantages)))
+    metrics["asserts/net_state_identical"] = jax.tree.reduce(jp.logical_and, jax.tree.map(jp.allclose, next_net_state_again, next_net_state)).astype(int)
 
-    #checkify.check(jp.allclose(likelihood_ratios, 1.0), "Likelihood ratios not 1.0 in forward pass")
+    likelihood_ratios = jp.exp(network_output.loglikelihoods - old_loglikelihoods)
     loss_cand1 = likelihood_ratios * advantages
     loss_cand2 = jp.clip(likelihood_ratios, 1 - clip_range, 1 + clip_range) * advantages
 
+    # Note that it's the network's responsiblity to add entropy loss as one particular
+    # instance of a regularization loss.
     actor_loss = -jp.mean(jp.minimum(loss_cand1, loss_cand2))
     critic_loss = jp.mean((network_output.value_estimates - target_values)**2)
-
-    # It's the network's responsiblity to add entropy loss 
     regularization_loss = jp.mean(network_output.regularization_loss)
+
+    metrics["losses/actor"] = actor_loss
+    metrics["losses/critic"] = critic_loss
+    metrics["losses/regularization"] = regularization_loss
+    metrics["losses/critic_R^2"] = 1.0 - critic_loss / jp.var(target_values)
 
     total_loss = actor_loss + critic_loss + regularization_loss
 
-    return total_loss
+    return total_loss, metrics
 
 def new_training_state(env: mujoco_playground.MjxEnv,
                        networks: AbstractPPOActorCritic,
