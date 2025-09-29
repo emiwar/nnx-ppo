@@ -22,7 +22,7 @@ net = PPOActorCritic(
         MLP([hidden_size, action_size], rngs),
     ]),
     critic=MLP([obs_size, hidden_size, action_size], rngs),
-    action_sampler=NormalTanhSampler(rngs)
+    action_sampler=NormalTanhSampler(entropy_weight=1e-4)
 )
 
 nnx_ppo.algorithms.ppo.train_ppo(env, net)

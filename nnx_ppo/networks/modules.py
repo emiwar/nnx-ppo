@@ -1,4 +1,4 @@
-from typing import Tuple, Dict, List
+from typing import Tuple, Dict, List, Callable
 
 import jax
 import jax.flatten_util
@@ -41,20 +41,26 @@ class PPOActorCritic(AbstractPPOActorCritic, nnx.Module):
     
     def reset_state(self, network_state):
         return {
-             "actor": self.actor.initialize_state(network_state["actor"]),
-             "critic": self.critic.initialize_state(network_state["critic"]),
-             "action_sampler": self.action_sampler.initialize_state(network_state["action_sampler"]),
+             "actor": self.actor.reset_state(network_state["actor"]),
+             "critic": self.critic.reset_state(network_state["critic"]),
+             "action_sampler": self.action_sampler.reset_state(network_state["action_sampler"]),
         }
 
 class MLP(StatefulModule):
-    def __init__(self, sizes, rngs, transfer_function=nnx.softplus):
+    def __init__(self, sizes, rngs,
+                 transfer_function=nnx.softplus,
+                 transfer_function_last_layer: bool=False):
         din_dout = zip(sizes[:-1], sizes[1:])
         self.layers = [nnx.Linear(din, dout, rngs=rngs) for (din, dout) in din_dout]
         self.transfer_function = transfer_function
+        self.transfer_function_last_layer = transfer_function_last_layer
 
     def __call__(self, state, x):
-        for layer in self.layers:
+        for layer in self.layers[:-1]:
             x = self.transfer_function(layer(x))
+        x = self.layers[-1](x)
+        if self.transfer_function_last_layer:
+            x = self.transfer_function(x)
         regularization_loss = 0.0
         return state, x, regularization_loss
 
@@ -65,14 +71,15 @@ class MLPActorCritic(PPOActorCritic):
                  actor_hidden_sizes: List[int],
                  critic_hidden_sizes: List[int],
                  rngs: nnx.Rngs,
-                 transfer_function=nnx.softplus):
+                 transfer_function: Callable = nnx.softplus,
+                 entropy_weight: float =1e-4):
         obs_size = int(jp.sum(jax.flatten_util.ravel_pytree(obs_size)[0]))
         action_size = int(jp.sum(jax.flatten_util.ravel_pytree(action_size)[0]))
         actor_sizes = [obs_size] + actor_hidden_sizes + [action_size*2]
         self.actor = MLP(actor_sizes, rngs, transfer_function)
         critic_sizes = [obs_size] + critic_hidden_sizes + [1]
-        self.critic = MLP(critic_sizes, rngs, transfer_function)
-        self.action_sampler = NormalTanhSampler(rngs)
+        self.critic = MLP(critic_sizes, rngs, transfer_function, transfer_function_last_layer=False)
+        self.action_sampler = NormalTanhSampler(entropy_weight=entropy_weight)
         self.flatten_obs = True
 
 class Sequential(StatefulModule):
@@ -101,3 +108,6 @@ class Sequential(StatefulModule):
         for layer, old_state in zip(self.layers, network_state):
             new_state.append(layer.reset_state(old_state))
         return new_state
+    
+    def __getitem__(self, ind) -> StatefulModule:
+        return self.layers[ind]

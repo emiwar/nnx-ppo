@@ -137,11 +137,11 @@ def gae(rewards, values, done, truncation, lambda_: float, gamma: float):
         in_axes=(nnx.Carry, 1, 1, 1, 1, 1), out_axes=(nnx.Carry, 1),
         length=rewards.shape[1], reverse=True)
     _, advantages = time_scan(next_advantage = jp.zeros(rewards.shape[0]),
-                     reward=rewards,
-                     old_value=values[:, :-1],
-                     next_old_value=values[:, 1:],
-                     done=done,
-                     truncated=truncation)
+                              reward=rewards,
+                              old_value=values[:, :-1],
+                              next_old_value=values[:, 1:],
+                              done=done,
+                              truncated=truncation)
     return advantages
 
 def ppo_loss(networks: AbstractPPOActorCritic, network_state,
@@ -168,13 +168,14 @@ def ppo_loss(networks: AbstractPPOActorCritic, network_state,
     #               "Networks produce different values.")
     #checkify_tree_equals(next_net_state_again, next_net_state,
     #                     "Network state not equal after rollout.")
-
     likelihood_ratios = jp.exp(network_output.loglikelihoods - old_loglikelihoods)
-    loss_cand1 = likelihood_ratios * advantages
-    loss_cand2 = jp.clip(likelihood_ratios, 1 - clip_range, 1 + clip_range)
 
-    actor_loss =  jp.mean(jp.minimum(loss_cand1, loss_cand2))
-    critic_loss = jp.mean((network_output.value_estimates - target_values))
+    #checkify.check(jp.allclose(likelihood_ratios, 1.0), "Likelihood ratios not 1.0 in forward pass")
+    loss_cand1 = likelihood_ratios * advantages
+    loss_cand2 = jp.clip(likelihood_ratios, 1 - clip_range, 1 + clip_range) * advantages
+
+    actor_loss = -jp.mean(jp.minimum(loss_cand1, loss_cand2))
+    critic_loss = jp.mean((network_output.value_estimates - target_values)**2)
 
     # It's the network's responsiblity to add entropy loss 
     regularization_loss = jp.mean(network_output.regularization_loss)
