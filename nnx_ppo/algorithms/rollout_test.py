@@ -9,6 +9,7 @@ import mujoco_playground
 
 from nnx_ppo.networks import modules, types
 from nnx_ppo.algorithms.rollout import unroll_env
+from nnx_ppo.test_dummies import dummy_counter
 
 class RolloutTest(absltest.TestCase):
 
@@ -85,8 +86,8 @@ class RolloutTest(absltest.TestCase):
 
     def test_dummy_env_rollout(self):
         N_STEPS = 24
-        dummy_env = DummyCounterEnv()
-        dummy_nets = DummyCounterNet()
+        dummy_env = dummy_counter.DummyCounterEnv()
+        dummy_nets = dummy_counter.DummyCounterNet()
         key = jax.random.key(seed=18)
         net_key, env_key, reset_key = jax.random.split(key, 3)
         net_state = dummy_nets.initialize_state(net_key)
@@ -104,8 +105,8 @@ class RolloutTest(absltest.TestCase):
 
     def test_dummy_env_rollout_jit(self):
         N_STEPS = 24
-        dummy_env = DummyCounterEnv()
-        dummy_nets = DummyCounterNet()
+        dummy_env = dummy_counter.DummyCounterEnv()
+        dummy_nets = dummy_counter.DummyCounterNet()
         key = jax.random.key(seed=18)
         net_key, env_key, reset_key = jax.random.split(key, 3)
         net_state = dummy_nets.initialize_state(net_key)
@@ -125,8 +126,8 @@ class RolloutTest(absltest.TestCase):
     def test_dummy_env_rollout_vmap(self):
         N_ENVS = 256
         N_STEPS = 24
-        dummy_env = DummyCounterEnv()
-        dummy_nets = DummyCounterNet()
+        dummy_env = dummy_counter.DummyCounterEnv()
+        dummy_nets =dummy_counter.DummyCounterNet()
 
         key = jax.random.key(seed=15)
         net_key, env_key, reset_key = jax.random.split(key, 3)
@@ -149,53 +150,3 @@ class RolloutTest(absltest.TestCase):
         self.assertEqual(jp.sum(rollout_data.rewards), N_STEPS*N_ENVS)
         jax.tree.map(lambda a, b: self.assertEquals(a.shape, b.shape), net_states, next_net_state)
         jax.tree.map(lambda a, b: self.assertEquals(a.shape, b.shape), env_states, next_env_state)
-
-class DummyCounterEnv:
-    '''Dummy environment that gives reward 1.0 if the action is the number
-       of steps since the last reset, and 0.0 otherwise. Observation is always
-       [0.0].'''
-
-    def reset(self, rng):
-        return mujoco_playground.State(
-            data = {"current_step": jp.array(0),
-                    "reset_step": jax.random.randint(rng, (), 3, 10)},
-            obs = jp.zeros(1),
-            info = {},
-            reward = jp.array(1.0),
-            done = jp.array(0.0),
-            metrics = {}
-        )
-    
-    def step(self, state: mujoco_playground.State, action: jax.Array):
-        data = {"current_step": state.data["current_step"] + 1,
-                "reset_step": state.data["reset_step"]}
-        done = jp.astype(data["current_step"] >= data["reset_step"], float)
-        return mujoco_playground.State(
-            data = data,
-            obs = jp.zeros(1),
-            info={},
-            reward=jp.where(action==data["current_step"], 1.0, 0.0),
-            done=done,
-            metrics=state.metrics
-        )
-    
-class DummyCounterNet(types.AbstractPPOActorCritic, nnx.Module):
-    '''Dummy stateful network that always outputs the number of steps since its
-       last reset, independent of its input.'''
-    
-    def __call__(self, state, obs) -> Tuple[Any, types.PPONetworkOutput]:
-        old_counter = state["counter_state"]["counter"]
-        new_state = {"counter_state": {"counter": old_counter + 1}}
-        return new_state, types.PPONetworkOutput(
-            actions=old_counter + 1,
-            loglikelihoods=jp.array(1.0),
-            regularization_loss=jp.array(0.0),
-            value_estimates=jp.array(1.0),
-            metrics={}
-        )
-    
-    def initialize_state(self, rng: jax.Array) -> Dict:
-        return {"counter_state": {"counter": 0}}
-    
-    def reset_state(self, old_state) -> Dict:
-        return {"counter_state": {"counter": 0}}

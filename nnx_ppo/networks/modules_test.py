@@ -19,15 +19,31 @@ class ModulesTest(absltest.TestCase):
                                               self.hidden_sizes,
                                               rngs)
 
-    def test_layers_independently_initialized(self):
+    def test_actor_critic_independently_initialized(self):
         net = self.mlp_net
         
         # Test actor and critic were independently initialized
         for actor_layer, critic_layer in zip(net.actor.layers, net.critic.layers):
             self.assertFalse(jp.allclose(actor_layer.kernel.raw_value,
                                          critic_layer.kernel.raw_value))
-            #self.assertFalse(jp.allclose(actor_layer.bias, critic_layer.bias))
 
+    def test_actor_layers_independently_initialized(self):
+        SEED = 123
+        self.obs_size = 64
+        self.action_size = 32
+        self.hidden_sizes = [64, 64]
+        rngs = nnx.Rngs(SEED)
+        net = modules.MLPActorCritic(self.obs_size,
+                                     self.action_size,
+                                     self.hidden_sizes,
+                                     self.hidden_sizes,
+                                     rngs)
+        
+        # Test actor and critic were independently initialized
+        first_actor_layer = net.actor.layers[0]
+        for actor_layer in net.actor.layers[1:]:
+            self.assertFalse(jp.allclose(first_actor_layer.kernel.raw_value,
+                                         actor_layer.kernel.raw_value))
 
     def test_init_state(self):
 
@@ -53,8 +69,6 @@ class ModulesTest(absltest.TestCase):
         first_state = net.initialize_state(net_init_key)
         next_state, output = net(first_state, simple_obs)
         self.assertIsInstance(output, types.PPONetworkOutput)
-
-        # TODO: Check output more!
 
     def test_simple_input_jit(self):
         @nnx.jit
@@ -136,6 +150,8 @@ class ModulesTest(absltest.TestCase):
         self.assertEquals(first_output.actions.shape, (n_envs, self.action_size))
         self.assertEquals(first_output.loglikelihoods.shape, (n_envs,))
         self.assertEquals(first_output.value_estimates.shape, (n_envs, 1))
+        self.assertLess(jp.min(first_output.value_estimates), -0.2)
+        self.assertGreater(jp.max(first_output.value_estimates), 0.2)
 
         next_state, second_output = call_net(net, next_state, simple_obs)
         self.assertIsInstance(second_output, types.PPONetworkOutput)
@@ -149,6 +165,14 @@ class ModulesTest(absltest.TestCase):
         next_state = reset_state(net, next_state)
         self.assertDictContainsSubset({"actor": (), "critic": ()}, next_state)
         self.assertFalse(jp.allclose(next_state["action_sampler"], first_state["action_sampler"]))
+
+    def test_action_sampler_train_and_eval_mode(self):
+        net = self.mlp_net
+        self.assertFalse(net.action_sampler.deterministic)
+        net.eval()
+        self.assertTrue(net.action_sampler.deterministic)
+        net.train()
+        self.assertFalse(net.action_sampler.deterministic)
 
 if __name__ == '__main__':
     absltest.main()

@@ -4,6 +4,7 @@ from typing import Tuple, Any, Dict
 from absl.testing import absltest, parameterized
 import jax
 import jax.numpy as jp
+import numpy as np
 from jax.experimental import checkify
 from flax import nnx
 import mujoco_playground
@@ -89,3 +90,35 @@ class PPOTest(absltest.TestCase):
     def test_ppo_full_loop(self):
         SEED = 21
         ppo.train_ppo(self.env, self.nets, ppo.default_config(), SEED)
+
+    def test_gae(self):
+        SEED = 23
+        N_ENVS = 512
+        T_STEPS = 100
+        gamma = 0.0 #0.8
+        lambda_ = 0.0 #0.95
+
+        np.random.seed(SEED)
+        rewards = np.random.normal(size=(N_ENVS, T_STEPS))
+        values = np.random.normal(size=(N_ENVS, T_STEPS+1))
+        done = np.random.choice([True, False], size=(N_ENVS, T_STEPS), p=[0.01, 0.99])
+        truncation = np.random.choice([True, False], size=(N_ENVS, T_STEPS))
+        truncation = np.logical_and(done, truncation)
+    
+        advantages = np.full((N_ENVS, T_STEPS), np.nan)
+        for t in reversed(range(T_STEPS)):
+            next_values = values[:, t+1].copy()
+            next_values[done[:, t]] = 0.0
+            next_values[truncation[:, t]] = values[truncation[:, t], t]
+            advantages[:, t] = rewards[:, t] + gamma * next_values - values[:, t]
+            if t < T_STEPS-1:
+                advantages[:, t] += gamma * lambda_ * advantages[:, t+1] * (1 - done[:, t])
+
+        ppo_advantages = ppo.gae(rewards=jp.array(rewards),
+                                 values=jp.array(values),
+                                 done=jp.array(done, dtype=bool),
+                                 truncation=jp.array(truncation, dtype=bool),
+                                 lambda_=lambda_,
+                                 gamma=gamma)
+        max_diff = jp.max(jp.abs(jp.array(advantages) - ppo_advantages))
+        self.assertLess(max_diff, 1e-6)
