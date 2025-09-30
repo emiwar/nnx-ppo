@@ -196,7 +196,8 @@ def ppo_loss(networks: AbstractPPOActorCritic, network_state,
 def new_training_state(env: mujoco_playground.MjxEnv,
                        networks: AbstractPPOActorCritic,
                        n_envs: int,
-                       seed: int):
+                       seed: int,
+                       learning_rate: float=1e-4):
     # Setup keys
     key = jax.random.key(seed)
     key, training_key = jax.random.split(key)
@@ -211,7 +212,7 @@ def new_training_state(env: mujoco_playground.MjxEnv,
     network_states = nnx.vmap(networks.initialize_state)(net_init_keys)
 
     # Setup optimizer
-    optimizer = nnx.Optimizer(networks, optax.adam(learning_rate=1e-4), wrt=nnx.Param)
+    optimizer = nnx.Optimizer(networks, optax.adam(learning_rate=learning_rate), wrt=nnx.Param)
     return TrainingState(networks, network_states, env_states,
                          optimizer, training_key, 0)
 

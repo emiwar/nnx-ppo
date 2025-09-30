@@ -17,13 +17,13 @@ class NormalTanhSampler(ActionSampler):
     self.std_scale = std_scale
     self.deterministic = False
     self.entropy_weight = entropy_weight
-    
+
 
   def __call__(self, rng_key, mean_and_std: jax.Array) -> Tuple[jax.Array, Tuple[jax.Array, jax.Array], jax.Array]:
     action_rng_key, new_rng_key = jax.random.split(rng_key)
     mean, std = jp.split(mean_and_std, 2, axis=-1)
-    #std = (jax.nn.softplus(std) + self.min_std) * self.std_scale
-    std = (jp.square(std) + self.min_std) * self.std_scale
+    std = (jax.nn.softplus(std) + self.min_std) * self.std_scale
+    #std = (jp.square(std) + self.min_std) * self.std_scale
     if self.deterministic:
       raw_action = mean
     else:

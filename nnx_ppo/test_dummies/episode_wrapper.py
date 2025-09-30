@@ -9,7 +9,7 @@ class EpisodeWrapper:
 
     def step(self, state, action):
         next_state = self.env.step(state, action)
-        next_state.info["step_counter"] += 1
+        next_state.info["step_counter"] = state.info["step_counter"] + 1
         truncated = jp.logical_or(next_state.info["truncated"],
                                   next_state.info["step_counter"] >= self.max_len)
         next_state.info["truncated"] = truncated
