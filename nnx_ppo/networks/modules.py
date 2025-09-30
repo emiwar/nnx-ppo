@@ -72,14 +72,14 @@ class MLPActorCritic(PPOActorCritic):
                  critic_hidden_sizes: List[int],
                  rngs: nnx.Rngs,
                  transfer_function: Callable = nnx.softplus,
-                 entropy_weight: float =1e-4):
+                 action_sampler: ActionSampler = NormalTanhSampler(entropy_weight=1e-4)):
         obs_size = int(jp.sum(jax.flatten_util.ravel_pytree(obs_size)[0]))
         action_size = int(jp.sum(jax.flatten_util.ravel_pytree(action_size)[0]))
         actor_sizes = [obs_size] + actor_hidden_sizes + [action_size*2]
         self.actor = MLP(actor_sizes, rngs, transfer_function)
         critic_sizes = [obs_size] + critic_hidden_sizes + [1]
         self.critic = MLP(critic_sizes, rngs, transfer_function, transfer_function_last_layer=False)
-        self.action_sampler = NormalTanhSampler(entropy_weight=entropy_weight)
+        self.action_sampler = action_sampler
         self.flatten_obs = True
 
 class Sequential(StatefulModule):

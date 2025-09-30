@@ -1,5 +1,6 @@
 from datetime import datetime
 
+import tqdm
 import mujoco_playground
 import jax
 from flax import nnx
@@ -33,37 +34,22 @@ nets = MLPActorCritic(env.observation_size, env.action_size,
                       action_sampler=NormalTanhSampler(entropy_weight=0.1))
 config = ppo.default_config()
 #config.discounting_factor = 0.0
-now = datetime.now()
-timestamp = now.strftime("%Y%m%d-%H%M%S")
-exp_name = f"{env_name}-{timestamp}"
-wandb.init(project="nnx-ppo-basic-tests",
-           config={"env": env_name,
-                   "SEED": SEED,
-                   "ppo_params": config.to_dict()},
-           name=exp_name,
-           tags=(env_name,))
 
 training_state = ppo.new_training_state(train_env, nets, n_envs=config.n_envs, learning_rate=1e-4, seed=SEED)
 ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3))
 eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3))
 
-nets.eval() # Set network to eval mode
-eval_metrics = eval_rollout_jit(eval_env, nets, 256, 100, jax.random.key(SEED))
-wandb.log({**eval_metrics, "n_steps": training_state.steps_taken})
-nets.train() # Set the network back to train mode
-
-for iter in range(5000):
+for iter in tqdm.trange(200):
     training_state, metrics = ppo_step_jit(
         train_env, training_state, 
         config.n_envs, config.rollout_length,
         config.gae_lambda, config.discounting_factor,
         config.clip_range
     )
-    if iter % 1 == 0:
-        nets.eval() # Set network to eval mode
-        eval_metrics = eval_rollout_jit(eval_env, nets, 256, 100, jax.random.key(SEED))
-        metrics.update(eval_metrics)
-        metrics["n_steps"] = training_state.steps_taken
-        wandb.log(metrics)
-        #print(iter, training_state.steps_taken, "{:.4}".format(eval_metrics["episode_reward_mean"]))
-        nets.train() # Set the network back to train mode
+for iter in tqdm.trange(200):
+    training_state, metrics = ppo.ppo_step(
+            train_env, training_state, 
+            config.n_envs, config.rollout_length,
+            config.gae_lambda, config.discounting_factor,
+            config.clip_range
+        )

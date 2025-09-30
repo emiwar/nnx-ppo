@@ -5,9 +5,11 @@ from flax import nnx
 from nnx_ppo.networks.modules import MLPActorCritic
 from nnx_ppo.algorithms import ppo, rollout
 import nnx_ppo.test_dummies.parrot_env
+import nnx_ppo.wrappers.episode_wrapper
 
 SEED = 42
 env = nnx_ppo.test_dummies.parrot_env.ParrotEnv(reward_falloff=0.5)
+env = nnx_ppo.wrappers.episode_wrapper.EpisodeWrapper(env, max_len=100)
 nets = MLPActorCritic(env.observation_size, env.action_size,
                       actor_hidden_sizes=[64, 64],
                       critic_hidden_sizes=[64, 64],

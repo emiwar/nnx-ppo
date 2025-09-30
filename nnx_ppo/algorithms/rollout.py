@@ -35,7 +35,8 @@ def single_transition(env: mjx_env.MjxEnv,
   next_network_state = jax.lax.cond(transition.done, networks.reset_state,
                                     lambda s: s, next_network_state)
   next_env_state = jax.lax.cond(transition.done, env.reset,
-                                lambda rng: next_env_state, rng_key_for_env_reset)
+                                lambda rng: next_env_state,
+                                rng_key_for_env_reset)
 
   return (next_network_state, next_env_state), transition
 
@@ -80,6 +81,7 @@ def eval_rollout(env: mjx_env.MjxEnv,
     env_state, network_state, cuml_reward, lifespan = carry
     next_network_state, network_output = networks(network_state, env_state.obs)
     next_env_state = env.step(env_state, network_output.actions)
+    next_env_state = next_env_state.replace(done = jp.logical_or(next_env_state.done, env_state.done).astype(float))
     cuml_reward += jp.where(next_env_state.done, 0.0, next_env_state.reward)
     lifespan += jp.logical_not(next_env_state.done).astype(float)
     return next_env_state, next_network_state, cuml_reward, lifespan

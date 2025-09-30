@@ -122,7 +122,9 @@ def ppo_update(training_state: TrainingState,
         next_net_state = next_net_state,
         clip_range = clip_range
     )
-    loss_metrics["avg_advantage"] = advantages.mean()
+    loss_metrics["advantage_mean"] = advantages.mean()
+    loss_metrics["advantage_std"] = advantages.std()
+    loss_metrics["action_mean"] = rollout_data.network_output.actions.mean()
     loss_metrics["action_std"] = rollout_data.network_output.actions.std()
     training_state.optimizer.update(grads)
     return loss_metrics
@@ -181,15 +183,16 @@ def ppo_loss(networks: AbstractPPOActorCritic, network_state,
     # Note that it's the network's responsiblity to add entropy loss as one particular
     # instance of a regularization loss.
     actor_loss = -jp.mean(jp.minimum(loss_cand1, loss_cand2))
-    critic_loss = jp.mean((network_output.value_estimates - target_values)**2)
+    critic_loss = 0.5 * jp.mean((network_output.value_estimates - target_values)**2)
     regularization_loss = jp.mean(network_output.regularization_loss)
 
     metrics["losses/actor"] = actor_loss
     metrics["losses/critic"] = critic_loss
     metrics["losses/regularization"] = regularization_loss
-    metrics["losses/critic_R^2"] = 1.0 - critic_loss / jp.var(target_values)
+    metrics["losses/target_value_variance"] = jp.var(target_values)
+    metrics["losses/critic_R^2"] = 1.0 - critic_loss / metrics["losses/target_value_variance"]
 
-    total_loss = actor_loss + critic_loss + regularization_loss
+    total_loss = 0.1*actor_loss + critic_loss + regularization_loss
 
     return total_loss, metrics
 
