@@ -16,7 +16,7 @@ import nnx_ppo.test_dummies.move_to_center_env
 import nnx_ppo.test_dummies.move_from_center_env
 import nnx_ppo.test_dummies.action_sigma_debug as action_sigma_debug
 
-jax.config.update("jax_debug_nans", True)
+#jax.config.update("jax_debug_nans", True)
 
 SEED = 43
 env_name = "CartpoleBalance"
@@ -89,9 +89,9 @@ for iter in range(5000):
         eval_metrics = eval_rollout_jit(eval_env, nets, 256, 100, jax.random.key(SEED))
         metrics.update(eval_metrics)
         metrics["n_steps"] = training_state.steps_taken
-        for k, v in metrics.items():
-            if jp.any(jp.isnan(v)):
-                raise ValueError(f"NaN in {k}")
+        #for k, v in metrics.items():
+        #    if jp.any(jp.isnan(v)):
+        #        raise ValueError(f"NaN in {k}")
         wandb.log(metrics)
         #print(iter, training_state.steps_taken, "{:.4}".format(eval_metrics["episode_reward_mean"]))
         nets.train() # Set the network back to train mode

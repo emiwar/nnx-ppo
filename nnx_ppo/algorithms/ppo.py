@@ -126,6 +126,8 @@ def ppo_update(training_state: TrainingState,
         clip_range = clip_range,
         normalize_advantages = normalize_advantages
     )
+    loss_metrics["reward_mean"] = rollout_data.rewards.mean()
+    loss_metrics["reward_std"] = rollout_data.rewards.std()
     loss_metrics["advantage_mean"] = advantages.mean()
     loss_metrics["advantage_std"] = advantages.std()
     loss_metrics["action_mean"] = rollout_data.network_output.actions.mean()
@@ -196,8 +198,11 @@ def ppo_loss(networks: AbstractPPOActorCritic, network_state,
     metrics["losses/actor"] = actor_loss
     metrics["losses/critic"] = critic_loss
     metrics["losses/regularization"] = regularization_loss
-    metrics["losses/target_value_variance"] = jp.var(target_values)
-    metrics["losses/critic_R^2"] = 1.0 - critic_loss / metrics["losses/target_value_variance"]
+    metrics["losses/predicted_value_mean"] = jp.mean(network_output.value_estimates)
+    metrics["losses/predicted_value_std"] = jp.std(network_output.value_estimates)
+    metrics["losses/target_value_mean"] = jp.mean(target_values)
+    metrics["losses/target_value_std"] = jp.std(target_values)
+    metrics["losses/critic_R^2"] = 1.0 - critic_loss / jp.var(target_values)
 
     total_loss = actor_loss + critic_loss + regularization_loss
 
