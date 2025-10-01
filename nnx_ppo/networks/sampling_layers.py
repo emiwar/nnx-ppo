@@ -22,7 +22,8 @@ class NormalTanhSampler(ActionSampler):
   def __call__(self, rng_key, mean_and_std: jax.Array) -> Tuple[jax.Array, Tuple[jax.Array, jax.Array], jax.Array]:
     action_rng_key, new_rng_key = jax.random.split(rng_key)
     mean, std = jp.split(mean_and_std, 2, axis=-1)
-    std = (jax.nn.softplus(std) + self.min_std) * self.std_scale
+    mean = 0.005 + jp.zeros_like(mean) #0.0 #0.01
+    std = 0.25#(jax.nn.softplus(std) + self.min_std) * self.std_scale
     #std = (jp.square(std) + self.min_std) * self.std_scale
     if self.deterministic:
       raw_action = mean

@@ -19,7 +19,8 @@ def default_config() -> config_dict.ConfigDict:
         n_steps = 256*20*100,
         gae_lambda = 0.95,
         discounting_factor = 0.9,
-        clip_range = 0.2
+        clip_range = 0.2,
+        normalize_advantages = True,
     )
 
 @flax.struct.dataclass
@@ -44,7 +45,7 @@ def train_ppo(env: mujoco_playground.MjxEnv,
             env, training_state, 
             config.n_envs, config.rollout_length,
             config.gae_lambda, config.discounting_factor,
-            config.clip_range
+            config.clip_range, config.normalize_advantages
         )
 
 #@nnx.jit
@@ -54,7 +55,8 @@ def ppo_step(env: mujoco_playground.MjxEnv,
              rollout_length: int,
              gae_lambda: float,
              discounting_factor: float,
-             clip_range: float) -> Tuple[TrainingState, Dict]:
+             clip_range: float,
+             normalize_advantages: bool) -> Tuple[TrainingState, Dict]:
     reset_key, new_key = jax.random.split(training_state.rng_key)
     reset_keys = jax.random.split(reset_key, n_envs)
 
@@ -71,7 +73,7 @@ def ppo_step(env: mujoco_playground.MjxEnv,
         reset_keys
     )
     loss_metrics = ppo_update(training_state, rollout_data, next_net_state,
-                              gae_lambda, discounting_factor, clip_range)
+                              gae_lambda, discounting_factor, clip_range, normalize_advantages)
 
     # An important trick here is that ppo_update is run _before_ updating
     # the training state. This ensures the updates start from the same
@@ -90,7 +92,8 @@ def ppo_update(training_state: TrainingState,
                next_net_state,
                gae_lambda: float,
                discounting_factor: float,
-               clip_range: float) -> Dict:
+               clip_range: float,
+               normalize_advantages: bool) -> Dict:
     # We need the value of the final observation
     #@nnx.split_rngs(splits=rollout_data.done.shape[0])
     @nnx.vmap(in_axes=(None, 0, 0), out_axes=0)
@@ -120,7 +123,8 @@ def ppo_update(training_state: TrainingState,
         target_values = target_values,
         advantages = advantages,
         next_net_state = next_net_state,
-        clip_range = clip_range
+        clip_range = clip_range,
+        normalize_advantages = normalize_advantages
     )
     loss_metrics["advantage_mean"] = advantages.mean()
     loss_metrics["advantage_std"] = advantages.std()
@@ -154,7 +158,7 @@ def gae(rewards, values, done, truncation, lambda_: float, gamma: float):
 
 def ppo_loss(networks: AbstractPPOActorCritic, network_state,
              observations, actions, old_loglikelihoods, target_values,
-             advantages, next_net_state, clip_range):
+             advantages, next_net_state, clip_range, normalize_advantages):
     metrics = dict()
 
     time_scan = nnx.scan(lambda networks, net_state, obs: networks(net_state, obs),
@@ -176,6 +180,9 @@ def ppo_loss(networks: AbstractPPOActorCritic, network_state,
     metrics["asserts/critic_values_max_diff"] = jp.max(jp.abs(network_output.value_estimates - (target_values-advantages)))
     metrics["asserts/net_state_identical"] = jax.tree.reduce(jp.logical_and, jax.tree.map(jp.allclose, next_net_state_again, next_net_state)).astype(int)
 
+    if normalize_advantages:
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
     likelihood_ratios = jp.exp(network_output.loglikelihoods - old_loglikelihoods)
     loss_cand1 = likelihood_ratios * advantages
     loss_cand2 = jp.clip(likelihood_ratios, 1 - clip_range, 1 + clip_range) * advantages
@@ -192,7 +199,7 @@ def ppo_loss(networks: AbstractPPOActorCritic, network_state,
     metrics["losses/target_value_variance"] = jp.var(target_values)
     metrics["losses/critic_R^2"] = 1.0 - critic_loss / metrics["losses/target_value_variance"]
 
-    total_loss = 0.1*actor_loss + critic_loss + regularization_loss
+    total_loss = actor_loss + critic_loss + regularization_loss
 
     return total_loss, metrics
 
