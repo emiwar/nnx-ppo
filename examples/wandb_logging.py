@@ -18,7 +18,7 @@ import nnx_ppo.test_dummies.action_sigma_debug as action_sigma_debug
 
 #jax.config.update("jax_debug_nans", True)
 
-SEED = 43
+SEED = 44
 env_name = "CartpoleBalance"
 
 if env_name == "ParrotEnv":
@@ -29,7 +29,7 @@ elif env_name == "MoveFromCenterEnv":
     env = nnx_ppo.test_dummies.move_from_center_env.MoveFromCenterEnv(border_radius=10.0)
 else:
     env = mujoco_playground.registry.load(env_name)
-train_env = episode_wrapper.EpisodeWrapper(env, 50)
+train_env = episode_wrapper.EpisodeWrapper(env, 1000)
 eval_env = env
 
 nets = MLPActorCritic(env.observation_size, env.action_size,
@@ -51,6 +51,7 @@ wandb.init(project="nnx-ppo-basic-tests",
            tags=(env_name,))
 
 training_state = ppo.new_training_state(train_env, nets, n_envs=config.n_envs, learning_rate=1e-4, seed=SEED)
+training_state.env_states.info["step_counter"] = jax.random.randint(jax.random.key(SEED), (config.n_envs,), 0, 1000)
 ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7))
 eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3))
 
@@ -86,7 +87,7 @@ for iter in range(5000):
         metrics.update(extra_logging(train_env, training_state, 256, config.rollout_length,
                                      jax.random.split(jax.random.key(SEED), 256)))
         nets.eval() # Set network to eval mode
-        eval_metrics = eval_rollout_jit(eval_env, nets, 256, 100, jax.random.key(SEED))
+        eval_metrics = eval_rollout_jit(eval_env, nets, 256, 1000, jax.random.key(SEED))
         metrics.update(eval_metrics)
         metrics["n_steps"] = training_state.steps_taken
         #for k, v in metrics.items():
