@@ -11,28 +11,32 @@ class ActionSampler(StatefulModule):
 class NormalTanhSampler(ActionSampler):
   """Normal distribution followed by tanh."""
 
-  def __init__(self, entropy_weight: float, min_std: float=1e-3, std_scale:float=1.0):
+  def __init__(self, entropy_weight: float, min_std: float=1e-3, std_scale:float=1.0, preclamp: bool=True):
     #elf.rng = rngs.action_sampling
     self.min_std = min_std
     self.std_scale = std_scale
+    self.preclamp = preclamp
     self.deterministic = False
     self.entropy_weight = entropy_weight
 
 
   def __call__(self, rng_key, mean_and_std: jax.Array) -> Tuple[jax.Array, Tuple[jax.Array, jax.Array], jax.Array]:
     action_rng_key, new_rng_key = jax.random.split(rng_key)
+    if self.preclamp:
+      # The sampling will clamp the actions to be in (-1, 1), but we might also want
+      # clamp the mean and std themselves.
+      mean_and_std = jp.tanh(mean_and_std)
     mean, std = jp.split(mean_and_std, 2, axis=-1)
-    #mean = jp.zeros_like(mean) #0.0 #0.01
-    std = 0.5#(jax.nn.softplus(std) + self.min_std) * self.std_scale
-    #std = (jp.square(std) + self.min_std) * self.std_scale
+    std = (jax.nn.softplus(std) + self.min_std) * self.std_scale
     if self.deterministic:
       raw_action = mean
     else:
-      raw_action = mean + std * jax.random.normal(action_rng_key, mean.shape) 
+      raw_action = mean + std * jax.random.normal(action_rng_key, mean.shape)
+    raw_action = jax.lax.stop_gradient(raw_action)
     action = jp.tanh(raw_action)
     loglikelihood = self._loglikelihood(raw_action, mean, std)
     # Q: Should entropy cost be negative?
-    entropy_cost = self.entropy_weight * self._entropy(std)
+    entropy_cost = -self.entropy_weight * self._entropy(std)
     return new_rng_key, (action, loglikelihood), entropy_cost
   
   def initialize_state(self, rng: jax.Array) -> jax.Array:
@@ -77,7 +81,7 @@ class NormalSampler(ActionSampler):
   def __call__(self, rng_key, mean_and_std: jax.Array) -> Tuple[jax.Array, Tuple[jax.Array, jax.Array], jax.Array]:
     action_rng_key, new_rng_key = jax.random.split(rng_key)
     mean, std = jp.split(mean_and_std, 2, axis=-1)
-    std = (jax.nn.softplus(std) + self.min_std) * self.std_scale
+    std = 0.25#(jax.nn.softplus(std) + self.min_std) * self.std_scale
     #std = (jp.square(std) + self.min_std) * self.std_scale
     if self.deterministic:
       action = mean

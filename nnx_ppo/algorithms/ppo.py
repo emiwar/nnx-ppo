@@ -39,7 +39,7 @@ def train_ppo(env: mujoco_playground.MjxEnv,
               config: config_dict.ConfigDict = default_config(),
               seed = 17):
     training_state = new_training_state(env, networks, config.n_envs, seed)
-    ppo_step_jit = nnx.jit(ppo_step, static_argnums=(0, 2, 3))
+    ppo_step_jit = nnx.jit(ppo_step, static_argnums=(0, 2, 3, 7))
     while training_state.steps_taken < config.n_steps:
         training_state, metrics = ppo_step_jit(
             env, training_state, 
@@ -128,8 +128,10 @@ def ppo_update(training_state: TrainingState,
     )
     loss_metrics["reward_mean"] = rollout_data.rewards.mean()
     loss_metrics["reward_std"] = rollout_data.rewards.std()
-    loss_metrics["advantage_mean"] = advantages.mean()
-    loss_metrics["advantage_std"] = advantages.std()
+    loss_metrics["advantage/mean"] = advantages.mean()
+    loss_metrics["advantage/std"] = advantages.std()
+    loss_metrics["advantage/min"] = advantages.min()
+    loss_metrics["advantage/max"] = advantages.max()
     loss_metrics["action_mean"] = rollout_data.network_output.actions.mean()
     loss_metrics["action_std"] = rollout_data.network_output.actions.std()
     training_state.optimizer.update(grads)

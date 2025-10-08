@@ -15,11 +15,14 @@ class MoveFromCenterEnv:
         self.border_radius = border_radius
 
     def reset(self, rng):
-        pos = jax.random.normal(rng, (2,))
+        phi, rad = jax.random.uniform(rng, (2,))
+        rad *= self.border_radius*0.9
+        pos = jp.array([jp.cos(2*jp.pi*phi)*rad, jp.sin(2*jp.pi*phi)*rad])
         data = dict(pos=pos)
         return self._get_state(data)
     
     def step(self, state: mujoco_playground.State, action: jax.Array):
+        action = jp.clip(action, -1, 1)
         state = state.replace(
             data = dict(pos=state.data["pos"] + action),
         )

@@ -4,16 +4,12 @@ import jax
 import flax.struct
 from flax import nnx
 
-# Note: raw_actions is the action before applying transforms (e.g., tanh). This is 
-# needed because the inverse (e.g., arctan(action)) might not be numerically stable
-# for large (absolute) values
 @flax.struct.dataclass
 class PPONetworkOutput:
-  actions: jax.Array#Union[Dict, jax.Array]
-  #raw_actions: Union[Dict, jax.Array]
-  loglikelihoods: jax.Array#Union[float, Dict, jax.Array]
-  regularization_loss: jax.Array#Union[float, Dict, jax.Array]
-  value_estimates: jax.Array#Union[float, Dict, jax.Array]
+  actions: jax.Array
+  loglikelihoods: jax.Array
+  regularization_loss: jax.Array
+  value_estimates: jax.Array
   metrics: Dict[str, Any]
 
 class AbstractPPOActorCritic(abc.ABC):
