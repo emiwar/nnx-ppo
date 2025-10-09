@@ -12,10 +12,11 @@ class PPONetworkOutput:
   value_estimates: jax.Array
   metrics: Dict[str, Any]
 
-class AbstractPPOActorCritic(abc.ABC):
+ModuleState = Any #TODO: make into a proper type alias
+class PPONetwork(abc.ABC):
   
   @abc.abstractmethod
-  def __call__(self, network_state, obs) -> Tuple[Any, PPONetworkOutput]:
+  def __call__(self, network_state: ModuleState, obs) -> Tuple[Any, PPONetworkOutput]:
     '''Apply both actor and critic networks to the environment observation `obs`.
     
     Calling the critic on rollouts might be somewhat inefficient, but by grouping
@@ -23,10 +24,13 @@ class AbstractPPOActorCritic(abc.ABC):
     critic share stateful layers.
 
     Args:
-      network_state (PyTree): The activation state of the network plus any RNG keys
-                              used for stochastic layers.
+      network_state (ModuleState): The activation state of the network plus any RNG keys
+                                   used for stochastic layers.
       obs (PyTree): Observation of an environment state. It is a PyTree with the same
                     structure as env.step(...).obs
+      done (jax.Array[bool]): A boolean array of shape (batch_size,) indicating whether
+                              the episode ended at this observation. This should be used to
+                              reset any stateful layers in the network.
 
     Returns: (new_state, network_output)
       new_state (PyTree): An updated network state, including split RNG keys.
@@ -40,29 +44,21 @@ class AbstractPPOActorCritic(abc.ABC):
     
     Note: for multi-agent / modular networks, the returned action, log likelihood, and
           and value estimate may be arbitrary PyTrees instead of floats.
-    '''
-
+  '''
+    
   @abc.abstractmethod
-  def initialize_state(self, rng: jax.Array) -> Dict:
-    '''Initialize a new network state. The state should include all variables
-    that get updated in `__call__`, for example hidden state of recurrent networks and
-    RNG keys for stochastics layers. Weights and other trainable parameters should
-    typically _not_ be included in the state. For state-less networks the state may
-    be empty.'''
+  def initialize_state(self, batch_size: int) -> ModuleState:
+    '''Create an initial state for the network, including RNG keys for any
+    stochastic layers.
 
-  @abc.abstractmethod
-  def reset_state(self, network_state) -> Dict:
-    '''Reset and return the network state. This method is called when the environment
-    is reset due to termination or truncation. Hidden network states should likely be
-    reinitialized, but rngs may be left unchanged.'''
-
+    Args:
+      batch_size (int): The batch size of the returned state.
+      '''
+    
 class StatefulModule(abc.ABC, nnx.Module):
     @abc.abstractmethod
-    def __call__(self, network_state, obs) -> Tuple[Any, Any, Any]:
+    def __call__(self, module_state: ModuleState, obs) -> Tuple[Any, Any, Any]:
         pass
 
-    def initialize_state(self, rng: jax.Array):
-        return ()
-
-    def reset_state(self, network_state):
+    def initialize_state(self, batch_size: int) -> ModuleState:
         return ()

@@ -1,4 +1,4 @@
-from typing import Tuple, Dict, List, Callable
+from typing import Tuple, Dict, List, Callable, Optional
 
 import jax
 import jax.flatten_util
@@ -6,9 +6,11 @@ import jax.numpy as jp
 from flax import nnx
 
 from nnx_ppo.networks.sampling_layers import ActionSampler, NormalTanhSampler
-from nnx_ppo.networks.types import AbstractPPOActorCritic, PPONetworkOutput, StatefulModule
+from nnx_ppo.networks.types import PPONetwork, PPONetworkOutput, StatefulModule, ModuleState
 
-class PPOActorCritic(AbstractPPOActorCritic, nnx.Module):
+class PPOActorCritic(PPONetwork, nnx.Module):
+    '''A general PPO actor-critic network consisting of separate actor and critic
+       networks.'''
 
     def __init__(self, actor: StatefulModule, critic: StatefulModule, action_sampler: ActionSampler, flatten_obs: bool = False):
          self.actor = actor
@@ -18,10 +20,13 @@ class PPOActorCritic(AbstractPPOActorCritic, nnx.Module):
 
     def __call__(self, network_state, obs) -> Tuple[Dict, PPONetworkOutput]:
         if self.flatten_obs:
-            obs, _ = jax.flatten_util.ravel_pytree(obs)
-        network_state["actor"], actor_output, actor_reg = self.actor(network_state["actor"], obs)
-        network_state["action_sampler"], (action, loglikelihood), sampler_reg = self.action_sampler(network_state["action_sampler"], actor_output)
-        network_state["critic"], critic_output, critic_reg = self.critic(network_state["critic"], obs)
+            obs = jax.vmap(lambda obs: jax.flatten_util.ravel_pytree(obs)[0], (0,))(obs)
+        actor_output = self.actor(network_state["actor"], obs)
+        network_state["actor"], sampler_input, actor_reg = actor_output
+        sampler_output = self.action_sampler(network_state["action_sampler"], sampler_input)
+        network_state["action_sampler"], (action, loglikelihood), sampler_reg = sampler_output
+        critic_output = self.critic(network_state["critic"], obs)
+        network_state["critic"], critic_output, critic_reg = critic_output
         total_reg_loss = actor_reg + sampler_reg + critic_reg
         return network_state, PPONetworkOutput(
             actions = action,
@@ -31,31 +36,23 @@ class PPOActorCritic(AbstractPPOActorCritic, nnx.Module):
             metrics = dict()
         )
     
-    def initialize_state(self, rng: jax.Array):
-        actor_rng, critic_rng, sampler_rng = jax.random.split(rng, 3)
+    def initialize_state(self, batch_size: int) -> ModuleState:
         return {
-             "actor": self.actor.initialize_state(actor_rng),
-             "critic": self.critic.initialize_state(critic_rng),
-             "action_sampler": self.action_sampler.initialize_state(sampler_rng),
-        }
-    
-    def reset_state(self, network_state):
-        return {
-             "actor": self.actor.reset_state(network_state["actor"]),
-             "critic": self.critic.reset_state(network_state["critic"]),
-             "action_sampler": self.action_sampler.reset_state(network_state["action_sampler"]),
+             "actor": self.actor.initialize_state(batch_size),
+             "critic": self.critic.initialize_state(batch_size),
+             "action_sampler": self.action_sampler.initialize_state(batch_size),
         }
 
 class MLP(StatefulModule):
     def __init__(self, sizes, rngs,
-                 transfer_function=nnx.softplus,
-                 transfer_function_last_layer: bool=False):
+                 transfer_function=nnx.relu,
+                 transfer_function_last_layer: bool=True):
         din_dout = zip(sizes[:-1], sizes[1:])
         self.layers = [nnx.Linear(din, dout, rngs=rngs) for (din, dout) in din_dout]
         self.transfer_function = transfer_function
         self.transfer_function_last_layer = transfer_function_last_layer
 
-    def __call__(self, state, x):
+    def __call__(self, state: Tuple, x: jax.Array):
         for layer in self.layers[:-1]:
             x = self.transfer_function(layer(x))
         x = self.layers[-1](x)
@@ -72,7 +69,9 @@ class MLPActorCritic(PPOActorCritic):
                  critic_hidden_sizes: List[int],
                  rngs: nnx.Rngs,
                  transfer_function: Callable = nnx.relu,
-                 action_sampler: ActionSampler = NormalTanhSampler(entropy_weight=1e-4)):
+                 action_sampler: Optional[ActionSampler] = None):
+        if action_sampler is None:
+          action_sampler = NormalTanhSampler(rngs, entropy_weight=1e-3)
         obs_size = int(jp.sum(jax.flatten_util.ravel_pytree(obs_size)[0]))
         action_size = int(jp.sum(jax.flatten_util.ravel_pytree(action_size)[0]))
         actor_sizes = [obs_size] + actor_hidden_sizes + [action_size*2]
@@ -96,18 +95,11 @@ class Sequential(StatefulModule):
             regularization_loss += layer_reg_loss
         return new_network_state, x, regularization_loss
     
-    def initialize_state(self, rng: jax.Array) -> List:
+    def initialize_state(self, batch_size) -> List:
         state = []
-        rngs = jax.random.split(rng, len(self.layers))
-        for layer, layer_rng in zip(self.layers, rngs):
-            state.append(layer.initialize_state(layer_rng))
+        for layer in self.layers:
+            state.append(layer.initialize_state(batch_size))
         return state
-
-    def reset_state(self, network_state: List):
-        new_state = []
-        for layer, old_state in zip(self.layers, network_state):
-            new_state.append(layer.reset_state(old_state))
-        return new_state
     
     def __getitem__(self, ind) -> StatefulModule:
         return self.layers[ind]

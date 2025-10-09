@@ -46,18 +46,12 @@ class ModulesTest(absltest.TestCase):
                                          actor_layer.kernel.raw_value))
 
     def test_init_state(self):
-
         net = self.mlp_net
-        
-        key = jax.random.key(seed=17)
 
         # Init
-        first_state = net.initialize_state(key)
+        first_state = net.initialize_state(batch_size=17)
         self.assertDictContainsSubset({"actor": (), "critic": ()}, first_state)
 
-        # Reset
-        second_state = net.reset_state(first_state)
-        self.assertEqual(first_state, second_state)
 
     def test_simple_input(self):
         net = self.mlp_net
@@ -72,16 +66,12 @@ class ModulesTest(absltest.TestCase):
 
     def test_simple_input_jit(self):
         @nnx.jit
-        def init_state(net, key):
-            return net.initialize_state(key)
+        def init_state(net, batch_size: int):
+            return net.initialize_state(batch_size)
         
         @nnx.jit
         def call_net(net, state, x):
             return net(state, x)
-        
-        @nnx.jit
-        def reset_state(net, state):
-            return net.reset_state(state)
         
         net = self.mlp_net
         key = jax.random.key(seed=18)
@@ -95,57 +85,15 @@ class ModulesTest(absltest.TestCase):
         next_state, output = call_net(net, next_state, simple_obs)
         self.assertIsInstance(output, types.PPONetworkOutput)
         self.assertDictContainsSubset({"actor": (), "critic": ()}, next_state)
-        self.assertNotEqual(next_state["action_sampler"], first_state["action_sampler"])
 
-        next_state = reset_state(net, next_state)
-        self.assertDictContainsSubset({"actor": (), "critic": ()}, next_state)
-        self.assertNotEqual(next_state["action_sampler"], first_state["action_sampler"])
-
-    def test_init_state_vmap(self):
-        @nnx.vmap(in_axes=(None, 0))
-        def init_state(net, key):
-            return net.initialize_state(key)
-        
-        @nnx.vmap(in_axes=(None, 0))
-        def reset_state(net, states):
-            return net.reset_state(states)
-
-        n_envs = 256
-        net = self.mlp_net
-        key = jax.random.key(seed=19)
-
-        # Init
-        init_keys = jax.random.split(key, n_envs)
-        first_state = init_state(net, init_keys)
-        self.assertDictContainsSubset({"actor": (), "critic": ()}, first_state)
-        self.assertEquals(first_state["action_sampler"].shape[0], n_envs)
-
-        # Reset
-        second_state = reset_state(net, first_state)
-        self.assertDictEqual(first_state, second_state)
-
-    def test_simple_input_vmap(self):
-        @nnx.vmap(in_axes=(None, 0))
-        def init_state(net, key):
-            return net.initialize_state(key)
-        
-        @nnx.vmap(in_axes=(None, 0, 0))
-        def call_net(net, state, x):
-            return net(state, x)
-        
-        @nnx.vmap(in_axes=(None, 0))
-        def reset_state(net, state):
-            return net.reset_state(state)
-        
+    def test_simple_input_batched(self):
         net = self.mlp_net
         n_envs = 256
         key = jax.random.key(seed=21)
-        obs_key, net_init_key = jax.random.split(key)
-        simple_obs = jax.random.normal(obs_key, (n_envs, self.obs_size))
+        simple_obs = jax.random.normal(key, (n_envs, self.obs_size))
 
-        init_keys = jax.random.split(net_init_key, n_envs)
-        first_state = init_state(net, init_keys)
-        next_state, first_output = call_net(net, first_state, simple_obs)
+        first_state = net.initialize_state(n_envs)
+        next_state, first_output = net(first_state, simple_obs)
         self.assertIsInstance(first_output, types.PPONetworkOutput)
         self.assertEquals(first_output.actions.shape, (n_envs, self.action_size))
         self.assertEquals(first_output.loglikelihoods.shape, (n_envs,))
@@ -153,18 +101,14 @@ class ModulesTest(absltest.TestCase):
         self.assertLess(jp.min(first_output.value_estimates), -0.2)
         self.assertGreater(jp.max(first_output.value_estimates), 0.2)
 
-        next_state, second_output = call_net(net, next_state, simple_obs)
+        next_state, second_output = net(next_state, simple_obs)
         self.assertIsInstance(second_output, types.PPONetworkOutput)
         self.assertDictContainsSubset({"actor": (), "critic": ()}, next_state)
-        self.assertFalse(jp.allclose(next_state["action_sampler"], first_state["action_sampler"]))
+        #self.assertFalse(jp.allclose(next_state["action_sampler"], first_state["action_sampler"]))
         self.assertFalse(jp.allclose(first_output.actions, second_output.actions),
                          "Stochasticity in actions.")
         self.assertTrue(jp.allclose(first_output.value_estimates, second_output.value_estimates),
                         "No stochasticity in critic.")
-
-        next_state = reset_state(net, next_state)
-        self.assertDictContainsSubset({"actor": (), "critic": ()}, next_state)
-        self.assertFalse(jp.allclose(next_state["action_sampler"], first_state["action_sampler"]))
 
     def test_action_sampler_train_and_eval_mode(self):
         net = self.mlp_net

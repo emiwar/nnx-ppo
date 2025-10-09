@@ -9,7 +9,7 @@ import jax.numpy as jp
 from jax.experimental import checkify
 import optax
 
-from nnx_ppo.networks.types import AbstractPPOActorCritic, PPONetworkOutput
+from nnx_ppo.networks.types import PPONetwork, PPONetworkOutput
 from nnx_ppo.algorithms import rollout
 
 def default_config() -> config_dict.ConfigDict:
@@ -25,7 +25,7 @@ def default_config() -> config_dict.ConfigDict:
 
 @flax.struct.dataclass
 class TrainingState:
-    networks: AbstractPPOActorCritic
+    networks: PPONetwork
     network_states: Any
     env_states: mujoco_playground.State
     optimizer: nnx.Optimizer
@@ -35,7 +35,7 @@ class TrainingState:
 #rng_state_axes = nnx.StateAxes({nnx.RngState: 0, nnx.Param: None})
 
 def train_ppo(env: mujoco_playground.MjxEnv,
-              networks: AbstractPPOActorCritic,
+              networks: PPONetwork,
               config: config_dict.ConfigDict = default_config(),
               seed = 17):
     training_state = new_training_state(env, networks, config.n_envs, seed)
@@ -97,7 +97,7 @@ def ppo_update(training_state: TrainingState,
     # We need the value of the final observation
     #@nnx.split_rngs(splits=rollout_data.done.shape[0])
     @nnx.vmap(in_axes=(None, 0, 0), out_axes=0)
-    def apply_critic(networks: AbstractPPOActorCritic, network_state, obs):
+    def apply_critic(networks: PPONetwork, network_state, obs):
         _, network_output = networks(network_state, obs)
         return network_output.value_estimates
     last_obs = jax.tree.map(lambda x: x[:, -1], rollout_data.next_obs)
@@ -160,7 +160,7 @@ def gae(rewards, values, done, truncation, lambda_: float, gamma: float):
                               truncated=truncation)
     return advantages
 
-def ppo_loss(networks: AbstractPPOActorCritic, network_state,
+def ppo_loss(networks: PPONetwork, network_state,
              observations, actions, old_loglikelihoods, target_values,
              advantages, next_net_state, clip_range, normalize_advantages):
     metrics = dict()
@@ -211,7 +211,7 @@ def ppo_loss(networks: AbstractPPOActorCritic, network_state,
     return total_loss, metrics
 
 def new_training_state(env: mujoco_playground.MjxEnv,
-                       networks: AbstractPPOActorCritic,
+                       networks: PPONetwork,
                        n_envs: int,
                        seed: int,
                        learning_rate: float=1e-4):
