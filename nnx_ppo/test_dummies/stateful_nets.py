@@ -15,17 +15,15 @@ class RepeatAndCountNet(types.PPONetwork, nnx.Module):
         self.n_calls = Count(0)
     
     def __call__(self, state, obs) -> Tuple[Any, types.PPONetworkOutput]:
-        self.n_calls += 1
+        batch_size = obs.shape[0]
+        self.n_calls += batch_size
         return (), types.PPONetworkOutput(
             actions=obs,
-            loglikelihoods=jp.array(1.0),
+            loglikelihoods=jp.ones(batch_size),
             regularization_loss=jp.array(0.0),
-            value_estimates=jp.array(1.0),
+            value_estimates=jp.ones(batch_size),
             metrics={}
         )
     
-    def initialize_state(self, rng: jax.Array) -> Tuple:
-        return ()
-    
-    def reset_state(self, network_state) -> Tuple:
+    def initialize_state(self, batch_size: int) -> Tuple:
         return ()

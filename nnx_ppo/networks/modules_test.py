@@ -57,10 +57,9 @@ class ModulesTest(absltest.TestCase):
         net = self.mlp_net
         
         key = jax.random.key(seed=18)
-        obs_key, net_init_key = jax.random.split(key)
-        simple_obs = jax.random.normal(obs_key, (self.obs_size,))
+        simple_obs = jax.random.normal(key, (1, self.obs_size))
 
-        first_state = net.initialize_state(net_init_key)
+        first_state = net.initialize_state(1)
         next_state, output = net(first_state, simple_obs)
         self.assertIsInstance(output, types.PPONetworkOutput)
 
@@ -74,11 +73,10 @@ class ModulesTest(absltest.TestCase):
             return net(state, x)
         
         net = self.mlp_net
-        key = jax.random.key(seed=18)
-        obs_key, net_init_key = jax.random.split(key)
-        simple_obs = jax.random.normal(obs_key, (self.obs_size,))
+        key = jax.random.key(seed=19)
+        simple_obs = jax.random.normal(key, (1, self.obs_size))
 
-        first_state = init_state(net, net_init_key)
+        first_state = init_state(net, 1)
         next_state, output = call_net(net, first_state, simple_obs)
         self.assertIsInstance(output, types.PPONetworkOutput)
 

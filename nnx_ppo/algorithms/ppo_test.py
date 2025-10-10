@@ -67,30 +67,13 @@ class PPOTest(absltest.TestCase):
 
 
     def test_rollout_only(self):
-        def unroll(env: mujoco_playground.MjxEnv,
-                   training_state: ppo.TrainingState,
-                   n_envs: int, rollout_length: int):
-            reset_keys = jax.random.split(training_state.rng_key, n_envs)
-
-            unroll_vmap = nnx.vmap(rollout.unroll_env,
-                                in_axes  = (None, 0, None, 0, None, 0),
-                                out_axes = (0, 0, 0))
-            unroll_vmap = nnx.split_rngs(splits=n_envs)(unroll_vmap)
-            _, _, rollout_data = unroll_vmap(
-                env,
-                training_state.env_states,
-                training_state.networks,
-                training_state.network_states,
-                rollout_length,
-                reset_keys
-            )
-            return rollout_data
-        
         SEED = 18
         config = ppo.default_config()
         training_state = nnx.jit(ppo.new_training_state, static_argnums=(0, 2))(self.env, self.nets, config.n_envs, SEED)
-        unroll_jit = nnx.jit(unroll, static_argnums=(0, 2, 3))
-        unroll_jit(self.env, training_state, config.n_envs, config.rollout_length)
+        unroll_jit = nnx.jit(rollout.unroll_env, static_argnums=(0, 4))
+        unroll_jit(self.env, training_state.env_states, training_state.networks,
+                   training_state.network_states, config.rollout_length,
+                   training_state.rng_key)
 
     def test_ppo_full_loop(self):
         SEED = 21
@@ -100,24 +83,24 @@ class PPOTest(absltest.TestCase):
         SEED = 23
         N_ENVS = 512
         T_STEPS = 100
-        gamma = 0.0 #0.8
-        lambda_ = 0.0 #0.95
+        gamma = 0.8
+        lambda_ = 0.95
 
         np.random.seed(SEED)
-        rewards = np.random.normal(size=(N_ENVS, T_STEPS))
-        values = np.random.normal(size=(N_ENVS, T_STEPS+1))
-        done = np.random.choice([True, False], size=(N_ENVS, T_STEPS), p=[0.01, 0.99])
-        truncation = np.random.choice([True, False], size=(N_ENVS, T_STEPS))
+        rewards = np.random.normal(size=(T_STEPS, N_ENVS))
+        values = np.random.normal(size=(T_STEPS+1, N_ENVS))
+        done = np.random.choice([True, False], size=(T_STEPS, N_ENVS), p=[0.01, 0.99])
+        truncation = np.random.choice([True, False], size=(T_STEPS, N_ENVS))
         truncation = np.logical_and(done, truncation)
     
-        advantages = np.full((N_ENVS, T_STEPS), np.nan)
+        advantages = np.full((T_STEPS, N_ENVS), np.nan)
         for t in reversed(range(T_STEPS)):
-            next_values = values[:, t+1].copy()
-            next_values[done[:, t]] = 0.0
-            next_values[truncation[:, t]] = values[truncation[:, t], t]
-            advantages[:, t] = rewards[:, t] + gamma * next_values - values[:, t]
+            next_values = values[t+1, :].copy()
+            next_values[done[t, :]] = 0.0
+            next_values[truncation[t, :]] = values[t, truncation[t, :]]
+            advantages[t, :] = rewards[t, :] + gamma * next_values - values[t, :]
             if t < T_STEPS-1:
-                advantages[:, t] += gamma * lambda_ * advantages[:, t+1] * (1 - done[:, t])
+                advantages[t, :] += gamma * lambda_ * advantages[t+1, :] * (1 - done[t, :])
 
         ppo_advantages = ppo.gae(rewards=jp.array(rewards),
                                  values=jp.array(values),
