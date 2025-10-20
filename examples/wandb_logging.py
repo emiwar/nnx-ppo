@@ -7,7 +7,7 @@ from flax import nnx
 import wandb
 
 from nnx_ppo.networks.modules import MLPActorCritic
-from nnx_ppo.networks.sampling_layers import NormalSampler, NormalTanhSampler
+from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 from nnx_ppo.algorithms import ppo, rollout
 
 from nnx_ppo.wrappers import episode_wrapper
@@ -32,14 +32,15 @@ else:
 train_env = env#episode_wrapper.EpisodeWrapper(env, 100)
 eval_env = env
 
+rngs = nnx.Rngs(SEED)
 nets = MLPActorCritic(env.observation_size, env.action_size,
-                      actor_hidden_sizes=[1024, 1024],
-                      critic_hidden_sizes=[1024, 1024],
-                      rngs=nnx.Rngs(SEED),
+                      actor_hidden_sizes=[256, 256],
+                      critic_hidden_sizes=[256, 256],
+                      rngs=rngs,
                       transfer_function=nnx.tanh,
-                      action_sampler=NormalTanhSampler(entropy_weight=1e-3, min_std=1e-3, std_scale=1.0))
+                      action_sampler=NormalTanhSampler(rngs, entropy_weight=1e-3, min_std=1e-3, std_scale=1.0))
 config = ppo.default_config()
-config.normalize_advantages = True
+config.normalize_advantages = False
 #config.discounting_factor = 0.0
 now = datetime.now()
 timestamp = now.strftime("%Y%m%d-%H%M%S")
@@ -53,7 +54,7 @@ wandb.init(project="nnx-ppo-basic-tests",
 
 training_state = ppo.new_training_state(train_env, nets, n_envs=config.n_envs, learning_rate=1e-4, seed=SEED)
 #training_state.env_states.info["step_counter"] = jax.random.randint(jax.random.key(SEED), (config.n_envs,), 0, 100)
-ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7))
+ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8))
 eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3))
 
 nets.eval() # Set network to eval mode
@@ -61,21 +62,15 @@ eval_metrics = eval_rollout_jit(eval_env, nets, 64, 100, jax.random.key(SEED))
 wandb.log({**eval_metrics, "n_steps": training_state.steps_taken})
 nets.train() # Set the network back to train mode
 
-@nnx.jit(static_argnums=(0, 2, 3))
-def extra_logging(env, training_state, n_envs: int, rollout_length: int):
-    reset_key, new_key = jax.random.split(training_state.rng_key)
-    reset_keys = jax.random.split(reset_key, n_envs)
-    unroll_vmap = nnx.vmap(rollout.unroll_env,
-                           in_axes  = (None, 0, None, 0, None, 0),
-                           out_axes = (0, 0, 0))
-    unroll_vmap = nnx.split_rngs(splits=n_envs)(unroll_vmap)
-    next_net_state, next_env_state, rollout_data = unroll_vmap(
+@nnx.jit(static_argnums=(0, 2))
+def extra_logging(env, training_state, rollout_length: int):
+    _, _, rollout_data = rollout.unroll_env(
         env,
         training_state.env_states,
         training_state.networks,
         training_state.network_states,
         rollout_length,
-        reset_keys
+        training_state.rng_key
     )
     return action_sigma_debug.extra_metrics(training_state.networks, rollout_data)
 
@@ -84,9 +79,10 @@ for iter in range(5_000):
         train_env, training_state, 
         config.n_envs, config.rollout_length,
         config.gae_lambda, config.discounting_factor,
-        config.clip_range, config.normalize_advantages
+        config.clip_range, config.normalize_advantages,
+        ppo.LoggingLevel.ALL
     )
-    metrics.update(extra_logging(train_env, training_state, 256, config.rollout_length))
+    metrics.update(extra_logging(train_env, training_state, config.rollout_length))
     training_state = new_training_state
     if iter % 1 == 0:
         nets.eval() # Set network to eval mode

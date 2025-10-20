@@ -84,7 +84,7 @@ def eval_rollout(env: mjx_env.MjxEnv,
 
   def step(env, networks, carry):
     env_state, network_state, cuml_reward, lifespan = carry
-    next_network_state, network_output = networks(network_state, env_state.obs, env_state.done)
+    next_network_state, network_output = networks(network_state, env_state.obs)
     next_env_state = jax.vmap(env.step)(env_state, network_output.actions)
     next_env_state = next_env_state.replace(done = jp.logical_or(next_env_state.done, env_state.done).astype(float))
     cuml_reward += jp.where(next_env_state.done, 0.0, next_env_state.reward)

@@ -11,6 +11,7 @@ import mujoco_playground
 
 from nnx_ppo.networks import modules, types
 from nnx_ppo.algorithms import rollout, ppo
+import nnx_ppo.test_dummies.move_to_center_env
 
 class PPOTest(absltest.TestCase):
 
@@ -110,3 +111,36 @@ class PPOTest(absltest.TestCase):
                                  gamma=gamma)
         max_diff = jp.max(jp.abs(jp.array(advantages) - ppo_advantages))
         self.assertLess(max_diff, 1e-6)
+
+    def test_ppo_move_to_center_env(self):
+        SEED = 22
+        env = nnx_ppo.test_dummies.move_to_center_env.MoveToCenterEnv(reward_falloff=1.0, border_radius=10.0)
+        nets = modules.MLPActorCritic(env.observation_size, env.action_size,
+                                      actor_hidden_sizes=[128, 128],
+                                      critic_hidden_sizes=[128, 128],
+                                      rngs = nnx.Rngs(SEED, action_sampling=SEED))
+        config = ppo.default_config()
+        training_state = ppo.new_training_state(env, nets, config.n_envs, SEED)
+        ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8))
+        n_updates = 0
+        while training_state.steps_taken < config.n_steps:
+            training_state, metrics = ppo_step_jit(
+                env, training_state, 
+                config.n_envs, config.rollout_length,
+                config.gae_lambda, config.discounting_factor,
+                config.clip_range, config.normalize_advantages,
+                ppo.LoggingLevel.ASSERTS
+            )
+            n_updates += 1
+            self.assertEqual(training_state.steps_taken, n_updates * config.rollout_length * config.n_envs)
+            self.assertTrue(metrics["asserts/module_state_identical"])
+            self.assertTrue(metrics["asserts/net_state_identical"])
+            self.assertLess(metrics["asserts/actions_max_diff"], 1e-6)
+            self.assertLess(metrics["asserts/likelihoods_max_diff"], 1e-6)
+            self.assertLess(metrics["asserts/critic_values_max_diff"], 1e-6)
+            
+
+            #Arbitraray threshold that empirically has been reasonably easy to reach
+            if training_state.steps_taken > 1_500_000:
+                self.assertGreater(metrics["episode_reward_mean"].max(), 95.0)
+            

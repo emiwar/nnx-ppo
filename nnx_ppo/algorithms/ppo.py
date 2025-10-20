@@ -44,8 +44,8 @@ class LoggingLevel(enum.Flag):
 def train_ppo(env: mujoco_playground.MjxEnv,
               networks: PPONetwork,
               config: config_dict.ConfigDict = default_config(),
-              seed = 17,
-              logging_level=LoggingLevel.BASIC):
+              seed: int = 17,
+              logging_level: LoggingLevel = LoggingLevel.BASIC):
     training_state = new_training_state(env, networks, config.n_envs, seed)
     ppo_step_jit = nnx.jit(ppo_step, static_argnums=(0, 2, 3, 7, 8))
     while training_state.steps_taken < config.n_steps:
@@ -56,8 +56,8 @@ def train_ppo(env: mujoco_playground.MjxEnv,
             config.clip_range, config.normalize_advantages,
             logging_level
         )
+    return training_state, metrics
 
-#@nnx.jit
 def ppo_step(env: mujoco_playground.MjxEnv,
              training_state: TrainingState,
              n_envs: int,
@@ -68,6 +68,7 @@ def ppo_step(env: mujoco_playground.MjxEnv,
              normalize_advantages: bool,
              logging_level: LoggingLevel = LoggingLevel.LOSSES) -> Tuple[TrainingState, Dict]:
     reset_key, new_key = jax.random.split(training_state.rng_key)
+    pre_rollout_module_state = nnx.state(training_state.networks)
     next_net_state, next_env_state, rollout_data = rollout.unroll_env(
         env,
         training_state.env_states,
@@ -76,34 +77,13 @@ def ppo_step(env: mujoco_playground.MjxEnv,
         rollout_length,
         reset_key
     )
-    loss_metrics = ppo_update(training_state, rollout_data, next_net_state,
-                              gae_lambda, discounting_factor, clip_range, normalize_advantages,
-                              logging_level)
+    if LoggingLevel.ASSERTS in logging_level:
+        post_rollout_module_state = nnx.state(training_state.networks)
 
-    # An important trick here is that ppo_update is run _before_ updating
-    # the training state. This ensures the updates start from the same
-    # `network_states` as the rollouts did, which is necessary for the gradients
-    # to be correct.
-    training_state = training_state.replace(
-        network_states = next_net_state,
-        env_states = next_env_state,
-        rng_key = new_key,
-        steps_taken = training_state.steps_taken + rollout_length * n_envs,
-    )
-    return training_state, loss_metrics
-
-def ppo_update(training_state: TrainingState,
-               rollout_data: rollout.Transition,
-               next_net_state,
-               gae_lambda: float,
-               discounting_factor: float,
-               clip_range: float,
-               normalize_advantages: bool,
-               logging_level: LoggingLevel) -> Dict:
     # We need the value of the final observation
     last_obs = jax.tree.map(lambda x: x[-1], rollout_data.next_obs)
     _, network_output = training_state.networks(next_net_state, last_obs)
-    last_value = network_output.value_estimates#apply_critic(training_state.networks, next_net_state, last_obs)
+    last_value = network_output.value_estimates
     last_value = last_value.reshape((1, last_value.shape[0]))
     values_excl_last = rollout_data.network_output.value_estimates
     values_incl_last = jp.concatenate((values_excl_last, last_value), axis=0)
@@ -116,7 +96,14 @@ def ppo_update(training_state: TrainingState,
                      gamma = discounting_factor)
     assert advantages.shape == values_excl_last.shape
     target_values = values_excl_last + advantages
-    grads, loss_metrics = nnx.grad(ppo_loss, has_aux=True)(
+
+    # Rollback any module state changes that happened during the rollout, including
+    # RNG state. Second, we use the network states from training_state, which has not
+    # yet been updated to next_net_state. This ensures the updates start from the same
+    # `network_states` as the rollouts did, which is necessary for the gradients
+    # to be correct.
+    nnx.update(training_state.networks, pre_rollout_module_state)
+    grads, metrics = nnx.grad(ppo_loss, has_aux=True)(
         networks = training_state.networks,
         network_state = training_state.network_states,
         observations = rollout_data.obs,
@@ -130,16 +117,29 @@ def ppo_update(training_state: TrainingState,
         logging_level = logging_level
     )
     if LoggingLevel.TRAIN_ROLLOUT_STATS in logging_level:
-        loss_metrics["reward_mean"] = rollout_data.rewards.mean()
-        loss_metrics["reward_std"] = rollout_data.rewards.std()
-        loss_metrics["advantage/mean"] = advantages.mean()
-        loss_metrics["advantage/std"] = advantages.std()
-        loss_metrics["advantage/min"] = advantages.min()
-        loss_metrics["advantage/max"] = advantages.max()
-        loss_metrics["action_mean"] = rollout_data.network_output.actions.mean()
-        loss_metrics["action_std"] = rollout_data.network_output.actions.std()
+        metrics["reward_mean"] = rollout_data.rewards.mean()
+        metrics["reward_std"] = rollout_data.rewards.std()
+        metrics["advantage/mean"] = advantages.mean()
+        metrics["advantage/std"] = advantages.std()
+        metrics["advantage/min"] = advantages.min()
+        metrics["advantage/max"] = advantages.max()
+        metrics["action_mean"] = rollout_data.network_output.actions.mean()
+        metrics["action_std"] = rollout_data.network_output.actions.std()
+    if LoggingLevel.ASSERTS in logging_level:
+        post_update_module_state = nnx.state(training_state.networks)
+        metrics["asserts/module_state_identical"] = jax.tree.reduce(jp.logical_and, jax.tree.map(jp.allclose, post_rollout_module_state, post_update_module_state), jp.array(True)).astype(int)
     training_state.optimizer.update(grads)
-    return loss_metrics
+
+    # Now that all updates are done, we can replace all the network (and environment)
+    # states in training state. Note that this would have been incorrect to update
+    # earlier (see note above).
+    training_state = training_state.replace(
+        network_states = next_net_state,
+        env_states = next_env_state,
+        rng_key = new_key,
+        steps_taken = training_state.steps_taken + rollout_length * n_envs,
+    )
+    return training_state, metrics
 
 def gae(rewards, values, done, truncation, lambda_: float, gamma: float):
     assert values.shape == (rewards.shape[0]+1, rewards.shape[1])
