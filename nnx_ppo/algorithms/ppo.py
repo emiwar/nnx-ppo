@@ -40,6 +40,7 @@ class LoggingLevel(enum.Flag):
     ASSERTS = enum.auto()
     BASIC = LOSSES
     ALL = LOSSES | CRITIC_EXTRA | TRAIN_ROLLOUT_STATS | ASSERTS
+    NONE = 0
 
 def train_ppo(env: mujoco_playground.MjxEnv,
               networks: PPONetwork,
