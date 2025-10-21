@@ -54,11 +54,64 @@ class PPONetwork(abc.ABC):
     Args:
       batch_size (int): The batch size of the returned state.
       '''
-    
+
+@flax.struct.dataclass
+class StatefulModuleOutput:
+  next_state: ModuleState
+  output: Any #TODO: narrow this down
+  regularization_loss: jax.Array
+  metrics: Dict[str, jax.Array]
+
 class StatefulModule(abc.ABC, nnx.Module):
+    '''Abstract base class for network modules and layers, specifying the interface 
+    with the RL algorithm. Each module treated as stateful, with non-stateful modules
+    having empty states.
+    
+    There are two types of module state. First, there is the state of the `nnx.Module`
+    which follows the common NNX patterns. This state stores trainable parameters
+    (of type `nnx.Param`) as well as any `RNGStreams` and other variables. This state
+    is _not_ reset when the RL environment is reset.
+
+    Second, there is an explicit carry state that is intended for stateful network
+    layers, e.g. the hidden activations of RNNs. This state _is_ reset when the RL
+    environment is reset.
+    '''
+    
     @abc.abstractmethod
-    def __call__(self, module_state: ModuleState, obs) -> Tuple[Any, Any, Any]:
-        pass
+    def __call__(self, module_state: ModuleState, obs) -> StatefulModuleOutput:
+        '''Args:
+          module_state (ModuleState):
+            The current state of the module.
+          obs (PyTree):
+            Observation(s) to process. Leading dimension is batch.
+        Returns (StatefulModuleOutput):
+          next_state (ModuleState):
+            The updated module state after processing `obs`. Should have the same
+            structure as `module_state`.
+          output (PyTree):
+            The output of the network module. Should have batch as leading dimension.
+          regularization_loss (float):
+            A floating-point value that is added to the total loss. Useful for
+            adding regularization or co-objectives to the networks.
+          metrics (Dict[str, jax.Array]):
+            Any logging metrics.
+        '''
 
     def initialize_state(self, batch_size: int) -> ModuleState:
+        '''Create a new state for this module.
+
+        Args:
+        batch_size (int): The batch size
+
+        Returns:
+        A `ModuleState` with `batch_size` as the leading dimension on any
+        arrays in the tree. The default is an empty tuple, representing a
+        stateless module.
+
+        Notes:
+        As JAX does not allow parallellized conditional evaluation, this 
+        method will be called on every step. For environments where `done=True`,
+        the corresponding network state will be replaced with the return value of
+        this method.
+        '''
         return ()

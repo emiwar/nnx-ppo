@@ -6,7 +6,7 @@ import jax.numpy as jp
 from flax import nnx
 
 from nnx_ppo.networks.sampling_layers import ActionSampler, NormalTanhSampler
-from nnx_ppo.networks.types import PPONetwork, PPONetworkOutput, StatefulModule, ModuleState
+from nnx_ppo.networks.types import PPONetwork, PPONetworkOutput, StatefulModule, ModuleState, StatefulModuleOutput
 
 class PPOActorCritic(PPONetwork, nnx.Module):
     '''A general PPO actor-critic network consisting of separate actor and critic
@@ -22,17 +22,19 @@ class PPOActorCritic(PPONetwork, nnx.Module):
         if self.flatten_obs:
             obs = jax.vmap(lambda obs: jax.flatten_util.ravel_pytree(obs)[0], (0,))(obs)
         actor_output = self.actor(network_state["actor"], obs)
-        network_state["actor"], sampler_input, actor_reg = actor_output
-        sampler_output = self.action_sampler(network_state["action_sampler"], sampler_input)
-        network_state["action_sampler"], (action, loglikelihood), sampler_reg = sampler_output
+        sampler_output = self.action_sampler(network_state["action_sampler"], actor_output.output)
+        action, loglikelihood = sampler_output.output
         critic_output = self.critic(network_state["critic"], obs)
-        network_state["critic"], critic_output, critic_reg = critic_output
-        total_reg_loss = actor_reg + sampler_reg + critic_reg
+        network_state["actor"] = actor_output.next_state
+        network_state["action_sampler"] = sampler_output.next_state
+        network_state["critic"] = critic_output.next_state
+        
+        total_reg_loss = actor_output.regularization_loss + sampler_output.regularization_loss + critic_output.regularization_loss
         return network_state, PPONetworkOutput(
             actions = action,
             loglikelihoods = loglikelihood,
             regularization_loss = total_reg_loss,
-            value_estimates = critic_output,
+            value_estimates = critic_output.output,
             metrics = dict()
         )
     
@@ -52,14 +54,13 @@ class MLP(StatefulModule):
         self.transfer_function = transfer_function
         self.transfer_function_last_layer = transfer_function_last_layer
 
-    def __call__(self, state: Tuple, x: jax.Array):
+    def __call__(self, state: Tuple, x: jax.Array) -> StatefulModuleOutput:
         for layer in self.layers[:-1]:
             x = self.transfer_function(layer(x))
         x = self.layers[-1](x)
         if self.transfer_function_last_layer:
             x = self.transfer_function(x)
-        regularization_loss = 0.0
-        return state, x, regularization_loss
+        return StatefulModuleOutput(state, x, jp.array(0.0), {})
 
 class MLPActorCritic(PPOActorCritic):
     def __init__(self,
@@ -85,15 +86,17 @@ class Sequential(StatefulModule):
     def __init__(self, layers: List[StatefulModule]):
         self.layers = layers
 
-    def __call__(self, network_state: List, obs):
+    def __call__(self, network_state: List, obs) -> StatefulModuleOutput:
         new_network_state = []
         x = obs
-        regularization_loss = 0.0
+        regularization_loss = jp.array(0.0)
         for layer, layer_state in zip(self.layers, network_state):
-            new_state, x, layer_reg_loss = layer(layer_state, x)
+            layer_output = layer(layer_state, x)
+            new_state = layer_output.next_state
+            x = layer_output.output
             new_network_state.append(new_state)
-            regularization_loss += layer_reg_loss
-        return new_network_state, x, regularization_loss
+            regularization_loss += layer_output.regularization_loss
+        return StatefulModuleOutput(new_network_state, x, regularization_loss, {})
     
     def initialize_state(self, batch_size) -> List:
         state = []

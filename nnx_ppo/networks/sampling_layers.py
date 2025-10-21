@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jp
 from flax import nnx
 
-from nnx_ppo.networks.types import StatefulModule
+from nnx_ppo.networks.types import StatefulModule, StatefulModuleOutput
 
 class ActionSampler(StatefulModule):
   pass
@@ -12,7 +12,7 @@ class ActionSampler(StatefulModule):
 class NormalTanhSampler(ActionSampler):
   """Normal distribution followed by tanh."""
 
-  def __init__(self, rng: nnx.Rngs, entropy_weight: float, min_std: float=1e-3, std_scale:float=1.0, preclamp: bool=True):
+  def __init__(self, rng: nnx.Rngs, entropy_weight: float, min_std: float=1e-3, std_scale:float=1.0, preclamp: bool=False):
     self.rng = rng
     self.min_std = min_std
     self.std_scale = std_scale
@@ -20,7 +20,7 @@ class NormalTanhSampler(ActionSampler):
     self.deterministic = False
     self.entropy_weight = entropy_weight
 
-  def __call__(self, state, mean_and_std: jax.Array) -> Tuple[Tuple[()], Tuple[jax.Array, jax.Array], jax.Array]:
+  def __call__(self, state, mean_and_std: jax.Array) -> StatefulModuleOutput:
     if self.preclamp:
       # The sampling will clamp the actions to be in (-1, 1), but we might also want
       # clamp the mean and std themselves.
@@ -35,7 +35,12 @@ class NormalTanhSampler(ActionSampler):
     action = jp.tanh(raw_action)
     loglikelihood = self._loglikelihood(raw_action, mean, std)
     entropy_cost = -self.entropy_weight * self._entropy(std)
-    return (), (action, loglikelihood), entropy_cost
+    return StatefulModuleOutput(
+      next_state=(),
+      output=(action, loglikelihood),
+      regularization_loss=entropy_cost,
+      metrics=dict(),
+    )
   
   def initialize_state(self, batch_size: int) -> Tuple[()]:
     return ()
