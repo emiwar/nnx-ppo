@@ -53,8 +53,8 @@ class NormalTanhSampler(ActionSampler):
     log_normalization = 0.5 * jp.log(2.0 * jp.pi) + jp.log(std)
     log_prob = log_unnormalized - log_normalization
 
-    # Modify the log-likelihood due to tanh transformation. Should be log|d/dx tanh(z)|.
-    # The expression below is a numerically stable version of log|d/dx tanh(z)| borrowed from Brax
+    # Modify the log-likelihood due to tanh transformation. Should be log|d/dz tanh(z)|.
+    # The expression below is a numerically stable version of log|d/dz tanh(z)| borrowed from Brax
     log_det_jacobian = 2.0 * (jp.log(2.0) - z - jax.nn.softplus(-2.0 * z))
     log_prob -= log_det_jacobian
 

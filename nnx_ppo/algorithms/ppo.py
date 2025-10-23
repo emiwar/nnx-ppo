@@ -36,10 +36,11 @@ class TrainingState:
 class LoggingLevel(enum.Flag):
     LOSSES = enum.auto()
     CRITIC_EXTRA = enum.auto()
+    ACTOR_EXTRA = enum.auto()
     TRAIN_ROLLOUT_STATS = enum.auto()
     ASSERTS = enum.auto()
     BASIC = LOSSES
-    ALL = LOSSES | CRITIC_EXTRA | TRAIN_ROLLOUT_STATS | ASSERTS
+    ALL = LOSSES | ACTOR_EXTRA | CRITIC_EXTRA | TRAIN_ROLLOUT_STATS | ASSERTS
     NONE = 0
 
 def train_ppo(env: mujoco_playground.MjxEnv,
@@ -190,7 +191,8 @@ def ppo_loss(networks: PPONetwork, network_state,
 
     if normalize_advantages:
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
+    assert network_output.loglikelihoods.shape == advantages.shape
+    assert old_loglikelihoods.shape == advantages.shape
     likelihood_ratios = jp.exp(network_output.loglikelihoods - old_loglikelihoods)
     loss_cand1 = likelihood_ratios * advantages
     loss_cand2 = jp.clip(likelihood_ratios, 1 - clip_range, 1 + clip_range) * advantages
@@ -205,12 +207,17 @@ def ppo_loss(networks: PPONetwork, network_state,
         metrics["losses/actor"] = actor_loss
         metrics["losses/critic"] = critic_loss
         metrics["losses/regularization"] = regularization_loss
+    if LoggingLevel.ACTOR_EXTRA in logging_level:
+        metrics["loglikelihood/mean"] = jp.mean(network_output.loglikelihoods)
+        metrics["loglikelihood/std"] = jp.std(network_output.loglikelihoods)
+        metrics["loglikelihood/min"] = jp.min(network_output.loglikelihoods)
+        metrics["loglikelihood/max"] = jp.max(network_output.loglikelihoods)
     if LoggingLevel.CRITIC_EXTRA in logging_level:
         metrics["losses/predicted_value_mean"] = jp.mean(network_output.value_estimates)
         metrics["losses/predicted_value_std"] = jp.std(network_output.value_estimates)
         metrics["losses/target_value_mean"] = jp.mean(target_values)
         metrics["losses/target_value_std"] = jp.std(target_values)
-        metrics["losses/critic_R^2"] = 1.0 - critic_loss / jp.var(target_values)
+        metrics["losses/critic_R^2"] = 1.0 - 2 * critic_loss / jp.var(target_values)
 
     total_loss = actor_loss + critic_loss + regularization_loss
 

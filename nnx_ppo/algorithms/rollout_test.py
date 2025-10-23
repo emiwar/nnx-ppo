@@ -10,7 +10,7 @@ import mujoco_playground
 from nnx_ppo.networks import modules, types
 from nnx_ppo.algorithms.rollout import unroll_env
 from nnx_ppo.test_dummies import dummy_counter
-from nnx_ppo.test_dummies import stateful_nets, parrot_env
+from nnx_ppo.test_dummies import stateful_nets, parrot_env, move_to_center_env
 class RolloutTest(absltest.TestCase):
 
     def setUp(self):
@@ -169,3 +169,33 @@ class RolloutTest(absltest.TestCase):
         next_net_state, next_env_state, rollout_data = unroll_env(
             env, env_state, net, net_state, N_STEPS, reset_key)
         self.assertEquals(net.n_calls.value, N_STEPS * N_ENVS)
+
+    def test_rng_stream_resets(self):
+        SEED = 23
+        N_ENVS = 64
+        N_STEPS = 30
+        key = jax.random.key(SEED)
+        env = move_to_center_env.MoveToCenterEnv(reward_falloff=1.0, border_radius=10.0)
+        net = modules.MLPActorCritic(env.observation_size, env.action_size,
+                                      actor_hidden_sizes=[128, 128],
+                                      critic_hidden_sizes=[128, 128],
+                                      rngs = nnx.Rngs(SEED, action_sampling=SEED))
+        net_key, env_key, reset_key = jax.random.split(key, 3)
+        net_state = net.initialize_state(N_ENVS)
+        env_state = jax.vmap(env.reset)(jax.random.split(env_key, N_ENVS))
+        pre_rollout_module_state = nnx.state(net)
+
+        #Same env & net state, but the RNG stream in the network should advance
+        next_net_state, next_env_state, rollout_data1 = unroll_env(
+            env, env_state, net, net_state, N_STEPS, reset_key)
+        next_net_state, next_env_state, rollout_data2 = unroll_env(
+            env, env_state, net, net_state, N_STEPS, reset_key)
+        self.assertGreater(jp.mean(jp.abs(rollout_data1.network_output.actions - rollout_data2.network_output.actions)), 0.2)
+        self.assertGreater(jp.mean(jp.abs(rollout_data1.network_output.loglikelihoods - rollout_data2.network_output.loglikelihoods)), 0.2)
+
+        #Resetting the state of the RNG stream
+        nnx.update(net, pre_rollout_module_state)
+        next_net_state, next_env_state, rollout_data3 = unroll_env(
+            env, env_state, net, net_state, N_STEPS, reset_key)
+        self.assertLess(jp.mean(jp.abs(rollout_data1.network_output.actions - rollout_data3.network_output.actions)), 1e-6)
+        self.assertLess(jp.mean(jp.abs(rollout_data1.network_output.loglikelihoods - rollout_data3.network_output.loglikelihoods)), 1e-6)
