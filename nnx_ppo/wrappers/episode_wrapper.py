@@ -22,8 +22,9 @@ class EpisodeWrapper:
         return next_state
 
     def reset(self, rng):
-        next_state = self.env.reset(rng)
-        next_state.info["step_counter"] = jax.random.randint(rng, (), 0, self.max_len)
+        base_rng, step_counter_rng = jax.random.split(rng)
+        next_state = self.env.reset(base_rng)
+        next_state.info["step_counter"] = jax.random.randint(step_counter_rng, (), 0, self.max_len)
         next_state.info["truncated"] = False
         return next_state
 

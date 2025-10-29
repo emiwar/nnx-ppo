@@ -116,5 +116,42 @@ class ModulesTest(absltest.TestCase):
         net.train()
         self.assertFalse(net.action_sampler.deterministic)
 
+    def test_normalize_obs(self):
+        SEED = 42
+        OBS_SIZE = 24
+        ACTION_SIZE = 5
+        BATCH_SIZE = 32
+        N_STEPS = 10
+        nets = modules.MLPActorCritic(OBS_SIZE, ACTION_SIZE,
+                                      actor_hidden_sizes=[64, 64],
+                                      critic_hidden_sizes=[64, 64],
+                                      rngs = nnx.Rngs(SEED, action_sampling=SEED),
+                                      normalize_obs=True)
+        key = jax.random.key(SEED)
+        mean_key, var_key = jax.random.split(key)
+        data = jax.random.normal(mean_key, (OBS_SIZE,)) + jax.random.normal(var_key, (N_STEPS+1, BATCH_SIZE, OBS_SIZE))
+        state = nets.initialize_state(BATCH_SIZE)
+        for i in range(N_STEPS):
+            state, _ = nets(state, data[i])
+            self.assertEqual(nets.preprocessor.counter.value, i+1)
+            self.assertEqual(nets.preprocessor.mean.value.shape, (OBS_SIZE,))
+            self.assertEqual(nets.preprocessor.mean_sqr.value.shape, (OBS_SIZE,))
+            
+            true_mean = jp.mean(data[:i+1], axis=(0, 1))
+            true_std  = jp.std(data[:i+1], axis=(0, 1))
+            est_mean = nets.preprocessor.mean
+            est_std = jp.sqrt(nets.preprocessor.mean_sqr - est_mean**2)
+            self.assertLess(jp.max(jp.abs(est_mean - true_mean)), 1e-6)
+            self.assertLess(jp.max(jp.abs(est_std - true_std)), 1e-6)
+
+        # Check that the normalizer isn't updated in eval mode
+        nets.eval()
+        state, _ = nets(state, data[i])
+        self.assertEqual(nets.preprocessor.counter.value, N_STEPS)
+        est_mean = nets.preprocessor.mean
+        est_std = jp.sqrt(nets.preprocessor.mean_sqr - est_mean**2)
+        self.assertLess(jp.max(jp.abs(est_mean - true_mean)), 1e-6)
+        self.assertLess(jp.max(jp.abs(est_std - true_std)), 1e-6)
+        
 if __name__ == '__main__':
     absltest.main()

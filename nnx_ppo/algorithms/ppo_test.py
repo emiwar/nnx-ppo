@@ -17,7 +17,7 @@ class PPOTest(absltest.TestCase):
 
     def setUp(self):
         SEED = 17
-        self.env = mujoco_playground.registry.load("CartpoleBalance")
+        self.env = mujoco_playground.registry.load("CartpoleSwingup")
         self.nets = modules.MLPActorCritic(self.env.observation_size, self.env.action_size,
                                            actor_hidden_sizes=[16, 16],
                                            critic_hidden_sizes=[16, 16],
@@ -28,10 +28,12 @@ class PPOTest(absltest.TestCase):
         config = ppo.default_config()
         training_state = ppo.new_training_state(self.env, self.nets, config.n_envs, SEED)
         self.assertEquals(training_state.steps_taken, 0)
-        training_state, _ = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
+        training_state, metrics = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
                                          config.gae_lambda, config.discounting_factor, config.clip_range,
                                          config.normalize_advantages)
         self.assertEquals(training_state.steps_taken, config.n_envs*config.rollout_length)
+        for k, v in metrics.items():
+            self.assertTrue(jp.all(jp.isfinite(v)), f"metrics[{k}] not finite.")
 
     def test_ppo_step_twice(self):
         SEED = 18
@@ -98,8 +100,9 @@ class PPOTest(absltest.TestCase):
         for t in reversed(range(T_STEPS)):
             next_values = values[t+1, :].copy()
             next_values[done[t, :]] = 0.0
-            next_values[truncation[t, :]] = values[t, truncation[t, :]]
+            #next_values[truncation[t, :]] = values[t, truncation[t, :]]
             advantages[t, :] = rewards[t, :] + gamma * next_values - values[t, :]
+            advantages[t, truncation[t, :]] = 0.0 
             if t < T_STEPS-1:
                 advantages[t, :] += gamma * lambda_ * advantages[t+1, :] * (1 - done[t, :])
 
@@ -139,8 +142,39 @@ class PPOTest(absltest.TestCase):
             self.assertLess(metrics["asserts/likelihoods_max_diff"], 1e-6)
             self.assertLess(metrics["asserts/critic_values_max_diff"], 1e-6)
             
-
-            #Arbitraray threshold that empirically has been reasonably easy to reach
+            #Arbitrary threshold that empirically has been reasonably easy to reach
             if training_state.steps_taken > 1_500_000:
                 self.assertGreater(metrics["episode_reward_mean"].max(), 95.0)
-            
+
+    def test_ppo_normalize_obs_counter(self):
+        SEED = 22
+        env = nnx_ppo.test_dummies.move_to_center_env.MoveToCenterEnv(reward_falloff=1.0, border_radius=10.0)
+        nets = modules.MLPActorCritic(env.observation_size, env.action_size,
+                                      actor_hidden_sizes=[64, 64],
+                                      critic_hidden_sizes=[64, 64],
+                                      rngs = nnx.Rngs(SEED, action_sampling=SEED),
+                                      normalize_obs=True)
+        config = ppo.default_config()
+        training_state = ppo.new_training_state(env, nets, config.n_envs, SEED)
+        ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8))
+        n_updates = 0
+        while training_state.steps_taken < config.n_steps:
+            training_state, metrics = ppo_step_jit(
+                env, training_state, 
+                config.n_envs, config.rollout_length,
+                config.gae_lambda, config.discounting_factor,
+                config.clip_range, config.normalize_advantages,
+                ppo.LoggingLevel.ASSERTS
+            )
+            n_updates += 1
+            self.assertEqual(training_state.steps_taken, n_updates * config.rollout_length * config.n_envs)
+            self.assertTrue(metrics["asserts/module_state_identical"])
+            self.assertTrue(metrics["asserts/net_state_identical"])
+            self.assertLess(metrics["asserts/actions_max_diff"], 1e-6)
+            self.assertLess(metrics["asserts/likelihoods_max_diff"], 1e-6)
+            self.assertLess(metrics["asserts/critic_values_max_diff"], 1e-6)
+            self.assertEqual(nets.preprocessor.counter.value, n_updates * config.rollout_length)
+
+            #Arbitrary threshold that empirically has been reasonably easy to reach
+            if training_state.steps_taken > 1_500_000:
+                self.assertGreater(metrics["episode_reward_mean"].max(), 95.0)

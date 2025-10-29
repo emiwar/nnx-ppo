@@ -12,45 +12,55 @@ class PPOActorCritic(PPONetwork, nnx.Module):
     '''A general PPO actor-critic network consisting of separate actor and critic
        networks.'''
 
-    def __init__(self, actor: StatefulModule, critic: StatefulModule, action_sampler: ActionSampler, flatten_obs: bool = False):
+    def __init__(self, actor: StatefulModule, critic: StatefulModule, action_sampler: ActionSampler, preprocessor: Optional[StatefulModule] = None):
          self.actor = actor
          self.critic = critic
          self.action_sampler = action_sampler
-         self.flatten_obs = flatten_obs
+         self.preprocessor = preprocessor
 
     def __call__(self, network_state, obs) -> Tuple[Dict, PPONetworkOutput]:
-        if self.flatten_obs:
-            obs = jax.vmap(lambda obs: jax.flatten_util.ravel_pytree(obs)[0], (0,))(obs)
+        #if self.flatten_obs:
+        #    obs = jax.vmap(lambda obs: jax.flatten_util.ravel_pytree(obs)[0], (0,))(obs)
+        regularization_loss = jp.array(0.0)
+        if self.preprocessor is not None:
+            preprocessor_output = self.preprocessor(network_state["preprocessor"], obs)
+            obs = preprocessor_output.output
+            network_state["preprocessor"] = preprocessor_output.next_state
+            regularization_loss += preprocessor_output.regularization_loss
         actor_output = self.actor(network_state["actor"], obs)
         sampler_output = self.action_sampler(network_state["action_sampler"], actor_output.output)
         action, loglikelihood = sampler_output.output
         critic_output = self.critic(network_state["critic"], obs)
+
         network_state["actor"] = actor_output.next_state
         network_state["action_sampler"] = sampler_output.next_state
         network_state["critic"] = critic_output.next_state
-        
-        total_reg_loss = actor_output.regularization_loss + sampler_output.regularization_loss + critic_output.regularization_loss
+        regularization_loss += actor_output.regularization_loss
+        regularization_loss += sampler_output.regularization_loss
+        regularization_loss += critic_output.regularization_loss
         return network_state, PPONetworkOutput(
             actions = action,
             loglikelihoods = loglikelihood,
-            regularization_loss = total_reg_loss,
+            regularization_loss = regularization_loss,
             value_estimates = critic_output.output,
             metrics = dict()
         )
     
     def initialize_state(self, batch_size: int) -> ModuleState:
         return {
+             "preprocessor": self.preprocessor.initialize_state(batch_size) if self.preprocessor is not None else (),
              "actor": self.actor.initialize_state(batch_size),
              "critic": self.critic.initialize_state(batch_size),
              "action_sampler": self.action_sampler.initialize_state(batch_size),
         }
 
 class MLP(StatefulModule):
-    def __init__(self, sizes, rngs,
-                 transfer_function=nnx.relu,
-                 transfer_function_last_layer: bool=True):
+    def __init__(self, sizes: List[int], rngs,
+                 transfer_function: Callable = nnx.relu,
+                 transfer_function_last_layer: bool=True,
+                 params_for_Linear={}):
         din_dout = zip(sizes[:-1], sizes[1:])
-        self.layers = [nnx.Linear(din, dout, rngs=rngs) for (din, dout) in din_dout]
+        self.layers = [nnx.Linear(din, dout, rngs=rngs, **params_for_Linear) for (din, dout) in din_dout]
         self.transfer_function = transfer_function
         self.transfer_function_last_layer = transfer_function_last_layer
 
@@ -64,23 +74,27 @@ class MLP(StatefulModule):
 
 class MLPActorCritic(PPOActorCritic):
     def __init__(self,
-                 obs_size,
-                 action_size,
+                 obs_size: int,
+                 action_size: int,
                  actor_hidden_sizes: List[int],
                  critic_hidden_sizes: List[int],
                  rngs: nnx.Rngs,
                  transfer_function: Callable = nnx.relu,
-                 action_sampler: Optional[ActionSampler] = None):
+                 action_sampler: Optional[ActionSampler] = None,
+                 normalize_obs: bool = False):
         if action_sampler is None:
           action_sampler = NormalTanhSampler(rngs, entropy_weight=1e-3)
         obs_size = int(jp.sum(jax.flatten_util.ravel_pytree(obs_size)[0]))
         action_size = int(jp.sum(jax.flatten_util.ravel_pytree(action_size)[0]))
         actor_sizes = [obs_size] + actor_hidden_sizes + [action_size*2]
-        self.actor = MLP(actor_sizes, rngs, transfer_function, transfer_function_last_layer=False)
+        self.preprocessor = Normalizer(obs_size) if normalize_obs else None
+        self.actor = MLP(actor_sizes, rngs, transfer_function, transfer_function_last_layer=False,
+                         params_for_Linear={})#'kernel_init': nnx.initializers.lecun_uniform()})
         critic_sizes = [obs_size] + critic_hidden_sizes + [1]
-        self.critic = MLP(critic_sizes, rngs, transfer_function, transfer_function_last_layer=False)
+        self.critic = MLP(critic_sizes, rngs, transfer_function, transfer_function_last_layer=False,
+                          params_for_Linear={})#'kernel_init': nnx.initializers.lecun_uniform()})
         self.action_sampler = action_sampler
-        self.flatten_obs = True
+        #self.flatten_obs = True
 
 class Sequential(StatefulModule):
     def __init__(self, layers: List[StatefulModule]):
@@ -106,3 +120,30 @@ class Sequential(StatefulModule):
     
     def __getitem__(self, ind) -> StatefulModule:
         return self.layers[ind]
+    
+class Normalizer(StatefulModule):
+
+    def __init__(self, shape):
+        self.mean = nnx.Variable(jp.zeros(shape))
+        self.mean_sqr = nnx.Variable(jp.zeros(shape))
+        self.counter = nnx.Variable(jp.array(0.0))
+        self.epsilon = 1e-6
+
+        # This is a hack to prevent the Normalizer from updating when the module
+        # is in `module.eval()` mode -- nnx sets the variable `deterministic`.
+        self.deterministic = False
+
+    def __call__(self, state, x):
+        if not self.deterministic: # Set to true by module.eval() in NNX
+            self.counter += 1
+            w = 1 / self.counter
+            self.mean = nnx.Variable((1 - w) * self.mean + w * jp.mean(x, axis=0))
+            self.mean_sqr = nnx.Variable((1 - w) * self.mean_sqr + w * jp.mean(x**2, axis=0))
+        
+        std = jp.sqrt(jp.maximum(self.mean_sqr - self.mean**2, self.epsilon))
+        return StatefulModuleOutput(
+            next_state = (),
+            output = (x - self.mean) / std,
+            regularization_loss = jp.array(0.0),
+            metrics={}
+        )

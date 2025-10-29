@@ -19,7 +19,7 @@ import nnx_ppo.test_dummies.action_sigma_debug as action_sigma_debug
 #jax.config.update("jax_debug_nans", True)
 
 SEED = 42
-env_name = "CartpoleSwingup"#"CartpoleSwingup"#"CartpoleBalance"
+env_name = "MoveToCenterEnv"#"CartpoleSwingup"#"CartpoleBalance"
 
 if env_name == "ParrotEnv":
     env = nnx_ppo.test_dummies.parrot_env.ParrotEnv(reward_falloff=1.0)
@@ -29,7 +29,7 @@ elif env_name == "MoveFromCenterEnv":
     env = nnx_ppo.test_dummies.move_from_center_env.MoveFromCenterEnv(border_radius=10.0)
 else:
     env = mujoco_playground.registry.load(env_name)
-train_env = env#episode_wrapper.EpisodeWrapper(env, 100)
+train_env = episode_wrapper.EpisodeWrapper(env, 100)
 eval_env = env
 
 rngs = nnx.Rngs(SEED)
@@ -38,10 +38,11 @@ nets = MLPActorCritic(env.observation_size, env.action_size,
                       critic_hidden_sizes=[256,] * 2,
                       rngs=rngs,
                       transfer_function=nnx.tanh,
-                      action_sampler=NormalTanhSampler(rngs, entropy_weight=1e-3, min_std=1e-2, std_scale=1.0, preclamp=True))
+                      action_sampler=NormalTanhSampler(rngs, entropy_weight=1e-3, min_std=1e-2, std_scale=1.0, preclamp=False),
+                      normalize_obs=False)
 config = ppo.default_config()
-config.normalize_advantages = False
-config.discounting_factor = 0.98
+config.normalize_advantages = True
+config.discounting_factor = 0.995#95
 config.n_envs = 256
 config.rollout_length = 20
 
@@ -54,7 +55,7 @@ wandb.init(project="nnx-ppo-basic-tests",
                    "ppo_params": config.to_dict()},
            name=exp_name,
            tags=(env_name,),
-           notes="(Some) parameters taken from playground PPO default params for CartpoleBalance.")
+           notes="")
 
 training_state = ppo.new_training_state(train_env, nets, n_envs=config.n_envs, learning_rate=1e-4, seed=SEED)
 #training_state.env_states.info["step_counter"] = jax.random.randint(jax.random.key(SEED), (config.n_envs,), 0, 100)
@@ -78,7 +79,7 @@ def extra_logging(env, training_state, rollout_length: int):
     )
     return action_sigma_debug.extra_metrics(training_state.networks, rollout_data)
 
-for iter in range(1000):
+for iter in range(5000):
     new_training_state, metrics = ppo_step_jit(
         train_env, training_state, 
         config.n_envs, config.rollout_length,

@@ -16,22 +16,22 @@ class Transition:
   done: jax.Array
   truncated: jax.Array
   next_obs: mjx_env.Observation
+  metrics: Dict[str, jax.Array]
 
 def single_transition(env: mjx_env.MjxEnv,
                       networks: nnx_ppo.networks.types.PPONetwork,
                       carry: Tuple[Dict, mjx_env.State],
                       rng_keys_for_env_reset: jax.Array):
   network_state, env_state = carry
-
-  
   next_network_state, network_output = networks(network_state, env_state.obs)
   next_env_state = jax.vmap(env.step)(env_state, network_output.actions)
   transition = Transition(obs=env_state.obs,
                           network_output=network_output,
                           rewards=next_env_state.reward,
                           done=next_env_state.done,
-                          truncated=next_env_state.info.get("truncated", False),
-                          next_obs=next_env_state.obs)
+                          truncated=next_env_state.info.get("truncated", jp.zeros(next_env_state.done.shape, jp.bool)),
+                          next_obs=next_env_state.obs,
+                          metrics=env_state.metrics)
   @jax.vmap
   def reset_env_state(done, state, rng):
     return jax.lax.cond(done, env.reset, lambda rng: state, rng)

@@ -38,9 +38,10 @@ class LoggingLevel(enum.Flag):
     CRITIC_EXTRA = enum.auto()
     ACTOR_EXTRA = enum.auto()
     TRAIN_ROLLOUT_STATS = enum.auto()
+    TRAINING_ENV_METRICS = enum.auto()
     ASSERTS = enum.auto()
     BASIC = LOSSES
-    ALL = LOSSES | ACTOR_EXTRA | CRITIC_EXTRA | TRAIN_ROLLOUT_STATS | ASSERTS
+    ALL = LOSSES | ACTOR_EXTRA | CRITIC_EXTRA | TRAIN_ROLLOUT_STATS | TRAINING_ENV_METRICS | ASSERTS
     NONE = 0
 
 def train_ppo(env: mujoco_playground.MjxEnv,
@@ -86,6 +87,7 @@ def ppo_step(env: mujoco_playground.MjxEnv,
     last_obs = jax.tree.map(lambda x: x[-1], rollout_data.next_obs)
     _, network_output = training_state.networks(next_net_state, last_obs)
     last_value = network_output.value_estimates
+    assert last_value.shape[0] == rollout_data.rewards.shape[1]
     last_value = last_value.reshape((1, last_value.shape[0]))
     values_excl_last = rollout_data.network_output.value_estimates
     values_incl_last = jp.concatenate((values_excl_last, last_value), axis=0)
@@ -107,13 +109,14 @@ def ppo_step(env: mujoco_playground.MjxEnv,
     nnx.update(training_state.networks, pre_rollout_module_state)
     grads, metrics = nnx.grad(ppo_loss, has_aux=True)(
         networks = training_state.networks,
-        network_state = training_state.network_states,
+        network_state = jax.lax.stop_gradient(training_state.network_states),
         observations = rollout_data.obs,
-        actions = rollout_data.network_output.actions,
-        old_loglikelihoods = rollout_data.network_output.loglikelihoods,
-        target_values = target_values,
-        advantages = advantages,
-        next_net_state = next_net_state,
+        done = rollout_data.done,
+        actions = jax.lax.stop_gradient(rollout_data.network_output.actions),
+        old_loglikelihoods = jax.lax.stop_gradient(rollout_data.network_output.loglikelihoods),
+        target_values = jax.lax.stop_gradient(target_values),
+        advantages = jax.lax.stop_gradient(advantages),
+        next_net_state = jax.lax.stop_gradient(next_net_state),
         clip_range = clip_range,
         normalize_advantages = normalize_advantages,
         logging_level = logging_level
@@ -127,6 +130,10 @@ def ppo_step(env: mujoco_playground.MjxEnv,
         metrics["advantage/max"] = advantages.max()
         metrics["action_mean"] = rollout_data.network_output.actions.mean()
         metrics["action_std"] = rollout_data.network_output.actions.std()
+    if LoggingLevel.TRAINING_ENV_METRICS in logging_level:
+        for k,v in rollout_data.metrics.items():
+            metrics[f"{k}/mean"] = v.mean()
+            metrics[f"{k}/std"] = v.mean()
     if LoggingLevel.ASSERTS in logging_level:
         post_update_module_state = nnx.state(training_state.networks)
         metrics["asserts/module_state_identical"] = jax.tree.reduce(jp.logical_and, jax.tree.map(jp.allclose, post_rollout_module_state, post_update_module_state), jp.array(True)).astype(int)
@@ -146,14 +153,13 @@ def ppo_step(env: mujoco_playground.MjxEnv,
 def gae(rewards, values, done, truncation, lambda_: float, gamma: float):
     assert values.shape == (rewards.shape[0]+1, rewards.shape[1])
     assert rewards.shape == done.shape
-    def inner_step(next_advantage, reward, old_value, next_old_value, done, truncated):
-        next_value = jp.where(done,
-            jp.where(truncated, old_value, jp.zeros_like(next_old_value)),
-            next_old_value
-        )
+    assert truncation.shape == done.shape
+    def inner_step(next_advantage, reward, old_value, next_value, done, truncated):
+        next_value *= (1 - done)
         new_value = reward + gamma * next_value
         advantage = new_value - old_value
-        gae_advantage = advantage + jp.logical_not(done) * gamma * lambda_ * next_advantage
+        advantage *= (1 - truncated)
+        gae_advantage = advantage + (1 - done) * gamma * lambda_ * next_advantage
         return gae_advantage, gae_advantage
     time_scan = nnx.scan(inner_step,
         in_axes=(nnx.Carry, 0, 0, 0, 0, 0), out_axes=(nnx.Carry, 0),
@@ -161,21 +167,28 @@ def gae(rewards, values, done, truncation, lambda_: float, gamma: float):
     _, advantages = time_scan(next_advantage = jp.zeros(rewards.shape[1]),
                               reward=rewards,
                               old_value=values[:-1, :],
-                              next_old_value=values[1:, :],
+                              next_value=values[1:, :],
                               done=done,
                               truncated=truncation)
     return advantages
 
 def ppo_loss(networks: PPONetwork, network_state,
-             observations, actions, old_loglikelihoods, target_values,
+             observations, done, actions, old_loglikelihoods, target_values,
              advantages, next_net_state, clip_range, normalize_advantages,
              logging_level: LoggingLevel):
     metrics = dict()
 
-    time_scan = nnx.scan(lambda networks, net_state, obs: networks(net_state, obs),
-                         in_axes=(nnx.StateAxes({...: nnx.Carry}), nnx.Carry, 0),
-                         out_axes=(nnx.Carry, 0))
-    next_net_state_again, network_output = time_scan(networks, network_state, observations)
+    @jax.vmap
+    def reset_net_state(done, state):
+        return jax.lax.cond(done, networks.initialize_state, lambda _: state, done.shape)
+    
+    def step_network(networks: PPONetwork, net_state, obs, done):
+        net_state, network_output = networks(net_state, obs)
+        net_state = reset_net_state(done, net_state)
+        return net_state, network_output
+
+    time_scan = nnx.scan(step_network, in_axes=(nnx.StateAxes({...: nnx.Carry}), nnx.Carry, 0, 0), out_axes=(nnx.Carry, 0))
+    next_net_state_again, network_output = time_scan(networks, network_state, observations, done)
     
     if network_output.value_estimates.ndim == 3:
         assert network_output.value_estimates.shape[2] == 1
@@ -231,15 +244,13 @@ def new_training_state(env: mujoco_playground.MjxEnv,
     # Setup keys
     key = jax.random.key(seed)
     key, training_key = jax.random.split(key)
-    env_init_key, net_init_key = jax.random.split(key)
  
     # Setup environment states
-    env_init_keys = jax.random.split(env_init_key, n_envs)
+    env_init_keys = jax.random.split(key, n_envs)
     env_states = nnx.vmap(env.reset)(env_init_keys)
 
     # Setup network states
-    net_init_keys = jax.random.split(net_init_key, n_envs)
-    network_states = nnx.vmap(networks.initialize_state)(net_init_keys)
+    network_states = networks.initialize_state(n_envs)
 
     # Setup optimizer
     optimizer = nnx.Optimizer(networks, optax.adam(learning_rate=learning_rate), wrt=nnx.Param)

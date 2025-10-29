@@ -16,7 +16,7 @@ class RolloutTest(absltest.TestCase):
     def setUp(self):
         SEED = 17
 
-        self.env = mujoco_playground.registry.load("CartpoleBalance")
+        self.env = mujoco_playground.registry.load("CartpoleSwingup")
         self.nets = modules.MLPActorCritic(self.env.observation_size, self.env.action_size,
                                            actor_hidden_sizes=[16, 16],
                                            critic_hidden_sizes=[16, 16],

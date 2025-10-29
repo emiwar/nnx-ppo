@@ -25,12 +25,22 @@ class NormalTanhSampler(ActionSampler):
       # The sampling will clamp the actions to be in (-1, 1), but we might also want
       # clamp the mean and std themselves.
       mean_and_std = jp.tanh(mean_and_std)
+
     mean, std = jp.split(mean_and_std, 2, axis=-1)
     std = (jax.nn.softplus(std) + self.min_std) * self.std_scale
     if self.deterministic:
       raw_action = mean
     else:
       raw_action = mean + std * jax.random.normal(self.rng(), mean.shape)
+
+    # Here is an unusual trick. Rather than passing the aciton as a parameter
+    # to this layer, we compute it again. This is possible because the RNGStream
+    # `self.rng` is reset between rollout and the loss computation, so the same
+    # action will be sampled in both passes. Having access to the raw action is
+    # numerically more stable than having only the action after the tanh, which
+    # could saturate and prevent us from applying a numerically stable inverse. But
+    # it's important that the gradient doesn't flow back through the sampling -- it
+    # should only flow through the log likelihood. Therefore, we need a stop_gradient.
     raw_action = jax.lax.stop_gradient(raw_action)
     action = jp.tanh(raw_action)
     loglikelihood = self._loglikelihood(raw_action, mean, std)
@@ -56,7 +66,7 @@ class NormalTanhSampler(ActionSampler):
     # Modify the log-likelihood due to tanh transformation. Should be log|d/dz tanh(z)|.
     # The expression below is a numerically stable version of log|d/dz tanh(z)| borrowed from Brax
     log_det_jacobian = 2.0 * (jp.log(2.0) - z - jax.nn.softplus(-2.0 * z))
-    log_prob -= log_det_jacobian
+    log_prob += log_det_jacobian
 
     # Sum over last dimension if needed
     log_prob = jp.sum(log_prob, axis=-1)
