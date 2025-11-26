@@ -49,6 +49,7 @@ class DummyCounterNet(types.PPONetwork, nnx.Module):
         }
         return new_state, types.PPONetworkOutput(
             actions=new_counter,
+            raw_actions=new_counter,
             loglikelihoods=jp.ones_like(old_counter, dtype=float),
             regularization_loss=jp.array(0.0),
             value_estimates=jp.ones_like(old_counter, dtype=float),

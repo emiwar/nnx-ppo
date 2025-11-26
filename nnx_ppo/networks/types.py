@@ -1,4 +1,4 @@
-from typing import Union, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple
 import abc
 import jax
 import flax.struct
@@ -7,6 +7,7 @@ from flax import nnx
 @flax.struct.dataclass
 class PPONetworkOutput:
   actions: jax.Array
+  raw_actions: jax.Array
   loglikelihoods: jax.Array
   regularization_loss: jax.Array
   value_estimates: jax.Array
@@ -16,7 +17,7 @@ ModuleState = Any #TODO: make into a proper type alias
 class PPONetwork(abc.ABC):
   
   @abc.abstractmethod
-  def __call__(self, network_state: ModuleState, obs) -> Tuple[Any, PPONetworkOutput]:
+  def __call__(self, network_state: ModuleState, obs, raw_action: Optional[jax.Array] = None) -> Tuple[Any, PPONetworkOutput]:
     '''Apply both actor and critic networks to the environment observation `obs`.
     
     Calling the critic on rollouts might be somewhat inefficient, but by grouping
@@ -28,14 +29,15 @@ class PPONetwork(abc.ABC):
                                    used for stochastic layers.
       obs (PyTree): Observation of an environment state. It is a PyTree with the same
                     structure as env.step(...).obs
-      done (jax.Array[bool]): A boolean array of shape (batch_size,) indicating whether
-                              the episode ended at this observation. This should be used to
-                              reset any stateful layers in the network.
+      raw_action (jax.Array): If specified, compute likelihoods using these actions
+                              than sampling a new action. `raw_action` referes to
+                              the sampled action before clamping (e.g., by tanh). 
 
     Returns: (new_state, network_output)
       new_state (PyTree): An updated network state, including split RNG keys.
       network_output (PPONetworkOutput):
         actions (PyTree): The actions to be sent back to the env
+        raw_actions (PyTree): The raw output of the sampler before applying clamping
         loglikelihood (float): The log-likelihood for taking the action
         regularization_loss (float): Sum of all other regularizer terms. This will be added
                              to the RL loss target during training.

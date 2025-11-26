@@ -18,8 +18,8 @@ import nnx_ppo.test_dummies.action_sigma_debug as action_sigma_debug
 
 #jax.config.update("jax_debug_nans", True)
 
-SEED = 42
-env_name = "MoveToCenterEnv"#"CartpoleSwingup"#"CartpoleBalance"
+SEED = 51
+env_name = "CartpoleSwingup"#"CartpoleBalance"
 
 if env_name == "ParrotEnv":
     env = nnx_ppo.test_dummies.parrot_env.ParrotEnv(reward_falloff=1.0)
@@ -39,10 +39,10 @@ nets = MLPActorCritic(env.observation_size, env.action_size,
                       rngs=rngs,
                       transfer_function=nnx.tanh,
                       action_sampler=NormalTanhSampler(rngs, entropy_weight=1e-3, min_std=1e-2, std_scale=1.0, preclamp=False),
-                      normalize_obs=False)
+                      normalize_obs=True)
 config = ppo.default_config()
 config.normalize_advantages = True
-config.discounting_factor = 0.995#95
+config.discounting_factor = 0.99#95
 config.n_envs = 256
 config.rollout_length = 20
 
@@ -59,7 +59,7 @@ wandb.init(project="nnx-ppo-basic-tests",
 
 training_state = ppo.new_training_state(train_env, nets, n_envs=config.n_envs, learning_rate=1e-4, seed=SEED)
 #training_state.env_states.info["step_counter"] = jax.random.randint(jax.random.key(SEED), (config.n_envs,), 0, 100)
-ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8))
+ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9))
 eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3))
 
 #nets.eval() # Set network to eval mode
@@ -79,13 +79,13 @@ def extra_logging(env, training_state, rollout_length: int):
     )
     return action_sigma_debug.extra_metrics(training_state.networks, rollout_data)
 
-for iter in range(5000):
+for iter in range(2500):
     new_training_state, metrics = ppo_step_jit(
         train_env, training_state, 
         config.n_envs, config.rollout_length,
         config.gae_lambda, config.discounting_factor,
         config.clip_range, config.normalize_advantages,
-        ppo.LoggingLevel.ALL
+        config.n_epochs, ppo.LoggingLevel.ALL
     )
     metrics.update(extra_logging(train_env, training_state, config.rollout_length))
     training_state = new_training_state

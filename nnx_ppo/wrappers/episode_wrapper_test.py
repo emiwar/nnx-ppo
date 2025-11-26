@@ -27,9 +27,9 @@ class EpisodeWrapperTest(absltest.TestCase):
     def test_single_env_rollout(self):
         N_STEPS = 24
         key = jax.random.key(seed=18)
-        net_key, env_key, reset_key = jax.random.split(key, 3)
-        net_state = self.nets.initialize_state(net_key)
-        env_state = self.env.reset(env_key)
+        env_key, reset_key = jax.random.split(key)
+        net_state = self.nets.initialize_state(1)
+        env_state = jax.vmap(self.env.reset)(jax.random.split(env_key, (1,)))
         self.assertTrue("step_counter" in env_state.info)
 
         next_net_state, next_env_state, rollout_data = unroll_env(
@@ -40,16 +40,12 @@ class EpisodeWrapperTest(absltest.TestCase):
         N_ENVS = 256
         N_STEPS = 24
         key = jax.random.key(seed=18)
-        net_key, env_key, reset_key = jax.random.split(key, 3)
+        env_key, reset_key = jax.random.split(key)
         env_keys = jax.random.split(env_key, N_ENVS)
         env_states = jax.vmap(self.env.reset)(env_keys)
-        net_init_keys = jax.random.split(net_key, N_ENVS)
-        net_states = nnx.vmap(self.nets.initialize_state)(net_init_keys)
-        reset_keys = jax.random.split(reset_key, N_ENVS)
+        net_states = self.nets.initialize_state(N_ENVS)
 
-        unroll_vmap = nnx.vmap(unroll_env, in_axes=(None, 0, None, 0, None, 0), out_axes=(0, 0, 0))
-
-        next_net_state, next_env_state, rollout_data = unroll_vmap(
-            self.env, env_states, self.nets, net_states, N_STEPS, reset_keys)
+        next_net_state, next_env_state, rollout_data = unroll_env(
+            self.env, env_states, self.nets, net_states, N_STEPS, reset_key)
         self.assertTrue(jp.all(next_env_state.info["step_counter"] <= self.env.max_len))
         self.assertFalse(jp.all(next_env_state.info["step_counter"] == 0))

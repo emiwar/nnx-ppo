@@ -18,7 +18,7 @@ class PPOActorCritic(PPONetwork, nnx.Module):
          self.action_sampler = action_sampler
          self.preprocessor = preprocessor
 
-    def __call__(self, network_state, obs) -> Tuple[Dict, PPONetworkOutput]:
+    def __call__(self, network_state, obs, raw_action: Optional[jax.Array] = None) -> Tuple[Dict, PPONetworkOutput]:
         #if self.flatten_obs:
         #    obs = jax.vmap(lambda obs: jax.flatten_util.ravel_pytree(obs)[0], (0,))(obs)
         regularization_loss = jp.array(0.0)
@@ -28,8 +28,8 @@ class PPOActorCritic(PPONetwork, nnx.Module):
             network_state["preprocessor"] = preprocessor_output.next_state
             regularization_loss += preprocessor_output.regularization_loss
         actor_output = self.actor(network_state["actor"], obs)
-        sampler_output = self.action_sampler(network_state["action_sampler"], actor_output.output)
-        action, loglikelihood = sampler_output.output
+        sampler_output = self.action_sampler(network_state["action_sampler"], actor_output.output, raw_action)
+        action, raw_action, loglikelihood = sampler_output.output
         critic_output = self.critic(network_state["critic"], obs)
 
         network_state["actor"] = actor_output.next_state
@@ -40,6 +40,7 @@ class PPOActorCritic(PPONetwork, nnx.Module):
         regularization_loss += critic_output.regularization_loss
         return network_state, PPONetworkOutput(
             actions = action,
+            raw_actions = raw_action,
             loglikelihoods = loglikelihood,
             regularization_loss = regularization_loss,
             value_estimates = critic_output.output,
@@ -89,10 +90,11 @@ class MLPActorCritic(PPOActorCritic):
         actor_sizes = [obs_size] + actor_hidden_sizes + [action_size*2]
         self.preprocessor = Normalizer(obs_size) if normalize_obs else None
         self.actor = MLP(actor_sizes, rngs, transfer_function, transfer_function_last_layer=False,
-                         params_for_Linear={})#'kernel_init': nnx.initializers.lecun_uniform()})
+                         params_for_Linear={'kernel_init': nnx.initializers.orthogonal(jp.sqrt(2))})
         critic_sizes = [obs_size] + critic_hidden_sizes + [1]
         self.critic = MLP(critic_sizes, rngs, transfer_function, transfer_function_last_layer=False,
-                          params_for_Linear={})#'kernel_init': nnx.initializers.lecun_uniform()})
+                          params_for_Linear={'kernel_init': nnx.initializers.orthogonal(1.0)})
+        #'kernel_init': nnx.initializers.lecun_uniform()})
         self.action_sampler = action_sampler
         #self.flatten_obs = True
 

@@ -19,6 +19,7 @@ class RepeatAndCountNet(types.PPONetwork, nnx.Module):
         self.n_calls += batch_size
         return (), types.PPONetworkOutput(
             actions=obs,
+            raw_actions=obs,
             loglikelihoods=jp.ones(batch_size),
             regularization_loss=jp.array(0.0),
             value_estimates=jp.ones(batch_size),

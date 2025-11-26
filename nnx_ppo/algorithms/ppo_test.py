@@ -30,7 +30,7 @@ class PPOTest(absltest.TestCase):
         self.assertEquals(training_state.steps_taken, 0)
         training_state, metrics = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
                                          config.gae_lambda, config.discounting_factor, config.clip_range,
-                                         config.normalize_advantages)
+                                         config.normalize_advantages, config.n_epochs)
         self.assertEquals(training_state.steps_taken, config.n_envs*config.rollout_length)
         for k, v in metrics.items():
             self.assertTrue(jp.all(jp.isfinite(v)), f"metrics[{k}] not finite.")
@@ -42,11 +42,11 @@ class PPOTest(absltest.TestCase):
         self.assertEquals(training_state.steps_taken, 0)
         training_state, _ = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
                                          config.gae_lambda, config.discounting_factor, config.clip_range,
-                                         config.normalize_advantages)
+                                         config.normalize_advantages, config.n_epochs)
         self.assertEquals(training_state.steps_taken, config.n_envs*config.rollout_length)
         training_state, _ = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
                                          config.gae_lambda, config.discounting_factor, config.clip_range,
-                                         config.normalize_advantages)
+                                         config.normalize_advantages, config.n_epochs)
         self.assertEquals(training_state.steps_taken, config.n_envs*config.rollout_length*2)
 
     def test_ppo_step_jit(self):
@@ -55,16 +55,16 @@ class PPOTest(absltest.TestCase):
         training_state = nnx.jit(ppo.new_training_state, static_argnums=(0, 2, 3))(self.env, self.nets, config.n_envs, SEED)
         self.assertEquals(training_state.steps_taken, 0)
         #ppo_step_fcn = functools.partial(ppo.ppo_step, self.env)
-        ppo_step_fcn = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7))
+        ppo_step_fcn = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8))
         #ppo_step_fcn = checkify.checkify(ppo_step_fcn)
         training_state, _ = ppo_step_fcn(self.env, training_state, config.n_envs, config.rollout_length,
                                          config.gae_lambda, config.discounting_factor, config.clip_range,
-                                         config.normalize_advantages)
+                                         config.normalize_advantages, config.n_epochs)
         #err.throw()
         self.assertEquals(training_state.steps_taken, config.n_envs*config.rollout_length)
         training_state, _ = ppo_step_fcn(self.env, training_state, config.n_envs, config.rollout_length,
                                          config.gae_lambda, config.discounting_factor, config.clip_range,
-                                         config.normalize_advantages)
+                                         config.normalize_advantages, config.n_epochs)
         #err.throw()
         self.assertEquals(training_state.steps_taken, config.n_envs*config.rollout_length*2)
 
@@ -124,7 +124,7 @@ class PPOTest(absltest.TestCase):
                                       rngs = nnx.Rngs(SEED, action_sampling=SEED))
         config = ppo.default_config()
         training_state = ppo.new_training_state(env, nets, config.n_envs, SEED)
-        ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8))
+        ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9))
         n_updates = 0
         while training_state.steps_taken < config.n_steps:
             training_state, metrics = ppo_step_jit(
@@ -132,7 +132,7 @@ class PPOTest(absltest.TestCase):
                 config.n_envs, config.rollout_length,
                 config.gae_lambda, config.discounting_factor,
                 config.clip_range, config.normalize_advantages,
-                ppo.LoggingLevel.ASSERTS
+                config.n_epochs, ppo.LoggingLevel.ASSERTS
             )
             n_updates += 1
             self.assertEqual(training_state.steps_taken, n_updates * config.rollout_length * config.n_envs)
@@ -156,7 +156,7 @@ class PPOTest(absltest.TestCase):
                                       normalize_obs=True)
         config = ppo.default_config()
         training_state = ppo.new_training_state(env, nets, config.n_envs, SEED)
-        ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8))
+        ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9))
         n_updates = 0
         while training_state.steps_taken < config.n_steps:
             training_state, metrics = ppo_step_jit(
@@ -164,7 +164,7 @@ class PPOTest(absltest.TestCase):
                 config.n_envs, config.rollout_length,
                 config.gae_lambda, config.discounting_factor,
                 config.clip_range, config.normalize_advantages,
-                ppo.LoggingLevel.ASSERTS
+                config.n_epochs, ppo.LoggingLevel.ASSERTS
             )
             n_updates += 1
             self.assertEqual(training_state.steps_taken, n_updates * config.rollout_length * config.n_envs)
