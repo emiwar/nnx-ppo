@@ -27,11 +27,11 @@ class PPOTest(absltest.TestCase):
         SEED = 18
         config = ppo.default_config()
         training_state = ppo.new_training_state(self.env, self.nets, config.n_envs, SEED)
-        self.assertEquals(training_state.steps_taken, 0)
+        self.assertEqual(training_state.steps_taken, 0)
         training_state, metrics = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
                                          config.gae_lambda, config.discounting_factor, config.clip_range,
                                          config.normalize_advantages)
-        self.assertEquals(training_state.steps_taken, config.n_envs*config.rollout_length)
+        self.assertEqual(training_state.steps_taken, config.n_envs*config.rollout_length)
         for k, v in metrics.items():
             self.assertTrue(jp.all(jp.isfinite(v)), f"metrics[{k}] not finite.")
 
@@ -39,21 +39,21 @@ class PPOTest(absltest.TestCase):
         SEED = 18
         config = ppo.default_config()
         training_state = ppo.new_training_state(self.env, self.nets, config.n_envs, SEED)
-        self.assertEquals(training_state.steps_taken, 0)
+        self.assertEqual(training_state.steps_taken, 0)
         training_state, _ = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
                                          config.gae_lambda, config.discounting_factor, config.clip_range,
                                          config.normalize_advantages)
-        self.assertEquals(training_state.steps_taken, config.n_envs*config.rollout_length)
+        self.assertEqual(training_state.steps_taken, config.n_envs*config.rollout_length)
         training_state, _ = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
                                          config.gae_lambda, config.discounting_factor, config.clip_range,
                                          config.normalize_advantages)
-        self.assertEquals(training_state.steps_taken, config.n_envs*config.rollout_length*2)
+        self.assertEqual(training_state.steps_taken, config.n_envs*config.rollout_length*2)
 
     def test_ppo_step_jit(self):
         SEED = 18
         config = ppo.default_config()
         training_state = nnx.jit(ppo.new_training_state, static_argnums=(0, 2, 3))(self.env, self.nets, config.n_envs, SEED)
-        self.assertEquals(training_state.steps_taken, 0)
+        self.assertEqual(training_state.steps_taken, 0)
         #ppo_step_fcn = functools.partial(ppo.ppo_step, self.env)
         ppo_step_fcn = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7))
         #ppo_step_fcn = checkify.checkify(ppo_step_fcn)
@@ -61,12 +61,12 @@ class PPOTest(absltest.TestCase):
                                          config.gae_lambda, config.discounting_factor, config.clip_range,
                                          config.normalize_advantages)
         #err.throw()
-        self.assertEquals(training_state.steps_taken, config.n_envs*config.rollout_length)
+        self.assertEqual(training_state.steps_taken, config.n_envs*config.rollout_length)
         training_state, _ = ppo_step_fcn(self.env, training_state, config.n_envs, config.rollout_length,
                                          config.gae_lambda, config.discounting_factor, config.clip_range,
                                          config.normalize_advantages)
         #err.throw()
-        self.assertEquals(training_state.steps_taken, config.n_envs*config.rollout_length*2)
+        self.assertEqual(training_state.steps_taken, config.n_envs*config.rollout_length*2)
 
 
     def test_rollout_only(self):

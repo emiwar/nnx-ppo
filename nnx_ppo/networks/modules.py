@@ -60,7 +60,7 @@ class MLP(StatefulModule):
                  transfer_function_last_layer: bool=True,
                  params_for_Linear={}):
         din_dout = zip(sizes[:-1], sizes[1:])
-        self.layers = [nnx.Linear(din, dout, rngs=rngs, **params_for_Linear) for (din, dout) in din_dout]
+        self.layers = nnx.List([nnx.Linear(din, dout, rngs=rngs, **params_for_Linear) for (din, dout) in din_dout])
         self.transfer_function = transfer_function
         self.transfer_function_last_layer = transfer_function_last_layer
 
@@ -98,7 +98,7 @@ class MLPActorCritic(PPOActorCritic):
 
 class Sequential(StatefulModule):
     def __init__(self, layers: List[StatefulModule]):
-        self.layers = layers
+        self.layers = nnx.List(layers)
 
     def __call__(self, network_state: List, obs) -> StatefulModuleOutput:
         new_network_state = []
@@ -135,7 +135,7 @@ class Normalizer(StatefulModule):
 
     def __call__(self, state, x):
         if not self.deterministic: # Set to true by module.eval() in NNX
-            self.counter += 1
+            self.counter.value += 1
             w = 1 / self.counter
             self.mean = nnx.Variable((1 - w) * self.mean + w * jp.mean(x, axis=0))
             self.mean_sqr = nnx.Variable((1 - w) * self.mean_sqr + w * jp.mean(x**2, axis=0))

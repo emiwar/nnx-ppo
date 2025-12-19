@@ -1,5 +1,6 @@
 from typing import Any, Optional, Tuple, Dict
 import enum
+import copy
 
 from ml_collections import config_dict
 import mujoco_playground
@@ -51,6 +52,7 @@ def train_ppo(env: mujoco_playground.MjxEnv,
               logging_level: LoggingLevel = LoggingLevel.BASIC):
     training_state = new_training_state(env, networks, config.n_envs, seed)
     ppo_step_jit = nnx.jit(ppo_step, static_argnums=(0, 2, 3, 7, 8))
+    metrics = None
     while training_state.steps_taken < config.n_steps:
         training_state, metrics = ppo_step_jit(
             env, training_state, 
@@ -71,7 +73,7 @@ def ppo_step(env: mujoco_playground.MjxEnv,
              normalize_advantages: bool,
              logging_level: LoggingLevel = LoggingLevel.LOSSES) -> Tuple[TrainingState, Dict]:
     reset_key, new_key = jax.random.split(training_state.rng_key)
-    pre_rollout_module_state = nnx.state(training_state.networks)
+    pre_rollout_module_state = copy.deepcopy(nnx.state(training_state.networks))
     next_net_state, next_env_state, rollout_data = rollout.unroll_env(
         env,
         training_state.env_states,
@@ -81,7 +83,7 @@ def ppo_step(env: mujoco_playground.MjxEnv,
         reset_key
     )
     if LoggingLevel.ASSERTS in logging_level:
-        post_rollout_module_state = nnx.state(training_state.networks)
+        post_rollout_module_state = copy.deepcopy(nnx.state(training_state.networks))
 
     # We need the value of the final observation
     last_obs = jax.tree.map(lambda x: x[-1], rollout_data.next_obs)
@@ -133,11 +135,11 @@ def ppo_step(env: mujoco_playground.MjxEnv,
     if LoggingLevel.TRAINING_ENV_METRICS in logging_level:
         for k,v in rollout_data.metrics.items():
             metrics[f"{k}/mean"] = v.mean()
-            metrics[f"{k}/std"] = v.mean()
+            metrics[f"{k}/std"] = v.std()
     if LoggingLevel.ASSERTS in logging_level:
         post_update_module_state = nnx.state(training_state.networks)
         metrics["asserts/module_state_identical"] = jax.tree.reduce(jp.logical_and, jax.tree.map(jp.allclose, post_rollout_module_state, post_update_module_state), jp.array(True)).astype(int)
-    training_state.optimizer.update(grads)
+    training_state.optimizer.update(training_state.networks, grads)
 
     # Now that all updates are done, we can replace all the network (and environment)
     # states in training state. Note that this would have been incorrect to update
@@ -212,9 +214,11 @@ def ppo_loss(networks: PPONetwork, network_state,
 
     # Note that it's the network's responsiblity to add entropy loss as one particular
     # instance of a regularization loss.
+    assert network_output.value_estimates.shape == target_values.shape
     actor_loss = -jp.mean(jp.minimum(loss_cand1, loss_cand2))
     critic_loss = 0.5 * jp.mean((network_output.value_estimates - target_values)**2)
     regularization_loss = jp.mean(network_output.regularization_loss)
+    
 
     if LoggingLevel.LOSSES in logging_level:
         metrics["losses/actor"] = actor_loss

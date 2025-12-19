@@ -93,9 +93,9 @@ class ModulesTest(absltest.TestCase):
         first_state = net.initialize_state(n_envs)
         next_state, first_output = net(first_state, simple_obs)
         self.assertIsInstance(first_output, types.PPONetworkOutput)
-        self.assertEquals(first_output.actions.shape, (n_envs, self.action_size))
-        self.assertEquals(first_output.loglikelihoods.shape, (n_envs,))
-        self.assertEquals(first_output.value_estimates.shape, (n_envs, 1))
+        self.assertEqual(first_output.actions.shape, (n_envs, self.action_size))
+        self.assertEqual(first_output.loglikelihoods.shape, (n_envs,))
+        self.assertEqual(first_output.value_estimates.shape, (n_envs, 1))
         self.assertLess(jp.min(first_output.value_estimates), -0.2)
         self.assertGreater(jp.max(first_output.value_estimates), 0.2)
 

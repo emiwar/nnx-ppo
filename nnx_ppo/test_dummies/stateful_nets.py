@@ -16,7 +16,7 @@ class RepeatAndCountNet(types.PPONetwork, nnx.Module):
     
     def __call__(self, state, obs) -> Tuple[Any, types.PPONetworkOutput]:
         batch_size = obs.shape[0]
-        self.n_calls += batch_size
+        self.n_calls.value += batch_size
         return (), types.PPONetworkOutput(
             actions=obs,
             loglikelihoods=jp.ones(batch_size),
