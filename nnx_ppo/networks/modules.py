@@ -44,7 +44,12 @@ class PPOActorCritic(PPONetwork, nnx.Module):
             loglikelihoods = loglikelihood,
             regularization_loss = regularization_loss,
             value_estimates = critic_output.output,
-            metrics = dict()
+            metrics = {
+                "preprocessor": preprocessor_output.metrics if self.preprocessor is not None else {},
+                "actor": actor_output.metrics,
+                "critic": critic_output.metrics,
+                "action_sampler": sampler_output.metrics,
+            }
         )
     
     def initialize_state(self, batch_size: int) -> ModuleState:

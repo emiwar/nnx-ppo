@@ -45,7 +45,10 @@ class NormalTanhSampler(ActionSampler):
       next_state=(),
       output=(action, raw_action, loglikelihood),
       regularization_loss=entropy_cost,
-      metrics=dict(),
+      metrics={
+        "mu": mean,
+        "sigma": std
+      },
     )
   
   def initialize_state(self, batch_size: int) -> Tuple[()]:

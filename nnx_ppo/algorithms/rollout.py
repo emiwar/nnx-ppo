@@ -16,7 +16,7 @@ class Transition:
   done: jax.Array
   truncated: jax.Array
   next_obs: mjx_env.Observation
-  metrics: Dict[str, jax.Array]
+  metrics: Dict[str, Any]
 
 def single_transition(env: mjx_env.MjxEnv,
                       networks: nnx_ppo.networks.types.PPONetwork,
@@ -31,7 +31,10 @@ def single_transition(env: mjx_env.MjxEnv,
                           done=next_env_state.done,
                           truncated=next_env_state.info.get("truncated", jp.zeros(next_env_state.done.shape, jp.bool)),
                           next_obs=next_env_state.obs,
-                          metrics=env_state.metrics)
+                          metrics={
+                            "env": env_state.metrics,
+                            "net": network_output.metrics,
+                          })
   @jax.vmap
   def reset_env_state(done, state, rng):
     return jax.lax.cond(done, env.reset, lambda rng: state, rng)

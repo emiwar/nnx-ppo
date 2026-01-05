@@ -17,11 +17,12 @@ class PPOTest(absltest.TestCase):
 
     def setUp(self):
         SEED = 17
-        self.env = mujoco_playground.registry.load("CartpoleSwingup")
+        self.env = mujoco_playground.registry.load("CartpoleBalance")
         self.nets = modules.MLPActorCritic(self.env.observation_size, self.env.action_size,
                                            actor_hidden_sizes=[16, 16],
                                            critic_hidden_sizes=[16, 16],
-                                           rngs = nnx.Rngs(SEED, action_sampling=SEED))
+                                           rngs = nnx.Rngs(SEED, action_sampling=SEED),
+                                           normalize_obs=True)
 
     def test_ppo_step(self):
         SEED = 18
@@ -43,11 +44,13 @@ class PPOTest(absltest.TestCase):
     def test_ppo_step_twice(self):
         SEED = 18
         config = ppo.default_config()
+        config.n_envs = 4
         training_state = ppo.new_training_state(self.env, self.nets, config.n_envs, SEED)
         self.assertEqual(training_state.steps_taken, 0)
         training_state, metrics = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
                                          config.gae_lambda, config.discounting_factor, config.clip_range,
-                                         config.normalize_advantages, config.n_epochs, ppo.LoggingLevel.ALL)
+                                         config.normalize_advantages, config.n_epochs,
+                                         ppo.LoggingLevel.ALL, (0, 25, 50, 75, 100))
         self.assertEqual(training_state.steps_taken, config.n_envs*config.rollout_length)
         training_state, metrics = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
                                          config.gae_lambda, config.discounting_factor, config.clip_range,

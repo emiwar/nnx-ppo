@@ -1,4 +1,4 @@
-from typing import Any, Optional, Tuple, Dict
+from typing import Any, Optional, Tuple, Dict, Union, Mapping
 import enum
 import copy
 
@@ -73,7 +73,8 @@ def ppo_step(env: mujoco_playground.MjxEnv,
              clip_range: float,
              normalize_advantages: bool,
              n_epochs: int,
-             logging_level: LoggingLevel = LoggingLevel.LOSSES) -> Tuple[TrainingState, Dict]:
+             logging_level: LoggingLevel = LoggingLevel.LOSSES,
+             logging_percentiles: Optional[Tuple] = None) -> Tuple[TrainingState, Dict]:
     reset_key, new_key = jax.random.split(training_state.rng_key)
     pre_rollout_module_state = copy.deepcopy(nnx.state(training_state.networks, nnx.Not(nnx.Param)))
     next_net_state, next_env_state, rollout_data = rollout.unroll_env(
@@ -139,42 +140,8 @@ def ppo_step(env: mujoco_playground.MjxEnv,
         # have been updated after the first epoch.
         logging_level = logging_level & ~LoggingLevel.ASSERTS
 
-    if LoggingLevel.ACTOR_EXTRA in logging_level:
-        metrics["loglikelihood/mean"] = jp.mean(rollout_data.network_output.loglikelihoods)
-        metrics["loglikelihood/std"] = jp.std(rollout_data.network_output.loglikelihoods)
-        metrics["loglikelihood/min"] = jp.min(rollout_data.network_output.loglikelihoods)
-        metrics["loglikelihood/max"] = jp.max(rollout_data.network_output.loglikelihoods)
-        if rollout_data.network_output.actions.shape[-1] == 1:
-            metrics["correlations/action_ll"] = jp.corrcoef(rollout_data.network_output.loglikelihoods.flatten(),
-                                                    rollout_data.network_output.actions.flatten())[0, 1]
-            metrics["correlations/advantage_action"] = jp.corrcoef(advantages.flatten(),
-                                                                   rollout_data.network_output.actions.flatten())[0, 1]
-        metrics["correlations/ll_advantage"] = jp.corrcoef(rollout_data.network_output.loglikelihoods.flatten(),
-                                                   advantages.flatten())[0, 1]
-    if LoggingLevel.CRITIC_EXTRA in logging_level:
-        metrics["losses/predicted_value_mean"] = jp.mean(rollout_data.network_output.value_estimates)
-        metrics["losses/predicted_value_std"] = jp.std(rollout_data.network_output.value_estimates)
-        metrics["losses/target_value_mean"] = jp.mean(target_values)
-        metrics["losses/target_value_std"] = jp.std(target_values)
-        metrics["losses/critic_R^2"] = 1.0 - 2 * metrics["losses/critic"] / jp.var(target_values)
-    if LoggingLevel.TRAIN_ROLLOUT_STATS in logging_level:
-        metrics["reward_mean"] = rollout_data.rewards.mean()
-        metrics["reward_std"] = rollout_data.rewards.std()
-        metrics["advantage/mean"] = advantages.mean()
-        metrics["advantage/std"] = advantages.std()
-        metrics["advantage/min"] = advantages.min()
-        metrics["advantage/max"] = advantages.max()
-        metrics["action_mean"] = rollout_data.network_output.actions.mean()
-        metrics["action_std"] = rollout_data.network_output.actions.std()
-    if LoggingLevel.TRAINING_ENV_METRICS in logging_level:
-        for k,v in rollout_data.metrics.items():
-            metrics[f"{k}/mean"] = v.mean()
-            metrics[f"{k}/std"] = v.std()
-    if LoggingLevel.ASSERTS in logging_level:
-        post_update_module_state = nnx.state(training_state.networks)
-        metrics["asserts/module_state_identical"] = jax.tree.reduce(jp.logical_and, jax.tree.map(jp.allclose, post_rollout_module_state, post_update_module_state), jp.array(True)).astype(int)
-    training_state.optimizer.update(training_state.networks, grads)
-
+    _log_metrics(metrics, rollout_data, advantages, target_values, logging_level, logging_percentiles)
+    
     # Now that all updates are done, we can replace all the network (and environment)
     # states in training state. Note that this would have been incorrect to update
     # earlier (see note above).
@@ -185,6 +152,50 @@ def ppo_step(env: mujoco_playground.MjxEnv,
         steps_taken = training_state.steps_taken + rollout_length * n_envs,
     )
     return training_state, metrics
+
+def _log_metrics(metrics: Dict[str, jax.Array],
+                 rollout_data: rollout.Transition,
+                 advantages: jax.Array,
+                 target_values: jax.Array,
+                 logging_level: LoggingLevel,
+                 percentile_levels: Optional[Tuple] = None):
+    if LoggingLevel.ACTOR_EXTRA in logging_level:
+        _log_metric(metrics, "loglikelihood", rollout_data.network_output.loglikelihoods, percentile_levels)
+        if rollout_data.network_output.actions.shape[-1] == 1:
+            metrics["correlations/action_ll"] = jp.corrcoef(rollout_data.network_output.loglikelihoods.flatten(),
+                                                    rollout_data.network_output.actions.flatten())[0, 1]
+            metrics["correlations/advantage_action"] = jp.corrcoef(advantages.flatten(),
+                                                                   rollout_data.network_output.actions.flatten())[0, 1]
+        metrics["correlations/ll_advantage"] = jp.corrcoef(rollout_data.network_output.loglikelihoods.flatten(),
+                                                   advantages.flatten())[0, 1]
+    if LoggingLevel.CRITIC_EXTRA in logging_level:
+        _log_metric(metrics, "losses/predicted_value", rollout_data.network_output.value_estimates, percentile_levels)
+        _log_metric(metrics, "losses/target_value", target_values, percentile_levels)
+        _log_metric(metrics, "advantages", advantages, percentile_levels)
+        metrics["losses/critic_R^2"] = 1.0 - 2 * metrics["losses/critic"] / jp.var(target_values)
+    if LoggingLevel.TRAIN_ROLLOUT_STATS in logging_level:
+        _log_metric(metrics, "rollout_batch/reward", rollout_data.rewards, percentile_levels)
+        _log_metric(metrics, "rollout_batch/action", rollout_data.network_output.actions, percentile_levels)
+    if LoggingLevel.TRAINING_ENV_METRICS in logging_level:
+        for k, v in rollout_data.metrics.items():
+            _log_metric(metrics, k, v, percentile_levels)
+    if LoggingLevel.ASSERTS in logging_level:
+        post_update_module_state = nnx.state(training_state.networks)
+        metrics["asserts/module_state_identical"] = jax.tree.reduce(jp.logical_and, jax.tree.map(jp.allclose, post_rollout_module_state, post_update_module_state), jp.array(True)).astype(int)
+
+def _log_metric(metrics: Dict[str, jax.Array], name: str, x: Union[Mapping, jax.Array], percentile_levels: Optional[Tuple] = None):
+    if isinstance(x, Mapping):
+        for k, v in x.items():
+            _log_metric(metrics, f"{name}/{k}", v, percentile_levels)
+        return
+    if percentile_levels is None or len(percentile_levels) == 0:
+        metrics[f"{name}/mean"] = jp.mean(x)
+        metrics[f"{name}/std"] = jp.std(x)
+    else:
+        percentiles = jp.percentile(x, jp.array(percentile_levels))
+        for (pl, p) in zip(percentile_levels, percentiles):
+            metrics[f"{name}/p{int(pl)}"] = p
+
 
 def gae(rewards, values, done, truncation, lambda_: float, gamma: float):
     assert values.shape == (rewards.shape[0]+1, rewards.shape[1])
