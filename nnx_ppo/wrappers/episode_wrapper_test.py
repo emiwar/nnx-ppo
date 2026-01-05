@@ -27,9 +27,9 @@ class EpisodeWrapperTest(absltest.TestCase):
     def test_single_env_rollout(self):
         N_STEPS = 24
         key = jax.random.key(seed=18)
-        net_key, env_key, reset_key = jax.random.split(key, 3)
+        env_key, reset_key = jax.random.split(key)
         net_state = self.nets.initialize_state(1)
-        env_state = jax.vmap(self.env.reset)(jax.random.split(env_key, 1))
+        env_state = jax.vmap(self.env.reset)(jax.random.split(env_key, (1,)))
         self.assertTrue("step_counter" in env_state.info)
 
         next_net_state, next_env_state, rollout_data = unroll_env(
@@ -40,7 +40,7 @@ class EpisodeWrapperTest(absltest.TestCase):
         N_ENVS = 256
         N_STEPS = 24
         key = jax.random.key(seed=18)
-        net_key, env_key, reset_key = jax.random.split(key, 3)
+        env_key, reset_key = jax.random.split(key)
         env_keys = jax.random.split(env_key, N_ENVS)
         env_states = jax.vmap(self.env.reset)(env_keys)
         net_states = self.nets.initialize_state(N_ENVS)

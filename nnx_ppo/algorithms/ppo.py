@@ -23,6 +23,7 @@ def default_config() -> config_dict.ConfigDict:
         discounting_factor = 0.9,
         clip_range = 0.2,
         normalize_advantages = True,
+        n_epochs = 4
     )
 
 @flax.struct.dataclass
@@ -51,7 +52,7 @@ def train_ppo(env: mujoco_playground.MjxEnv,
               seed: int = 17,
               logging_level: LoggingLevel = LoggingLevel.BASIC):
     training_state = new_training_state(env, networks, config.n_envs, seed)
-    ppo_step_jit = nnx.jit(ppo_step, static_argnums=(0, 2, 3, 7, 8))
+    ppo_step_jit = nnx.jit(ppo_step, static_argnums=(0, 2, 3, 7, 8, 9))
     metrics = None
     while training_state.steps_taken < config.n_steps:
         training_state, metrics = ppo_step_jit(
@@ -59,7 +60,7 @@ def train_ppo(env: mujoco_playground.MjxEnv,
             config.n_envs, config.rollout_length,
             config.gae_lambda, config.discounting_factor,
             config.clip_range, config.normalize_advantages,
-            logging_level
+            config.n_epochs, logging_level
         )
     return training_state, metrics
 
@@ -71,9 +72,10 @@ def ppo_step(env: mujoco_playground.MjxEnv,
              discounting_factor: float,
              clip_range: float,
              normalize_advantages: bool,
+             n_epochs: int,
              logging_level: LoggingLevel = LoggingLevel.LOSSES) -> Tuple[TrainingState, Dict]:
     reset_key, new_key = jax.random.split(training_state.rng_key)
-    pre_rollout_module_state = copy.deepcopy(nnx.state(training_state.networks))
+    pre_rollout_module_state = copy.deepcopy(nnx.state(training_state.networks, nnx.Not(nnx.Param)))
     next_net_state, next_env_state, rollout_data = rollout.unroll_env(
         env,
         training_state.env_states,
@@ -83,7 +85,7 @@ def ppo_step(env: mujoco_playground.MjxEnv,
         reset_key
     )
     if LoggingLevel.ASSERTS in logging_level:
-        post_rollout_module_state = copy.deepcopy(nnx.state(training_state.networks))
+        post_rollout_module_state = copy.deepcopy(nnx.state(training_state.networks, nnx.Not(nnx.Param)))
 
     # We need the value of the final observation
     last_obs = jax.tree.map(lambda x: x[-1], rollout_data.next_obs)
@@ -103,26 +105,58 @@ def ppo_step(env: mujoco_playground.MjxEnv,
     assert advantages.shape == values_excl_last.shape
     target_values = values_excl_last + advantages
 
-    # Rollback any module state changes that happened during the rollout, including
-    # RNG state. Second, we use the network states from training_state, which has not
-    # yet been updated to next_net_state. This ensures the updates start from the same
-    # `network_states` as the rollouts did, which is necessary for the gradients
-    # to be correct.
-    nnx.update(training_state.networks, pre_rollout_module_state)
-    grads, metrics = nnx.grad(ppo_loss, has_aux=True)(
-        networks = training_state.networks,
-        network_state = jax.lax.stop_gradient(training_state.network_states),
-        observations = rollout_data.obs,
-        done = rollout_data.done,
-        actions = jax.lax.stop_gradient(rollout_data.network_output.actions),
-        old_loglikelihoods = jax.lax.stop_gradient(rollout_data.network_output.loglikelihoods),
-        target_values = jax.lax.stop_gradient(target_values),
-        advantages = jax.lax.stop_gradient(advantages),
-        next_net_state = jax.lax.stop_gradient(next_net_state),
-        clip_range = clip_range,
-        normalize_advantages = normalize_advantages,
-        logging_level = logging_level
-    )
+    metrics = {}
+    grad_fn = nnx.grad(ppo_loss, has_aux=True)
+    for epoch in range(n_epochs):
+        # Rollback any module state changes that happened during the rollout, including
+        # RNG state. Second, we use the network states from training_state, which has not
+        # yet been updated to next_net_state. This ensures the updates start from the same
+        # `network_states` as the rollouts did, which is necessary for the gradients
+        # to be correct.
+        nnx.update(training_state.networks, pre_rollout_module_state)
+        grads, loss_metrics = grad_fn(
+            networks = training_state.networks,
+            network_state = jax.lax.stop_gradient(training_state.network_states),
+            observations = rollout_data.obs,
+            done = rollout_data.done,
+            raw_actions = jax.lax.stop_gradient(rollout_data.network_output.raw_actions),
+            old_loglikelihoods = jax.lax.stop_gradient(rollout_data.network_output.loglikelihoods),
+            target_values = jax.lax.stop_gradient(target_values),
+            advantages = jax.lax.stop_gradient(advantages),
+            next_net_state = jax.lax.stop_gradient(next_net_state),
+            clip_range = clip_range,
+            normalize_advantages = normalize_advantages,
+            logging_level = logging_level
+        )
+        training_state.optimizer.update(training_state.networks, grads)
+        metrics.update(loss_metrics)
+
+        if LoggingLevel.ASSERTS in logging_level:
+            post_update_module_state = nnx.state(training_state.networks, nnx.Not(nnx.Param))
+            metrics["asserts/module_state_identical"] = jax.tree.reduce(jp.logical_and, jax.tree.map(jp.allclose, post_rollout_module_state, post_update_module_state), jp.array(True)).astype(int)
+        # The asserts check that the actor and critic networks are identical after
+        # rollouts and after loss computation. This is no longer true once the weights
+        # have been updated after the first epoch.
+        logging_level = logging_level & ~LoggingLevel.ASSERTS
+
+    if LoggingLevel.ACTOR_EXTRA in logging_level:
+        metrics["loglikelihood/mean"] = jp.mean(rollout_data.network_output.loglikelihoods)
+        metrics["loglikelihood/std"] = jp.std(rollout_data.network_output.loglikelihoods)
+        metrics["loglikelihood/min"] = jp.min(rollout_data.network_output.loglikelihoods)
+        metrics["loglikelihood/max"] = jp.max(rollout_data.network_output.loglikelihoods)
+        if rollout_data.network_output.actions.shape[-1] == 1:
+            metrics["correlations/action_ll"] = jp.corrcoef(rollout_data.network_output.loglikelihoods.flatten(),
+                                                    rollout_data.network_output.actions.flatten())[0, 1]
+            metrics["correlations/advantage_action"] = jp.corrcoef(advantages.flatten(),
+                                                                   rollout_data.network_output.actions.flatten())[0, 1]
+        metrics["correlations/ll_advantage"] = jp.corrcoef(rollout_data.network_output.loglikelihoods.flatten(),
+                                                   advantages.flatten())[0, 1]
+    if LoggingLevel.CRITIC_EXTRA in logging_level:
+        metrics["losses/predicted_value_mean"] = jp.mean(rollout_data.network_output.value_estimates)
+        metrics["losses/predicted_value_std"] = jp.std(rollout_data.network_output.value_estimates)
+        metrics["losses/target_value_mean"] = jp.mean(target_values)
+        metrics["losses/target_value_std"] = jp.std(target_values)
+        metrics["losses/critic_R^2"] = 1.0 - 2 * metrics["losses/critic"] / jp.var(target_values)
     if LoggingLevel.TRAIN_ROLLOUT_STATS in logging_level:
         metrics["reward_mean"] = rollout_data.rewards.mean()
         metrics["reward_std"] = rollout_data.rewards.std()
@@ -175,7 +209,7 @@ def gae(rewards, values, done, truncation, lambda_: float, gamma: float):
     return advantages
 
 def ppo_loss(networks: PPONetwork, network_state,
-             observations, done, actions, old_loglikelihoods, target_values,
+             observations, done, raw_actions, old_loglikelihoods, target_values,
              advantages, next_net_state, clip_range, normalize_advantages,
              logging_level: LoggingLevel):
     metrics = dict()
@@ -184,13 +218,13 @@ def ppo_loss(networks: PPONetwork, network_state,
     def reset_net_state(done, state):
         return jax.lax.cond(done, networks.initialize_state, lambda _: state, done.shape)
     
-    def step_network(networks: PPONetwork, net_state, obs, done):
-        net_state, network_output = networks(net_state, obs)
+    def step_network(networks: PPONetwork, net_state, obs, done, raw_action):
+        net_state, network_output = networks(net_state, obs, raw_action)
         net_state = reset_net_state(done, net_state)
         return net_state, network_output
 
-    time_scan = nnx.scan(step_network, in_axes=(nnx.StateAxes({...: nnx.Carry}), nnx.Carry, 0, 0), out_axes=(nnx.Carry, 0))
-    next_net_state_again, network_output = time_scan(networks, network_state, observations, done)
+    time_scan = nnx.scan(step_network, in_axes=(nnx.StateAxes({...: nnx.Carry}), nnx.Carry, 0, 0, 0), out_axes=(nnx.Carry, 0))
+    next_net_state_again, network_output = time_scan(networks, network_state, observations, done, raw_actions)
     
     if network_output.value_estimates.ndim == 3:
         assert network_output.value_estimates.shape[2] == 1
@@ -199,7 +233,7 @@ def ppo_loss(networks: PPONetwork, network_state,
         )
 
     if LoggingLevel.ASSERTS in logging_level:
-        metrics["asserts/actions_max_diff"] = jp.max(jp.abs(network_output.actions - actions))
+        metrics["asserts/actions_max_diff"] = jp.max(jp.abs(network_output.actions - jp.tanh(raw_actions)))
         metrics["asserts/likelihoods_max_diff"] = jp.max(jp.abs(network_output.loglikelihoods - old_loglikelihoods))
         metrics["asserts/critic_values_max_diff"] = jp.max(jp.abs(network_output.value_estimates - (target_values-advantages)))
         metrics["asserts/net_state_identical"] = jax.tree.reduce(jp.logical_and, jax.tree.map(jp.allclose, next_net_state_again, next_net_state), jp.array(True)).astype(int)
@@ -224,17 +258,7 @@ def ppo_loss(networks: PPONetwork, network_state,
         metrics["losses/actor"] = actor_loss
         metrics["losses/critic"] = critic_loss
         metrics["losses/regularization"] = regularization_loss
-    if LoggingLevel.ACTOR_EXTRA in logging_level:
-        metrics["loglikelihood/mean"] = jp.mean(network_output.loglikelihoods)
-        metrics["loglikelihood/std"] = jp.std(network_output.loglikelihoods)
-        metrics["loglikelihood/min"] = jp.min(network_output.loglikelihoods)
-        metrics["loglikelihood/max"] = jp.max(network_output.loglikelihoods)
-    if LoggingLevel.CRITIC_EXTRA in logging_level:
-        metrics["losses/predicted_value_mean"] = jp.mean(network_output.value_estimates)
-        metrics["losses/predicted_value_std"] = jp.std(network_output.value_estimates)
-        metrics["losses/target_value_mean"] = jp.mean(target_values)
-        metrics["losses/target_value_std"] = jp.std(target_values)
-        metrics["losses/critic_R^2"] = 1.0 - 2 * critic_loss / jp.var(target_values)
+    
 
     total_loss = actor_loss + critic_loss + regularization_loss
 

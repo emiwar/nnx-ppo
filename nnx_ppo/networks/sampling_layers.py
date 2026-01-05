@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, Optional
 
 import jax
 import jax.numpy as jp
@@ -7,7 +7,8 @@ from flax import nnx
 from nnx_ppo.networks.types import StatefulModule, StatefulModuleOutput
 
 class ActionSampler(StatefulModule):
-  pass
+  def __call__(self, state, mean_and_std: jax.Array, raw_action: Optional[jax.Array] = None):
+    raise NotImplementedError("This is an abstract class. Subclasses must implement __call__.")
 
 class NormalTanhSampler(ActionSampler):
   """Normal distribution followed by tanh."""
@@ -20,7 +21,7 @@ class NormalTanhSampler(ActionSampler):
     self.deterministic = False
     self.entropy_weight = entropy_weight
 
-  def __call__(self, state, mean_and_std: jax.Array) -> StatefulModuleOutput:
+  def __call__(self, state, mean_and_std: jax.Array, raw_action: Optional[jax.Array] = None) -> StatefulModuleOutput:
     if self.preclamp:
       # The sampling will clamp the actions to be in (-1, 1), but we might also want
       # clamp the mean and std themselves.
@@ -28,26 +29,21 @@ class NormalTanhSampler(ActionSampler):
 
     mean, std = jp.split(mean_and_std, 2, axis=-1)
     std = (jax.nn.softplus(std) + self.min_std) * self.std_scale
+    
+    # We want to sample an action even if raw_action is specified, so that the
+    # state of the RNG is consistent after the call.
     if self.deterministic:
-      raw_action = mean
+      sampled_action = mean
     else:
-      raw_action = mean + std * jax.random.normal(self.rng(), mean.shape)
-
-    # Here is an unusual trick. Rather than passing the aciton as a parameter
-    # to this layer, we compute it again. This is possible because the RNGStream
-    # `self.rng` is reset between rollout and the loss computation, so the same
-    # action will be sampled in both passes. Having access to the raw action is
-    # numerically more stable than having only the action after the tanh, which
-    # could saturate and prevent us from applying a numerically stable inverse. But
-    # it's important that the gradient doesn't flow back through the sampling -- it
-    # should only flow through the log likelihood. Therefore, we need a stop_gradient.
-    raw_action = jax.lax.stop_gradient(raw_action)
+      sampled_action = mean + std * jax.random.normal(self.rng(), mean.shape)
+    if raw_action is None:
+      raw_action = jax.lax.stop_gradient(sampled_action)
     action = jp.tanh(raw_action)
     loglikelihood = self._loglikelihood(raw_action, mean, std)
     entropy_cost = -self.entropy_weight * self._entropy(std)
     return StatefulModuleOutput(
       next_state=(),
-      output=(action, loglikelihood),
+      output=(action, raw_action, loglikelihood),
       regularization_loss=entropy_cost,
       metrics=dict(),
     )
