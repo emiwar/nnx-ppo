@@ -128,12 +128,14 @@ class Sequential(StatefulModule):
     def __getitem__(self, ind) -> StatefulModule:
         return self.layers[ind]
     
+class NormalizerStatistics(nnx.Variable): pass
+
 class Normalizer(StatefulModule):
 
     def __init__(self, shape):
-        self.mean = nnx.Variable(jp.zeros(shape))
-        self.mean_sqr = nnx.Variable(jp.zeros(shape))
-        self.counter = nnx.Variable(jp.array(0.0))
+        self.mean = NormalizerStatistics(jp.zeros(shape))
+        self.var = NormalizerStatistics(jp.ones(shape))
+        self.counter = NormalizerStatistics(jp.array(0.0))
         self.epsilon = 1e-6
 
         # This is a hack to prevent the Normalizer from updating when the module
@@ -141,13 +143,17 @@ class Normalizer(StatefulModule):
         self.deterministic = False
 
     def __call__(self, state, x):
-        if not self.deterministic: # Set to true by module.eval() in NNX
+        if not self.deterministic:
             self.counter.value += 1
             w = 1 / self.counter
-            self.mean = nnx.Variable((1 - w) * self.mean + w * jp.mean(x, axis=0))
-            self.mean_sqr = nnx.Variable((1 - w) * self.mean_sqr + w * jp.mean(x**2, axis=0))
+            batch_mean = jp.mean(x, axis=0)
+            batch_var = jp.var(x, axis=0)
+            
+            # Update running mean and variance
+            self.mean = NormalizerStatistics((1 - w) * self.mean + w * batch_mean)
+            self.var = NormalizerStatistics((1 - w) * self.var + w * batch_var)
         
-        std = jp.sqrt(jp.maximum(self.mean_sqr - self.mean**2, self.epsilon))
+        std = jp.sqrt(jp.maximum(self.var, self.epsilon))
         return StatefulModuleOutput(
             next_state = (),
             output = (x - self.mean) / std,

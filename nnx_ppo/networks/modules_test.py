@@ -135,12 +135,12 @@ class ModulesTest(absltest.TestCase):
             state, _ = nets(state, data[i])
             self.assertEqual(nets.preprocessor.counter.value, i+1)
             self.assertEqual(nets.preprocessor.mean.value.shape, (OBS_SIZE,))
-            self.assertEqual(nets.preprocessor.mean_sqr.value.shape, (OBS_SIZE,))
+            self.assertEqual(nets.preprocessor.var.value.shape, (OBS_SIZE,))
             
             true_mean = jp.mean(data[:i+1], axis=(0, 1))
             true_std  = jp.std(data[:i+1], axis=(0, 1))
             est_mean = nets.preprocessor.mean
-            est_std = jp.sqrt(nets.preprocessor.mean_sqr - est_mean**2)
+            est_std = jp.sqrt(nets.preprocessor.var)
             self.assertLess(jp.max(jp.abs(est_mean - true_mean)), 1e-6)
             self.assertLess(jp.max(jp.abs(est_std - true_std)), 1e-6)
 
@@ -149,7 +149,7 @@ class ModulesTest(absltest.TestCase):
         state, _ = nets(state, data[i])
         self.assertEqual(nets.preprocessor.counter.value, N_STEPS)
         est_mean = nets.preprocessor.mean
-        est_std = jp.sqrt(nets.preprocessor.mean_sqr - est_mean**2)
+        est_std = jp.sqrt(nets.preprocessor.var)
         self.assertLess(jp.max(jp.abs(est_mean - true_mean)), 1e-6)
         self.assertLess(jp.max(jp.abs(est_std - true_std)), 1e-6)
         

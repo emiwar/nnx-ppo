@@ -14,12 +14,10 @@ from nnx_ppo.wrappers import episode_wrapper
 import nnx_ppo.test_dummies.parrot_env
 import nnx_ppo.test_dummies.move_to_center_env
 import nnx_ppo.test_dummies.move_from_center_env
-import nnx_ppo.test_dummies.action_sigma_debug as action_sigma_debug
-
 #jax.config.update("jax_debug_nans", True)
 
 SEED = 51
-env_name = "CartpoleBalance"
+env_name = "CartpoleSwingup"
 
 if env_name == "ParrotEnv":
     env = nnx_ppo.test_dummies.parrot_env.ParrotEnv(reward_falloff=1.0)
@@ -38,7 +36,7 @@ nets = MLPActorCritic(env.observation_size, env.action_size,
                       critic_hidden_sizes=[256,] * 2,
                       rngs=rngs,
                       transfer_function=nnx.tanh,
-                      action_sampler=NormalTanhSampler(rngs, entropy_weight=1e-3, min_std=2e-1, std_scale=1.0, preclamp=False),
+                      action_sampler=NormalTanhSampler(rngs, entropy_weight=1e-3, min_std=4e-1, std_scale=1.0, preclamp=False),
                       normalize_obs=True)
 config = ppo.default_config()
 config.normalize_advantages = True
@@ -80,7 +78,7 @@ nets.train() # Set the network back to train mode
 #    )
 #    return action_sigma_debug.extra_metrics(training_state.networks, rollout_data, (0, 25, 50, 75, 100))
 
-for iter in range(2500):
+for iter in range(25_000):
     new_training_state, metrics = ppo_step_jit(
         train_env, training_state, 
         config.n_envs, config.rollout_length,
