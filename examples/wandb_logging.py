@@ -17,7 +17,7 @@ import nnx_ppo.test_dummies.move_from_center_env
 #jax.config.update("jax_debug_nans", True)
 
 SEED = 51
-env_name = "CartpoleSwingup"
+env_name = "CartpoleBalance"
 
 if env_name == "ParrotEnv":
     env = nnx_ppo.test_dummies.parrot_env.ParrotEnv(reward_falloff=1.0)
@@ -32,17 +32,17 @@ eval_env = env
 
 rngs = nnx.Rngs(SEED)
 nets = MLPActorCritic(env.observation_size, env.action_size,
-                      actor_hidden_sizes=[256,] * 2,
+                      actor_hidden_sizes=[64,] * 4,
                       critic_hidden_sizes=[256,] * 2,
                       rngs=rngs,
                       transfer_function=nnx.tanh,
-                      action_sampler=NormalTanhSampler(rngs, entropy_weight=1e-3, min_std=4e-1, std_scale=1.0, preclamp=False),
+                      action_sampler=NormalTanhSampler(rngs, entropy_weight=5e-3, min_std=1e-1, std_scale=1.0, preclamp=False),
                       normalize_obs=True)
 config = ppo.default_config()
 config.normalize_advantages = True
 config.discounting_factor = 0.99#95
-config.n_envs = 256
-config.rollout_length = 20
+config.n_envs = 1024
+config.rollout_length = 30
 config.n_epochs = 1
 
 now = datetime.now()
@@ -57,28 +57,15 @@ wandb.init(project="nnx-ppo-basic-tests",
            notes="")
 
 training_state = ppo.new_training_state(train_env, nets, n_envs=config.n_envs, learning_rate=1e-4, seed=SEED)
-#training_state.env_states.info["step_counter"] = jax.random.randint(jax.random.key(SEED), (config.n_envs,), 0, 100)
 ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10))
 eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3))
 
 nets.eval() # Set network to eval mode
-eval_metrics = eval_rollout_jit(eval_env, nets, 64, 100, jax.random.key(SEED))
+eval_metrics = eval_rollout_jit(eval_env, nets, 64, 1000, jax.random.key(SEED))
 wandb.log({**eval_metrics, "n_steps": training_state.steps_taken})
 nets.train() # Set the network back to train mode
 
-#@nnx.jit(static_argnums=(0, 2))
-#def extra_logging(env, training_state, rollout_length: int):
-#    _, _, rollout_data = rollout.unroll_env(
-#        env,
-#        training_state.env_states,
-#        training_state.networks,
-#        training_state.network_states,
-#        rollout_length,
-#        training_state.rng_key
-#    )
-#    return action_sigma_debug.extra_metrics(training_state.networks, rollout_data, (0, 25, 50, 75, 100))
-
-for iter in range(25_000):
+for iter in range(5_000):
     new_training_state, metrics = ppo_step_jit(
         train_env, training_state, 
         config.n_envs, config.rollout_length,
@@ -91,7 +78,7 @@ for iter in range(25_000):
     training_state = new_training_state
     if iter % 10 == 0:
         nets.eval() # Set network to eval mode
-        eval_metrics = eval_rollout_jit(eval_env, nets, 64, 100, jax.random.key(SEED))
+        eval_metrics = eval_rollout_jit(eval_env, nets, 64, 1000, jax.random.key(SEED))
         metrics.update(eval_metrics)
         metrics["n_steps"] = training_state.steps_taken
         #for k, v in metrics.items():

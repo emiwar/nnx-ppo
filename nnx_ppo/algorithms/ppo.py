@@ -176,6 +176,7 @@ def _log_metrics(metrics: Dict[str, jax.Array],
     if LoggingLevel.TRAIN_ROLLOUT_STATS in logging_level:
         _log_metric(metrics, "rollout_batch/reward", rollout_data.rewards, percentile_levels)
         _log_metric(metrics, "rollout_batch/action", rollout_data.network_output.actions, percentile_levels)
+        metrics["rollout_batch/done_rate"] = rollout_data.done.mean()
     if LoggingLevel.TRAINING_ENV_METRICS in logging_level:
         for k, v in rollout_data.metrics.items():
             _log_metric(metrics, k, v, percentile_levels)

@@ -19,12 +19,12 @@ from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 from nnx_ppo.algorithms import ppo, rollout
 from nnx_ppo.wrappers import reward_scaling_wrapper
 
-env_name = 'HumanoidStand'
+env_name = 'CartpoleSwingup'
 
 env = mujoco_playground.registry.load(env_name)
 env_cfg = mujoco_playground.registry.get_default_config(env_name)
 ppo_params = mujoco_playground.config.dm_control_suite_params.brax_ppo_config(env_name)
-ppo_params.num_evals = 50
+ppo_params.num_evals = 100
 
 print("BRAX")
 x_data, y_data, y_dataerr = [np.nan], [np.nan], [np.nan]
@@ -61,7 +61,7 @@ nnx_ppo_conf = config_dict.create(
     discounting_factor = ppo_params.discounting,
     clip_range = 0.3,
     normalize_advantages = True,
-    n_epochs = ppo_params.num_updates_per_batch,
+    n_epochs = 1#ppo_params.num_updates_per_batch,
 )
 train_env = reward_scaling_wrapper.RewardScalingWrapper(env, ppo_params.reward_scaling)
 rngs = nnx.Rngs(SEED)
