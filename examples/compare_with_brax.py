@@ -26,6 +26,7 @@ env_cfg = mujoco_playground.registry.get_default_config(env_name)
 ppo_params = mujoco_playground.config.dm_control_suite_params.brax_ppo_config(env_name)
 ppo_params.num_evals = 100
 
+'''
 print("BRAX")
 x_data, y_data, y_dataerr = [np.nan], [np.nan], [np.nan]
 times = [datetime.now()]
@@ -48,21 +49,30 @@ make_inference_fn, params, metrics = brax.training.agents.ppo.train.train(
 
 df = pd.DataFrame(dict(times=times, steps=x_data, reward=y_data, reward_std=y_dataerr, impl="brax"))
 df.to_csv(f"benchmark_results/dm_control_suite/{env_name}_brax.csv")
+'''
 
 print("NNX-PPO")
 x_data, y_data, y_dataerr = [np.nan], [np.nan], [np.nan]
 times = [datetime.now()]
 SEED = 1234
 nnx_ppo_conf = config_dict.create(
-    n_envs = ppo_params.batch_size,
+    n_envs = ppo_params.num_envs,
     rollout_length = ppo_params.unroll_length,
     n_steps = ppo_params.num_timesteps,
     gae_lambda = 0.95,
     discounting_factor = ppo_params.discounting,
     clip_range = 0.3,
     normalize_advantages = True,
-    n_epochs = 1#ppo_params.num_updates_per_batch,
+    normalize_observations = ppo_params.normalize_observations,
+    n_epochs = ppo_params.num_updates_per_batch,
+    episode_length = ppo_params.episode_length,
 )
+
+# Better params?
+nnx_ppo_conf.entropy_weight = 1e-3
+nnx_ppo_conf.learning_rate = 1e-4
+nnx_ppo_conf.n_epochs = 4
+
 train_env = reward_scaling_wrapper.RewardScalingWrapper(env, ppo_params.reward_scaling)
 rngs = nnx.Rngs(SEED)
 nets = MLPActorCritic(train_env.observation_size, train_env.action_size,
@@ -70,18 +80,18 @@ nets = MLPActorCritic(train_env.observation_size, train_env.action_size,
                       critic_hidden_sizes=[256,] * 5,
                       rngs=rngs,
                       transfer_function=nnx.swish,
-                      action_sampler=NormalTanhSampler(rngs, entropy_weight=ppo_params.entropy_cost,
+                      action_sampler=NormalTanhSampler(rngs, entropy_weight=nnx_ppo_conf.entropy_weight,
                                                        min_std=1e-3, std_scale=1.0),
-                      normalize_obs=ppo_params.normalize_observations)
+                      normalize_obs=nnx_ppo_conf.normalize_observations)
 training_state = ppo.new_training_state(train_env, nets, n_envs=nnx_ppo_conf.n_envs,
-                                        learning_rate=ppo_params.learning_rate, seed=SEED)
+                                        learning_rate=nnx_ppo_conf.learning_rate, seed=SEED)
 ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9))
 eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3))
 last_eval = -ppo_params.num_timesteps
 while training_state.steps_taken < ppo_params.num_timesteps:
     if training_state.steps_taken - last_eval > ppo_params.num_timesteps // ppo_params.num_evals:
         nets.eval() # Set network to eval mode
-        eval_metrics = eval_rollout_jit(env, nets, 256, ppo_params.episode_length, jax.random.key(SEED))
+        eval_metrics = eval_rollout_jit(env, nets, 256, nnx_ppo_conf.episode_length, jax.random.key(SEED))
         times.append(datetime.now())
         x_data.append(training_state.steps_taken)
         y_data.append(eval_metrics["episode_reward_mean"])

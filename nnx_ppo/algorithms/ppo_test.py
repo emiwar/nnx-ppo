@@ -189,7 +189,7 @@ class PPOTest(absltest.TestCase):
             self.assertLess(metrics["asserts/actions_max_diff"], 1e-6)
             self.assertLess(metrics["asserts/likelihoods_max_diff"], 1e-6)
             self.assertLess(metrics["asserts/critic_values_max_diff"], 1e-6)
-            self.assertEqual(nets.preprocessor.counter.value, n_updates * config.rollout_length)
+            self.assertEqual(nets.preprocessor.counter.value, n_updates * config.rollout_length * config.n_envs)
 
             #Arbitrary threshold that empirically has been reasonably easy to reach
             if training_state.steps_taken > 1_500_000:

@@ -90,7 +90,8 @@ def eval_rollout(env: mjx_env.MjxEnv,
     next_network_state, network_output = networks(network_state, env_state.obs)
     next_env_state = jax.vmap(env.step)(env_state, network_output.actions)
     next_env_state = next_env_state.replace(done = jp.logical_or(next_env_state.done, env_state.done).astype(float))
-    cuml_reward += jp.where(next_env_state.done, 0.0, next_env_state.reward)
+    # Only accumulate reward if env was not already done before this step
+    cuml_reward += jp.where(env_state.done, 0.0, next_env_state.reward)
     lifespan += jp.logical_not(next_env_state.done).astype(float)
     return next_env_state, next_network_state, cuml_reward, lifespan
   step_partial = functools.partial(step, env)

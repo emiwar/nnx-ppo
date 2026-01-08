@@ -73,4 +73,5 @@ class NormalTanhSampler(ActionSampler):
     return log_prob
   
   def _entropy(self, std):
-    return 0.5 + 0.5 * jp.log(2.0 * jp.pi) + jp.log(std)
+    # Entropy per dimension, sum over action dimensions
+    return jp.sum(0.5 + 0.5 * jp.log(2.0 * jp.pi) + jp.log(std), axis=-1)

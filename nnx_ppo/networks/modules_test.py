@@ -133,23 +133,25 @@ class ModulesTest(absltest.TestCase):
         state = nets.initialize_state(BATCH_SIZE)
         for i in range(N_STEPS):
             state, _ = nets(state, data[i])
-            self.assertEqual(nets.preprocessor.counter.value, i+1)
+            self.assertEqual(nets.preprocessor.counter.value, (i+1) * BATCH_SIZE)
             self.assertEqual(nets.preprocessor.mean.value.shape, (OBS_SIZE,))
-            self.assertEqual(nets.preprocessor.var.value.shape, (OBS_SIZE,))
-            
+            self.assertEqual(nets.preprocessor.M2.value.shape, (OBS_SIZE,))
+
             true_mean = jp.mean(data[:i+1], axis=(0, 1))
             true_std  = jp.std(data[:i+1], axis=(0, 1))
             est_mean = nets.preprocessor.mean
-            est_std = jp.sqrt(nets.preprocessor.var)
+            est_var = nets.preprocessor.M2 / nets.preprocessor.counter
+            est_std = jp.sqrt(est_var)
             self.assertLess(jp.max(jp.abs(est_mean - true_mean)), 1e-6)
             self.assertLess(jp.max(jp.abs(est_std - true_std)), 1e-6)
 
         # Check that the normalizer isn't updated in eval mode
         nets.eval()
         state, _ = nets(state, data[i])
-        self.assertEqual(nets.preprocessor.counter.value, N_STEPS)
+        self.assertEqual(nets.preprocessor.counter.value, N_STEPS * BATCH_SIZE)
         est_mean = nets.preprocessor.mean
-        est_std = jp.sqrt(nets.preprocessor.var)
+        est_var = nets.preprocessor.M2 / nets.preprocessor.counter
+        est_std = jp.sqrt(est_var)
         self.assertLess(jp.max(jp.abs(est_mean - true_mean)), 1e-6)
         self.assertLess(jp.max(jp.abs(est_std - true_std)), 1e-6)
         

@@ -87,28 +87,29 @@ def ppo_step(env: mujoco_playground.MjxEnv,
     )
     if LoggingLevel.ASSERTS in logging_level:
         post_rollout_module_state = copy.deepcopy(nnx.state(training_state.networks, nnx.Not(nnx.Param)))
-
-    # We need the value of the final observation
-    last_obs = jax.tree.map(lambda x: x[-1], rollout_data.next_obs)
-    _, network_output = training_state.networks(next_net_state, last_obs)
-    last_value = network_output.value_estimates
-    assert last_value.shape[0] == rollout_data.rewards.shape[1]
-    last_value = last_value.reshape((1, last_value.shape[0]))
-    values_excl_last = rollout_data.network_output.value_estimates
-    values_incl_last = jp.concatenate((values_excl_last, last_value), axis=0)
-
-    advantages = gae(rewards=rollout_data.rewards,
-                     values=values_incl_last,
-                     done=rollout_data.done,
-                     truncation=rollout_data.truncated,
-                     lambda_ = gae_lambda,
-                     gamma = discounting_factor)
-    assert advantages.shape == values_excl_last.shape
-    target_values = values_excl_last + advantages
-
     metrics = {}
-    grad_fn = nnx.grad(ppo_loss, has_aux=True)
     for epoch in range(n_epochs):
+        # We need the value of the final observation
+        last_obs = jax.tree.map(lambda x: x[-1], rollout_data.next_obs)
+        _, network_output = training_state.networks(next_net_state, last_obs)
+        last_value = network_output.value_estimates
+        assert last_value.shape[0] == rollout_data.rewards.shape[1]
+        last_value = last_value.reshape((1, last_value.shape[0]))
+        values_excl_last = rollout_data.network_output.value_estimates
+        values_incl_last = jp.concatenate((values_excl_last, last_value), axis=0)
+
+        advantages = gae(rewards=rollout_data.rewards,
+                        values=values_incl_last,
+                        done=rollout_data.done,
+                        truncation=rollout_data.truncated,
+                        lambda_ = gae_lambda,
+                        gamma = discounting_factor)
+        assert advantages.shape == values_excl_last.shape
+        target_values = values_excl_last + advantages
+
+        
+        grad_fn = nnx.grad(ppo_loss, has_aux=True)
+    
         # Rollback any module state changes that happened during the rollout, including
         # RNG state. Second, we use the network states from training_state, which has not
         # yet been updated to next_net_state. This ensures the updates start from the same
@@ -129,16 +130,16 @@ def ppo_step(env: mujoco_playground.MjxEnv,
             normalize_advantages = normalize_advantages,
             logging_level = logging_level
         )
-        training_state.optimizer.update(training_state.networks, grads)
-        metrics.update(loss_metrics)
 
         if LoggingLevel.ASSERTS in logging_level:
             post_update_module_state = nnx.state(training_state.networks, nnx.Not(nnx.Param))
             metrics["asserts/module_state_identical"] = jax.tree.reduce(jp.logical_and, jax.tree.map(jp.allclose, post_rollout_module_state, post_update_module_state), jp.array(True)).astype(int)
-        # The asserts check that the actor and critic networks are identical after
-        # rollouts and after loss computation. This is no longer true once the weights
-        # have been updated after the first epoch.
-        logging_level = logging_level & ~LoggingLevel.ASSERTS
+            # The asserts check that the actor and critic networks are identical after
+            # rollouts and after loss computation. This is no longer true once the weights
+            # have been updated after the first epoch.
+            logging_level = logging_level & ~LoggingLevel.ASSERTS
+        training_state.optimizer.update(training_state.networks, grads)
+        metrics.update(loss_metrics)
 
     _log_metrics(metrics, rollout_data, advantages, target_values, logging_level, logging_percentiles)
     
@@ -172,7 +173,7 @@ def _log_metrics(metrics: Dict[str, jax.Array],
         _log_metric(metrics, "losses/predicted_value", rollout_data.network_output.value_estimates, percentile_levels)
         _log_metric(metrics, "losses/target_value", target_values, percentile_levels)
         _log_metric(metrics, "advantages", advantages, percentile_levels)
-        metrics["losses/critic_R^2"] = 1.0 - 2 * metrics["losses/critic"] / jp.var(target_values)
+        metrics["losses/critic_R^2"] = 1.0 - 2 * metrics["losses/critic"] / (jp.var(target_values) + 1e-8)
     if LoggingLevel.TRAIN_ROLLOUT_STATS in logging_level:
         _log_metric(metrics, "rollout_batch/reward", rollout_data.rewards, percentile_levels)
         _log_metric(metrics, "rollout_batch/action", rollout_data.network_output.actions, percentile_levels)
@@ -180,9 +181,9 @@ def _log_metrics(metrics: Dict[str, jax.Array],
     if LoggingLevel.TRAINING_ENV_METRICS in logging_level:
         for k, v in rollout_data.metrics.items():
             _log_metric(metrics, k, v, percentile_levels)
-    if LoggingLevel.ASSERTS in logging_level:
-        post_update_module_state = nnx.state(training_state.networks)
-        metrics["asserts/module_state_identical"] = jax.tree.reduce(jp.logical_and, jax.tree.map(jp.allclose, post_rollout_module_state, post_update_module_state), jp.array(True)).astype(int)
+    #if LoggingLevel.ASSERTS in logging_level:
+    #    post_update_module_state = nnx.state(training_state.networks)
+    #    metrics["asserts/module_state_identical"] = jax.tree.reduce(jp.logical_and, jax.tree.map(jp.allclose, post_rollout_module_state, post_update_module_state), jp.array(True)).astype(int)
 
 def _log_metric(metrics: Dict[str, jax.Array], name: str, x: Union[Mapping, jax.Array], percentile_levels: Optional[Tuple] = None):
     if isinstance(x, Mapping):

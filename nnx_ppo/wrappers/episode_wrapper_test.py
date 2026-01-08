@@ -17,7 +17,7 @@ class EpisodeWrapperTest(absltest.TestCase):
     def setUp(self):
         SEED = 17
 
-        base_env = parrot_env.ParrotEnv()
+        base_env = parrot_env.ParrotEnv(obs_size=3)
         self.env = episode_wrapper.EpisodeWrapper(base_env, max_len=10)
         self.nets = modules.MLPActorCritic(self.env.observation_size, self.env.action_size,
                                            actor_hidden_sizes=[16, 16],

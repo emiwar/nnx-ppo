@@ -90,8 +90,6 @@ class MLPActorCritic(PPOActorCritic):
                  normalize_obs: bool = False):
         if action_sampler is None:
           action_sampler = NormalTanhSampler(rngs, entropy_weight=1e-3)
-        obs_size = int(jp.sum(jax.flatten_util.ravel_pytree(obs_size)[0]))
-        action_size = int(jp.sum(jax.flatten_util.ravel_pytree(action_size)[0]))
         actor_sizes = [obs_size] + actor_hidden_sizes + [action_size*2]
         self.preprocessor = Normalizer(obs_size) if normalize_obs else None
         self.actor = MLP(actor_sizes, rngs, transfer_function, transfer_function_last_layer=False,
@@ -134,7 +132,7 @@ class Normalizer(StatefulModule):
 
     def __init__(self, shape):
         self.mean = NormalizerStatistics(jp.zeros(shape))
-        self.var = NormalizerStatistics(jp.ones(shape))
+        self.M2 = NormalizerStatistics(jp.zeros(shape))  # Sum of squared differences for Welford's algorithm
         self.counter = NormalizerStatistics(jp.array(0.0))
         self.epsilon = 1e-6
 
@@ -144,16 +142,29 @@ class Normalizer(StatefulModule):
 
     def __call__(self, state, x):
         if not self.deterministic:
-            self.counter.value += 1
-            w = 1 / self.counter
+            batch_count = x.shape[0]
+            new_count = self.counter.value + batch_count
+
+            # Welford's algorithm for batched updates
             batch_mean = jp.mean(x, axis=0)
+            delta_old = batch_mean - self.mean
+
+            # Update mean
+            self.mean.value += delta_old * (batch_count / new_count)
+
+            # Update M2 (sum of squared differences)
+            delta_new = batch_mean - self.mean
+            # Batch variance contribution
             batch_var = jp.var(x, axis=0)
-            
-            # Update running mean and variance
-            self.mean = NormalizerStatistics((1 - w) * self.mean + w * batch_mean)
-            self.var = NormalizerStatistics((1 - w) * self.var + w * batch_var)
-        
-        std = jp.sqrt(jp.maximum(self.var, self.epsilon))
+            # M2 update: add within-batch variance and between-batch variance
+            self.M2.value += batch_count * batch_var + batch_count * delta_old * delta_new
+
+            # Update counter
+            self.counter.value += batch_count
+
+        # Compute variance from M2
+        var = self.M2 / jp.maximum(self.counter, 1.0)  # Avoid division by zero
+        std = jp.sqrt(jp.maximum(var, self.epsilon))
         return StatefulModuleOutput(
             next_state = (),
             output = (x - self.mean) / std,
