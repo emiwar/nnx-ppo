@@ -27,11 +27,13 @@ class PPOTest(absltest.TestCase):
     def test_ppo_step(self):
         SEED = 18
         config = ppo.default_config()
+        config.n_epochs = 1
+        config.n_minibatches = 1
         training_state = ppo.new_training_state(self.env, self.nets, config.n_envs, SEED)
         self.assertEqual(training_state.steps_taken, 0)
         training_state, metrics = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
                                          config.gae_lambda, config.discounting_factor, config.clip_range,
-                                         config.normalize_advantages, config.n_epochs, ppo.LoggingLevel.ALL)
+                                         config.normalize_advantages, config.n_epochs, config.n_minibatches, ppo.LoggingLevel.ALL)
         self.assertEqual(training_state.steps_taken, config.n_envs*config.rollout_length)
         for k, v in metrics.items():
             self.assertTrue(jp.all(jp.isfinite(v)), f"metrics[{k}] not finite.")
@@ -45,16 +47,19 @@ class PPOTest(absltest.TestCase):
         SEED = 18
         config = ppo.default_config()
         config.n_envs = 4
+        config.n_epochs = 1
+        config.n_minibatches = 1
         training_state = ppo.new_training_state(self.env, self.nets, config.n_envs, SEED)
         self.assertEqual(training_state.steps_taken, 0)
         training_state, metrics = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
                                          config.gae_lambda, config.discounting_factor, config.clip_range,
-                                         config.normalize_advantages, config.n_epochs,
+                                         config.normalize_advantages, config.n_epochs, config.n_minibatches,
                                          ppo.LoggingLevel.ALL, (0, 25, 50, 75, 100))
         self.assertEqual(training_state.steps_taken, config.n_envs*config.rollout_length)
         training_state, metrics = ppo.ppo_step(self.env, training_state, config.n_envs, config.rollout_length,
                                          config.gae_lambda, config.discounting_factor, config.clip_range,
-                                         config.normalize_advantages, config.n_epochs, ppo.LoggingLevel.ALL)
+                                         config.normalize_advantages, config.n_epochs, config.n_minibatches,
+                                         ppo.LoggingLevel.ALL)
         self.assertEqual(training_state.steps_taken, config.n_envs*config.rollout_length*2)
         self.assertTrue(metrics["asserts/module_state_identical"])
         self.assertTrue(metrics["asserts/net_state_identical"])
@@ -65,17 +70,21 @@ class PPOTest(absltest.TestCase):
     def test_ppo_step_jit(self):
         SEED = 18
         config = ppo.default_config()
+        config.n_epochs = 1
+        config.n_minibatches = 1
         training_state = nnx.jit(ppo.new_training_state, static_argnums=(0, 2, 3))(self.env, self.nets, config.n_envs, SEED)
         self.assertEqual(training_state.steps_taken, 0)
-        ppo_step_fcn = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9))
+        ppo_step_fcn = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10))
         training_state, metrics = ppo_step_fcn(self.env, training_state, config.n_envs, config.rollout_length,
                                          config.gae_lambda, config.discounting_factor, config.clip_range,
-                                         config.normalize_advantages, config.n_epochs, ppo.LoggingLevel.ALL)
+                                         config.normalize_advantages, config.n_epochs, config.n_minibatches,
+                                         ppo.LoggingLevel.ALL)
         #err.throw()
         self.assertEqual(training_state.steps_taken, config.n_envs*config.rollout_length)
         training_state, metrics = ppo_step_fcn(self.env, training_state, config.n_envs, config.rollout_length,
                                          config.gae_lambda, config.discounting_factor, config.clip_range,
-                                         config.normalize_advantages, config.n_epochs, ppo.LoggingLevel.ALL)
+                                         config.normalize_advantages, config.n_epochs, config.n_minibatches,
+                                         ppo.LoggingLevel.ALL)
         #err.throw()
         self.assertEqual(training_state.steps_taken, config.n_envs*config.rollout_length*2)
         self.assertTrue(metrics["asserts/module_state_identical"])
@@ -84,6 +93,22 @@ class PPOTest(absltest.TestCase):
         self.assertLess(metrics["asserts/likelihoods_max_diff"], 1e-6)
         self.assertLess(metrics["asserts/critic_values_max_diff"], 1e-6)
 
+    def test_minibatching(self):
+        SEED = 18
+        config = ppo.default_config()
+        training_state = nnx.jit(ppo.new_training_state, static_argnums=(0, 2, 3))(self.env, self.nets, config.n_envs, SEED)
+        self.assertEqual(training_state.steps_taken, 0)
+        ppo_step_fcn = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10))
+        training_state, metrics = ppo_step_fcn(self.env, training_state, config.n_envs, config.rollout_length,
+                                         config.gae_lambda, config.discounting_factor, config.clip_range,
+                                         config.normalize_advantages, config.n_epochs, config.n_minibatches,
+                                         ppo.LoggingLevel.ALL & ~ppo.LoggingLevel.ASSERTS)
+        self.assertEqual(training_state.steps_taken, config.n_envs*config.rollout_length)
+        training_state, metrics = ppo_step_fcn(self.env, training_state, config.n_envs, config.rollout_length,
+                                         config.gae_lambda, config.discounting_factor, config.clip_range,
+                                         config.normalize_advantages, config.n_epochs, config.n_minibatches,
+                                         ppo.LoggingLevel.ALL & ~ppo.LoggingLevel.ASSERTS)
+        self.assertEqual(training_state.steps_taken, config.n_envs*config.rollout_length*2)
 
     def test_rollout_only(self):
         SEED = 18
@@ -140,7 +165,7 @@ class PPOTest(absltest.TestCase):
                                       rngs = nnx.Rngs(SEED, action_sampling=SEED))
         config = ppo.default_config()
         training_state = ppo.new_training_state(env, nets, config.n_envs, SEED)
-        ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9))
+        ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10))
         n_updates = 0
         while training_state.steps_taken < config.n_steps:
             training_state, metrics = ppo_step_jit(
@@ -148,15 +173,10 @@ class PPOTest(absltest.TestCase):
                 config.n_envs, config.rollout_length,
                 config.gae_lambda, config.discounting_factor,
                 config.clip_range, config.normalize_advantages,
-                config.n_epochs, ppo.LoggingLevel.ASSERTS
+                config.n_epochs, config.n_minibatches, ppo.LoggingLevel.ASSERTS
             )
             n_updates += 1
             self.assertEqual(training_state.steps_taken, n_updates * config.rollout_length * config.n_envs)
-            self.assertTrue(metrics["asserts/module_state_identical"])
-            self.assertTrue(metrics["asserts/net_state_identical"])
-            self.assertLess(metrics["asserts/actions_max_diff"], 1e-6)
-            self.assertLess(metrics["asserts/likelihoods_max_diff"], 1e-6)
-            self.assertLess(metrics["asserts/critic_values_max_diff"], 1e-6)
             
             #Arbitrary threshold that empirically has been reasonably easy to reach
             if training_state.steps_taken > 1_500_000:
@@ -171,8 +191,9 @@ class PPOTest(absltest.TestCase):
                                       rngs = nnx.Rngs(SEED, action_sampling=SEED),
                                       normalize_obs=True)
         config = ppo.default_config()
+        #config.n_miniepochs = 1
         training_state = ppo.new_training_state(env, nets, config.n_envs, SEED)
-        ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9))
+        ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10))
         n_updates = 0
         while training_state.steps_taken < config.n_steps:
             training_state, metrics = ppo_step_jit(
@@ -180,15 +201,10 @@ class PPOTest(absltest.TestCase):
                 config.n_envs, config.rollout_length,
                 config.gae_lambda, config.discounting_factor,
                 config.clip_range, config.normalize_advantages,
-                config.n_epochs, ppo.LoggingLevel.ASSERTS
+                config.n_epochs, config.n_minibatches, ppo.LoggingLevel.ASSERTS
             )
             n_updates += 1
             self.assertEqual(training_state.steps_taken, n_updates * config.rollout_length * config.n_envs)
-            self.assertTrue(metrics["asserts/module_state_identical"])
-            self.assertTrue(metrics["asserts/net_state_identical"])
-            self.assertLess(metrics["asserts/actions_max_diff"], 1e-6)
-            self.assertLess(metrics["asserts/likelihoods_max_diff"], 1e-6)
-            self.assertLess(metrics["asserts/critic_values_max_diff"], 1e-6)
             self.assertEqual(nets.preprocessor.counter.value, n_updates * config.rollout_length * config.n_envs)
 
             #Arbitrary threshold that empirically has been reasonably easy to reach

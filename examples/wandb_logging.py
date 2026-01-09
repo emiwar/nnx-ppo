@@ -36,12 +36,12 @@ nets = MLPActorCritic(env.observation_size, env.action_size,
                       critic_hidden_sizes=[256,] * 2,
                       rngs=rngs,
                       transfer_function=nnx.tanh,
-                      action_sampler=NormalTanhSampler(rngs, entropy_weight=2e-3, min_std=1.5e-1, std_scale=1.0, preclamp=False),
+                      action_sampler=NormalTanhSampler(rngs, entropy_weight=5e-3, min_std=1.5e-1, std_scale=1.0, preclamp=False),
                       normalize_obs=True)
 config = ppo.default_config()
 config.normalize_advantages = True
 config.discounting_factor = 0.99
-config.n_envs = 256
+config.n_envs = 1024
 config.rollout_length = 30
 config.n_epochs = 4
 
@@ -57,7 +57,7 @@ wandb.init(project="nnx-ppo-basic-tests",
            notes="")
 
 training_state = ppo.new_training_state(train_env, nets, n_envs=config.n_envs, learning_rate=1e-4, seed=SEED)
-ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10))
+ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10, 11))
 eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3))
 
 nets.eval() # Set network to eval mode
@@ -71,7 +71,7 @@ for iter in range(20_000):
         config.n_envs, config.rollout_length,
         config.gae_lambda, config.discounting_factor,
         config.clip_range, config.normalize_advantages,
-        config.n_epochs, ppo.LoggingLevel.ALL,
+        config.n_epochs, config.n_minibatches, ppo.LoggingLevel.ALL,
         (0, 25, 50, 75, 100)
     )
     #metrics.update(extra_logging(train_env, training_state, config.rollout_length))
