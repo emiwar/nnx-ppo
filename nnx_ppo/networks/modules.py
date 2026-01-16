@@ -93,10 +93,10 @@ class MLPActorCritic(PPOActorCritic):
         actor_sizes = [obs_size] + actor_hidden_sizes + [action_size*2]
         self.preprocessor = Normalizer(obs_size) if normalize_obs else None
         self.actor = MLP(actor_sizes, rngs, transfer_function, transfer_function_last_layer=False,
-                         params_for_Linear={'kernel_init': nnx.initializers.orthogonal(jp.sqrt(2))})
+                         params_for_Linear={'kernel_init': nnx.initializers.lecun_normal()})
         critic_sizes = [obs_size] + critic_hidden_sizes + [1]
         self.critic = MLP(critic_sizes, rngs, transfer_function, transfer_function_last_layer=False,
-                          params_for_Linear={'kernel_init': nnx.initializers.orthogonal(1.0)})
+                          params_for_Linear={'kernel_init': nnx.initializers.lecun_normal()})
         #'kernel_init': nnx.initializers.lecun_uniform()})
         self.action_sampler = action_sampler
         #self.flatten_obs = True

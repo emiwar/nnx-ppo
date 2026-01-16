@@ -220,6 +220,7 @@ def ppo_loss(networks: PPONetwork,
              gae_lambda: float,
              logging_level: LoggingLevel,
              logging_percentiles: Optional[Tuple] = None):
+    rollout_data = jax.lax.stop_gradient(rollout_data)
     metrics = dict()
 
     @jax.vmap
@@ -248,7 +249,7 @@ def ppo_loss(networks: PPONetwork,
     # We need the value of the final observation
     last_obs = jax.tree.map(lambda x: x[-1], rollout_data.next_obs)
     _, network_output_last = networks(next_net_state_again, last_obs)
-    last_value = network_output_last.value_estimates
+    last_value = jax.lax.stop_gradient(network_output_last.value_estimates)
     assert last_value.shape[0] == rollout_data.rewards.shape[1]
     last_value = last_value.reshape((1, last_value.shape[0]))
     values_excl_last = network_output.value_estimates
@@ -260,11 +261,14 @@ def ppo_loss(networks: PPONetwork,
                      lambda_ = gae_lambda,
                      gamma = discounting_factor)
     assert advantages.shape == values_excl_last.shape
+    advantages = jax.lax.stop_gradient(advantages)
     target_values = jax.lax.stop_gradient(values_excl_last + advantages)
 
     if normalize_advantages:
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-    old_loglikelihoods = rollout_data.network_output.loglikelihoods
+        advantages = jax.lax.stop_gradient(advantages)
+
+    old_loglikelihoods = jax.lax.stop_gradient(rollout_data.network_output.loglikelihoods)
     assert network_output.loglikelihoods.shape == advantages.shape
     assert old_loglikelihoods.shape == advantages.shape
     likelihood_ratios = jp.exp(network_output.loglikelihoods - old_loglikelihoods)

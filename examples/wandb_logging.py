@@ -16,7 +16,7 @@ import nnx_ppo.test_dummies.move_to_center_env
 import nnx_ppo.test_dummies.move_from_center_env
 #jax.config.update("jax_debug_nans", True)
 
-SEED = 52
+SEED = 43
 env_name = "CartpoleSwingup"
 
 if env_name == "ParrotEnv":
@@ -35,15 +35,16 @@ nets = MLPActorCritic(env.observation_size, env.action_size,
                       actor_hidden_sizes=[64,] * 4,
                       critic_hidden_sizes=[256,] * 2,
                       rngs=rngs,
-                      transfer_function=nnx.tanh,
-                      action_sampler=NormalTanhSampler(rngs, entropy_weight=5e-3, min_std=1.5e-1, std_scale=1.0, preclamp=False),
-                      normalize_obs=True)
+                      transfer_function=nnx.swish,
+                      action_sampler=NormalTanhSampler(rngs, entropy_weight=1e-3, min_std=5e-3, std_scale=1.0, preclamp=False),
+                      normalize_obs=False)
 config = ppo.default_config()
 config.normalize_advantages = True
 config.discounting_factor = 0.99
 config.n_envs = 1024
 config.rollout_length = 30
-config.n_epochs = 4
+config.n_epochs = 1
+config.n_minibatches = 1
 
 now = datetime.now()
 timestamp = now.strftime("%Y%m%d-%H%M%S")
@@ -65,7 +66,7 @@ eval_metrics = eval_rollout_jit(eval_env, nets, 64, 1000, jax.random.key(SEED))
 wandb.log({**eval_metrics, "n_steps": training_state.steps_taken})
 nets.train() # Set the network back to train mode
 
-for iter in range(20_000):
+for iter in range(2_000):
     new_training_state, metrics = ppo_step_jit(
         train_env, training_state, 
         config.n_envs, config.rollout_length,
