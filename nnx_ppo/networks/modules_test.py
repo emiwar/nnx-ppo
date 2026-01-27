@@ -146,8 +146,7 @@ class ModulesTest(absltest.TestCase):
             self.assertLess(jp.max(jp.abs(est_std - true_std)), 1e-6)
 
         # Check that the normalizer isn't updated in eval mode
-        nets.eval()
-        state, _ = nets(state, data[i])
+        state, _ = nets(state, data[i], gradient_mode=True)
         self.assertEqual(nets.preprocessor.counter.value, N_STEPS * BATCH_SIZE)
         est_mean = nets.preprocessor.mean
         est_var = nets.preprocessor.M2 / nets.preprocessor.counter

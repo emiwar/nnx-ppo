@@ -18,12 +18,12 @@ class PPOActorCritic(PPONetwork, nnx.Module):
          self.action_sampler = action_sampler
          self.preprocessor = preprocessor
 
-    def __call__(self, network_state, obs, raw_action: Optional[jax.Array] = None) -> Tuple[Dict, PPONetworkOutput]:
+    def __call__(self, network_state, obs, raw_action: Optional[jax.Array] = None, gradient_mode: bool = False) -> Tuple[Dict, PPONetworkOutput]:
         #if self.flatten_obs:
         #    obs = jax.vmap(lambda obs: jax.flatten_util.ravel_pytree(obs)[0], (0,))(obs)
         regularization_loss = jp.array(0.0)
         if self.preprocessor is not None:
-            preprocessor_output = self.preprocessor(network_state["preprocessor"], obs)
+            preprocessor_output = self.preprocessor(network_state["preprocessor"], obs, gradient_mode)
             obs = preprocessor_output.output
             network_state["preprocessor"] = preprocessor_output.next_state
             regularization_loss += preprocessor_output.regularization_loss
@@ -132,16 +132,12 @@ class Normalizer(StatefulModule):
 
     def __init__(self, shape):
         self.mean = NormalizerStatistics(jp.zeros(shape))
-        self.M2 = NormalizerStatistics(jp.zeros(shape))  # Sum of squared differences for Welford's algorithm
+        self.M2 = NormalizerStatistics(jp.zeros(shape))
         self.counter = NormalizerStatistics(jp.array(0.0))
         self.epsilon = 1e-6
 
-        # This is a hack to prevent the Normalizer from updating when the module
-        # is in `module.eval()` mode -- nnx sets the variable `deterministic`.
-        self.deterministic = False
-
-    def __call__(self, state, x):
-        if not self.deterministic:
+    def __call__(self, state, x, gradient_mode: bool = True):
+        if not gradient_mode:
             batch_count = x.shape[0]
             new_count = self.counter.value + batch_count
 

@@ -43,9 +43,8 @@ class LoggingLevel(enum.Flag):
     ACTOR_EXTRA = enum.auto()
     TRAIN_ROLLOUT_STATS = enum.auto()
     TRAINING_ENV_METRICS = enum.auto()
-    ASSERTS = enum.auto()
     BASIC = LOSSES
-    ALL = LOSSES | ACTOR_EXTRA | CRITIC_EXTRA | TRAIN_ROLLOUT_STATS | TRAINING_ENV_METRICS | ASSERTS
+    ALL = LOSSES | ACTOR_EXTRA | CRITIC_EXTRA | TRAIN_ROLLOUT_STATS | TRAINING_ENV_METRICS
     NONE = 0
 
 def train_ppo(env: mujoco_playground.MjxEnv,
@@ -78,13 +77,8 @@ def ppo_step(env: mujoco_playground.MjxEnv,
              n_minibatches: int,
              logging_level: LoggingLevel = LoggingLevel.LOSSES,
              logging_percentiles: Optional[Tuple] = None) -> Tuple[TrainingState, Dict]:
-    if LoggingLevel.ASSERTS in logging_level and (n_epochs > 1 or n_minibatches > 1):
-        warnings.warn("Logging asserts is only defined for `n_epochs=1` and `n_minibatches=1`."
-                      " Turning off `LoggingLevel.ASSERTS`.", stacklevel=2)
-        logging_level &= ~LoggingLevel.ASSERTS
-
+    
     reset_key, new_key = jax.random.split(training_state.rng_key)
-    pre_rollout_module_state = copy.deepcopy(nnx.state(training_state.networks, nnx.Not(nnx.Param)))
     next_net_state, next_env_state, rollout_data = rollout.unroll_env(
         env,
         training_state.env_states,
@@ -94,46 +88,48 @@ def ppo_step(env: mujoco_playground.MjxEnv,
         reset_key
     )
 
-    post_rollout_module_state = copy.deepcopy(nnx.state(training_state.networks, nnx.Not(nnx.Param)))
-    metrics = {}
     grad_fn = nnx.grad(ppo_loss, has_aux=True)
-    for epoch in range(n_epochs):
-        shuffle_key = jax.random.fold_in(new_key, epoch)
-        perm = jax.random.permutation(shuffle_key, n_envs)
-        minibatches = jp.split(perm, n_minibatches)
-        for inds in minibatches:
-            minibatch_data = jax.tree.map(lambda x: x[:, inds], rollout_data)
-            net_state_subset = jax.tree.map(lambda x: x[inds], training_state.network_states)
-            next_state_subset = jax.tree.map(lambda x: x[inds], next_net_state)
-            # Rollback any module state changes that happened during the rollout, including
-            # RNG state. Second, we use the network states from training_state, which has not
-            # yet been updated to next_net_state. This ensures the updates start from the same
-            # `network_states` as the rollouts did, which is necessary for the gradients
-            # to be correct.
-            nnx.update(training_state.networks, pre_rollout_module_state)
-            grads, loss_metrics = grad_fn(
-                networks = training_state.networks,
-                network_state = net_state_subset,
-                rollout_data = minibatch_data,
-                next_net_state = next_state_subset,
-                clip_range = clip_range,
-                normalize_advantages = normalize_advantages,
-                discounting_factor = discounting_factor,
-                gae_lambda = gae_lambda,
-                logging_level = logging_level,
-                logging_percentiles = logging_percentiles,
-            )
-            # The asserts check that the actor and critic networks are identical after
-            # rollouts and after loss computation. This is no longer true once the weights
-            # have been updated after the first epoch.
-            if LoggingLevel.ASSERTS in logging_level and epoch == 0:
-                post_update_module_state = nnx.state(training_state.networks, nnx.Not(nnx.Param))
-                metrics["asserts/module_state_identical"] = jax.tree.reduce(jp.logical_and, jax.tree.map(jp.allclose, post_rollout_module_state, post_update_module_state), jp.array(True)).astype(int)    
-            training_state.optimizer.update(training_state.networks, grads)
-            metrics.update(loss_metrics)
 
-    # This is needed when n_minibatches > 1 to keep module state consistent
-    nnx.update(training_state.networks, post_rollout_module_state)
+    # Pre-compute all minibatch indices for all epochs
+    total_iterations = n_epochs * n_minibatches
+    minibatch_size = n_envs // n_minibatches
+
+    def get_epoch_indices(epoch_idx):
+        shuffle_key = jax.random.fold_in(new_key, epoch_idx)
+        perm = jax.random.permutation(shuffle_key, n_envs)
+        return perm.reshape(n_minibatches, minibatch_size)
+
+    # Shape: (n_epochs, n_minibatches, minibatch_size) -> (n_epochs * n_minibatches, minibatch_size)
+    all_indices = jax.vmap(get_epoch_indices)(jp.arange(n_epochs))
+    all_indices = all_indices.reshape(total_iterations, minibatch_size)
+
+    def update_step(networks, optimizer, inds):
+        minibatch_data = jax.tree.map(lambda x: x[:, inds], rollout_data)
+        net_state_subset = jax.tree.map(lambda x: x[inds], training_state.network_states)
+        grads, loss_metrics = grad_fn(
+            networks=networks,
+            network_state=net_state_subset,
+            rollout_data=minibatch_data,
+            clip_range=clip_range,
+            normalize_advantages=normalize_advantages,
+            discounting_factor=discounting_factor,
+            gae_lambda=gae_lambda,
+            logging_level=logging_level,
+            logging_percentiles=logging_percentiles,
+        )
+        optimizer.update(networks, grads)
+        return loss_metrics
+
+    scan_update = nnx.scan(
+        update_step,
+        in_axes=(nnx.StateAxes({...: nnx.Carry}), nnx.StateAxes({...: nnx.Carry}), 0),
+        out_axes=0,
+        length=total_iterations
+    )
+
+    all_metrics = scan_update(training_state.networks, training_state.optimizer, all_indices)
+    # Take the last metrics from the scan
+    metrics = jax.tree.map(lambda x: x[-1], all_metrics)
 
     # Now that all updates are done, we can replace all the network (and environment)
     # states in training state. Note that this would have been incorrect to update
@@ -144,6 +140,7 @@ def ppo_step(env: mujoco_playground.MjxEnv,
         rng_key = new_key,
         steps_taken = training_state.steps_taken + rollout_length * n_envs,
     )
+    metrics["total_steps"] = training_state.steps_taken
     return training_state, metrics
 
 def _log_metrics(metrics: Dict[str, jax.Array],
@@ -213,7 +210,6 @@ def gae(rewards, values, done, truncation, lambda_: float, gamma: float):
 def ppo_loss(networks: PPONetwork,
              network_state,
              rollout_data: rollout.Transition,
-             next_net_state,
              clip_range: float,
              normalize_advantages: bool,
              discounting_factor: float,
@@ -228,7 +224,7 @@ def ppo_loss(networks: PPONetwork,
         return jax.lax.cond(done, networks.initialize_state, lambda _: state, done.shape)
     
     def step_network(networks: PPONetwork, net_state, obs, done, raw_action):
-        net_state, network_output = networks(net_state, obs, raw_action)
+        net_state, network_output = networks(net_state, obs, raw_action, gradient_mode=True)
         net_state = reset_net_state(done, net_state)
         return net_state, network_output
 
@@ -241,14 +237,14 @@ def ppo_loss(networks: PPONetwork,
             value_estimates = network_output.value_estimates[:, :, 0]
         )
 
-    if LoggingLevel.ASSERTS in logging_level:
-        metrics["asserts/actions_max_diff"] = jp.max(jp.abs(network_output.actions - rollout_data.network_output.actions))
-        metrics["asserts/likelihoods_max_diff"] = jp.max(jp.abs(network_output.loglikelihoods - rollout_data.network_output.loglikelihoods))
-        metrics["asserts/critic_values_max_diff"] = jp.max(jp.abs(network_output.value_estimates - rollout_data.network_output.value_estimates))
-        metrics["asserts/net_state_identical"] = jax.tree.reduce(jp.logical_and, jax.tree.map(jp.allclose, next_net_state_again, next_net_state), jp.array(True)).astype(int)
+    #if LoggingLevel.ASSERTS in logging_level:
+    #    metrics["asserts/actions_max_diff"] = jp.max(jp.abs(network_output.actions - rollout_data.network_output.actions))
+    #    metrics["asserts/likelihoods_max_diff"] = jp.max(jp.abs(network_output.loglikelihoods - rollout_data.network_output.loglikelihoods))
+    #    metrics["asserts/critic_values_max_diff"] = jp.max(jp.abs(network_output.value_estimates - rollout_data.network_output.value_estimates))
+    #    metrics["asserts/net_state_identical"] = jax.tree.reduce(jp.logical_and, jax.tree.map(jp.allclose, next_net_state_again, next_net_state), jp.array(True)).astype(int)
     # We need the value of the final observation
     last_obs = jax.tree.map(lambda x: x[-1], rollout_data.next_obs)
-    _, network_output_last = networks(next_net_state_again, last_obs)
+    _, network_output_last = networks(next_net_state_again, last_obs, gradient_mode=True)
     last_value = jax.lax.stop_gradient(network_output_last.value_estimates)
     assert last_value.shape[0] == rollout_data.rewards.shape[1]
     last_value = last_value.reshape((1, last_value.shape[0]))

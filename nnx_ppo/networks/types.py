@@ -17,7 +17,9 @@ ModuleState = Any #TODO: make into a proper type alias
 class PPONetwork(abc.ABC):
   
   @abc.abstractmethod
-  def __call__(self, network_state: ModuleState, obs, raw_action: Optional[jax.Array] = None) -> Tuple[Any, PPONetworkOutput]:
+  def __call__(self, network_state: ModuleState, obs,
+               raw_action: Optional[jax.Array] = None,
+               gradient_mode: bool = False) -> Tuple[Any, PPONetworkOutput]:
     '''Apply both actor and critic networks to the environment observation `obs`.
     
     Calling the critic on rollouts might be somewhat inefficient, but by grouping
