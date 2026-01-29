@@ -7,34 +7,21 @@ import numpy as np
 from flax import nnx
 import wandb
 
+from vnl_playground.tasks.rodent.imitation import Imitation
+from vnl_playground.tasks.wrappers import FlattenObsWrapper
+
 from nnx_ppo.networks.modules import MLPActorCritic
 from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 from nnx_ppo.algorithms import ppo, rollout
 
-from nnx_ppo.wrappers import episode_wrapper
-import nnx_ppo.test_dummies.parrot_env
-import nnx_ppo.test_dummies.move_to_center_env
-import nnx_ppo.test_dummies.move_from_center_env
-#jax.config.update("jax_debug_nans", True)
-
 SEED = 40
-env_name = "WalkerRun"
-
-if env_name == "ParrotEnv":
-    env = nnx_ppo.test_dummies.parrot_env.ParrotEnv(reward_falloff=1.0)
-elif env_name == "MoveToCenterEnv":
-    env = nnx_ppo.test_dummies.move_to_center_env.MoveToCenterEnv(reward_falloff=1.0, border_radius=10.0)
-elif env_name == "MoveFromCenterEnv":
-    env = nnx_ppo.test_dummies.move_from_center_env.MoveFromCenterEnv(border_radius=10.0)
-else:
-    env = mujoco_playground.registry.load(env_name)
-train_env = episode_wrapper.EpisodeWrapper(env, 1000)
-eval_env = env
+train_env = FlattenObsWrapper(Imitation())
+eval_env = train_env
 
 rngs = nnx.Rngs(SEED)
-nets = MLPActorCritic(env.observation_size, env.action_size,
-                      actor_hidden_sizes=[64,] * 4,
-                      critic_hidden_sizes=[256,] * 2,
+nets = MLPActorCritic(train_env.observation_size, train_env.action_size,
+                      actor_hidden_sizes=[256,] * 4,
+                      critic_hidden_sizes=[512,] * 2,
                       rngs=rngs,
                       transfer_function=nnx.swish,
                       action_sampler=NormalTanhSampler(rngs, entropy_weight=2e-3, min_std=5e-3, std_scale=1.0, preclamp=False),
@@ -49,13 +36,13 @@ config.n_minibatches = 4
 
 now = datetime.now()
 timestamp = now.strftime("%Y%m%d-%H%M%S")
-exp_name = f"{env_name}-{timestamp}"
-wandb.init(project="nnx-ppo-basic-tests",
-           config={"env": env_name,
+exp_name = f"SimpleMLP-{timestamp}"
+wandb.init(project="nnx-ppo-rodent-imitation",
+           config={"env": "StandardImitation",
                    "SEED": SEED,
                    "ppo_params": config.to_dict()},
            name=exp_name,
-           tags=(env_name,),
+           tags=("MLP",),
            notes="")
 
 training_state = ppo.new_training_state(train_env, nets, n_envs=config.n_envs, learning_rate=1e-4, seed=SEED)
@@ -80,7 +67,7 @@ for iter in range(10_000):
     )
     #metrics.update(extra_logging(train_env, training_state, config.rollout_length))
     training_state = new_training_state
-    if iter % 50 == 0:
+    if iter % 100 == 0:
         nets.eval() # Set network to eval mode
         eval_metrics = eval_rollout_jit(eval_env, nets, 64, 1000, jax.random.key(SEED))
         metrics.update(eval_metrics)
@@ -92,7 +79,7 @@ for iter in range(10_000):
         nets.train() # Set the network back to train mode
 
     # Log rendered eval rollout video every 500 iterations
-    if iter % 500 == 0 and hasattr(eval_env, 'render'):
+    if iter % 1000 == 0 and hasattr(eval_env, 'render'):
         nets.eval()
         render_key = jax.random.fold_in(jax.random.key(SEED), iter)
         stacked_states, final_state, episode_reward = eval_rollout_render_jit(

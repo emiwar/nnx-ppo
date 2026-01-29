@@ -87,7 +87,7 @@ def eval_rollout(env: mjx_env.MjxEnv,
 
   def step(env, networks, carry):
     env_state, network_state, cuml_reward, lifespan = carry
-    next_network_state, network_output = networks(network_state, env_state.obs)
+    next_network_state, network_output = networks(network_state, env_state.obs, gradient_mode=True)
     next_env_state = jax.vmap(env.step)(env_state, network_output.actions)
     next_env_state = next_env_state.replace(done = jp.logical_or(next_env_state.done, env_state.done).astype(float))
     # Only accumulate reward if env was not already done before this step
@@ -107,3 +107,56 @@ def eval_rollout(env: mjx_env.MjxEnv,
     lifespan_mean = lifespan.mean(),
     lifespan_std = lifespan.std(),
   )
+
+def eval_rollout_for_render_scan(env: mjx_env.MjxEnv,
+                                  networks: nnx_ppo.networks.types.PPONetwork,
+                                  max_episode_length: int,
+                                  key: jax.Array):
+  """JIT-compatible scan-based rollout that returns stacked states.
+
+  Returns:
+    stacked_states: State pytree with leading dimension of max_episode_length.
+    final_state: The final environment state.
+    total_reward: Total reward accumulated during the episode.
+  """
+  env_state = env.reset(key)
+  net_state = networks.initialize_state(1)
+  net_state = jax.tree.map(lambda x: x[0], net_state)
+
+  def step_fn(networks, carry):
+    env_state, net_state, cumulative_reward, already_done = carry
+
+    obs_batched = jax.tree.map(lambda x: x[None], env_state.obs)
+    net_state_batched = jax.tree.map(lambda x: x[None], net_state)
+    next_net_state, network_output = networks(net_state_batched, obs_batched, gradient_mode=True)
+    next_net_state = jax.tree.map(lambda x: x[0], next_net_state)
+    action = network_output.actions[0]
+
+    next_env_state = env.step(env_state, action)
+    # Only accumulate reward if not already done
+    new_cumulative_reward = cumulative_reward + jp.where(already_done, 0.0, next_env_state.reward)
+    new_already_done = jp.logical_or(already_done, next_env_state.done)
+
+    return (next_env_state, next_net_state, new_cumulative_reward, new_already_done), env_state
+
+  scan_fn = nnx.scan(
+    step_fn,
+    in_axes=(nnx.StateAxes({...: nnx.Carry}), nnx.Carry),
+    out_axes=(nnx.Carry, 0),
+    length=max_episode_length
+  )
+
+  init_carry = (env_state, net_state, jp.array(0.0), jp.array(False))
+  (final_env_state, _, total_reward, _), stacked_states = scan_fn(networks, init_carry)
+
+  return stacked_states, final_env_state, total_reward
+
+
+def unstack_trajectory(stacked_states, final_state, max_episode_length: int):
+  """Convert stacked states from scan to a list for rendering.
+
+  This must be called outside of JIT since it creates a Python list.
+  """
+  trajectory = [jax.tree.map(lambda x: x[i], stacked_states) for i in range(max_episode_length)]
+  trajectory.append(final_state)
+  return trajectory
