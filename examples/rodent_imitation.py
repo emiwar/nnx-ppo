@@ -1,6 +1,5 @@
 from datetime import datetime
 
-import mujoco_playground
 import jax
 import jax.numpy as jp
 import numpy as np
@@ -52,7 +51,7 @@ RENDER_EPISODE_LENGTH = 1000
 eval_rollout_render_jit = nnx.jit(rollout.eval_rollout_for_render_scan, static_argnums=(0, 2))
 
 nets.eval() # Set network to eval mode
-eval_metrics = eval_rollout_jit(eval_env, nets, 64, 1000, jax.random.key(SEED))
+eval_metrics = eval_rollout_jit(eval_env, nets, 128, 500, jax.random.key(SEED))
 wandb.log({**eval_metrics, "n_steps": training_state.steps_taken})
 nets.train() # Set the network back to train mode
 
@@ -65,31 +64,29 @@ for iter in range(10_000):
         config.n_epochs, config.n_minibatches, ppo.LoggingLevel.ALL,
         (0, 25, 50, 75, 100)
     )
-    #metrics.update(extra_logging(train_env, training_state, config.rollout_length))
     training_state = new_training_state
     if iter % 100 == 0:
+        print(f"Iter {iter}: starting eval")
         nets.eval() # Set network to eval mode
-        eval_metrics = eval_rollout_jit(eval_env, nets, 64, 1000, jax.random.key(SEED))
+        eval_metrics = eval_rollout_jit(eval_env, nets, 128, 500, jax.random.key(SEED))
         metrics.update(eval_metrics)
         metrics["n_steps"] = training_state.steps_taken
-        #for k, v in metrics.items():
-        #    if jp.any(jp.isnan(v)):
-        #        raise ValueError(f"NaN in {k}")
-        #print(iter, training_state.steps_taken, "{:.4}".format(eval_metrics["episode_reward_mean"]))
         nets.train() # Set the network back to train mode
 
     # Log rendered eval rollout video every 500 iterations
     if iter % 1000 == 0 and hasattr(eval_env, 'render'):
+        print(f"Iter {iter}: starting render eval")
         nets.eval()
         render_key = jax.random.fold_in(jax.random.key(SEED), iter)
         stacked_states, final_state, episode_reward = eval_rollout_render_jit(
             eval_env, nets, RENDER_EPISODE_LENGTH, render_key
         )
         trajectory = rollout.unstack_trajectory(stacked_states, final_state, RENDER_EPISODE_LENGTH)
-        frames = eval_env.render(trajectory, height=240, width=320)
+        frames = eval_env.render(trajectory, height=480, width=640, add_labels=True)
         # Stack frames: (T, H, W, C) -> (T, C, H, W) for wandb
         video_array = np.stack(frames).transpose(0, 3, 1, 2)
-        metrics["eval_video"] = wandb.Video(video_array, fps=30, format="mp4")
+        metrics["eval_video"] = wandb.Video(video_array, fps=50, format="mp4")
         nets.train()
 
     wandb.log(metrics)
+    break

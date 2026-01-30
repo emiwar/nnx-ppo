@@ -119,12 +119,13 @@ def eval_rollout_for_render_scan(env: mjx_env.MjxEnv,
     final_state: The final environment state.
     total_reward: Total reward accumulated during the episode.
   """
+  key, key2 = jax.random.split(key)
   env_state = env.reset(key)
   net_state = networks.initialize_state(1)
   net_state = jax.tree.map(lambda x: x[0], net_state)
 
   def step_fn(networks, carry):
-    env_state, net_state, cumulative_reward, already_done = carry
+    env_state, net_state, cumulative_reward, already_done, rng = carry
 
     obs_batched = jax.tree.map(lambda x: x[None], env_state.obs)
     net_state_batched = jax.tree.map(lambda x: x[None], net_state)
@@ -136,8 +137,10 @@ def eval_rollout_for_render_scan(env: mjx_env.MjxEnv,
     # Only accumulate reward if not already done
     new_cumulative_reward = cumulative_reward + jp.where(already_done, 0.0, next_env_state.reward)
     new_already_done = jp.logical_or(already_done, next_env_state.done)
+    next_env_state = jax.lax.cond(next_env_state.done, env.reset, lambda rng: next_env_state, rng)
 
-    return (next_env_state, next_net_state, new_cumulative_reward, new_already_done), env_state
+    new_rng, = jax.random.split(rng, 1)
+    return (next_env_state, next_net_state, new_cumulative_reward, new_already_done, new_rng), env_state
 
   scan_fn = nnx.scan(
     step_fn,
@@ -146,8 +149,8 @@ def eval_rollout_for_render_scan(env: mjx_env.MjxEnv,
     length=max_episode_length
   )
 
-  init_carry = (env_state, net_state, jp.array(0.0), jp.array(False))
-  (final_env_state, _, total_reward, _), stacked_states = scan_fn(networks, init_carry)
+  init_carry = (env_state, net_state, jp.array(0.0), jp.array(False), key2)
+  (final_env_state, _, total_reward, _, _), stacked_states = scan_fn(networks, init_carry)
 
   return stacked_states, final_env_state, total_reward
 
