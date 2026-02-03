@@ -32,7 +32,7 @@ def single_transition(env: mjx_env.MjxEnv,
                           truncated=next_env_state.info.get("truncated", jp.zeros(next_env_state.done.shape, jp.bool)),
                           next_obs=next_env_state.obs,
                           metrics={
-                            "env": env_state.metrics,
+                            "env": next_env_state.metrics,
                             "net": network_output.metrics,
                           })
   @jax.vmap
@@ -138,6 +138,7 @@ def eval_rollout_for_render_scan(env: mjx_env.MjxEnv,
     new_cumulative_reward = cumulative_reward + jp.where(already_done, 0.0, next_env_state.reward)
     new_already_done = jp.logical_or(already_done, next_env_state.done)
     next_env_state = jax.lax.cond(next_env_state.done, env.reset, lambda rng: next_env_state, rng)
+    next_net_state = jax.lax.cond(next_env_state.done, networks.initialize_state, lambda _: next_net_state, next_env_state.done.shape)
 
     new_rng, = jax.random.split(rng, 1)
     return (next_env_state, next_net_state, new_cumulative_reward, new_already_done, new_rng), env_state

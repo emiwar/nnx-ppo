@@ -1,3 +1,8 @@
+
+import os
+os.environ["MUJOCO_GL"] = "egl"
+os.environ["PYOPENGL_PLATFORM"] = "egl"
+
 from datetime import datetime
 
 import jax
@@ -14,7 +19,7 @@ from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 from nnx_ppo.algorithms import ppo, rollout
 
 SEED = 40
-train_env = FlattenObsWrapper(Imitation())
+train_env = FlattenObsWrapper(Imitation(config_overrides={'solver': 'newton'}))
 eval_env = train_env
 
 rngs = nnx.Rngs(SEED)
@@ -42,9 +47,11 @@ wandb.init(project="nnx-ppo-rodent-imitation",
                    "ppo_params": config.to_dict()},
            name=exp_name,
            tags=("MLP",),
-           notes="")
+           notes="Fixed bug in env metrics.")
 
-training_state = ppo.new_training_state(train_env, nets, n_envs=config.n_envs, learning_rate=1e-4, seed=SEED)
+training_state_init = nnx.jit(ppo.new_training_state, static_argnums=[0,2,4])
+training_state = training_state_init(train_env, nets, config.n_envs, SEED, config.learning_rate)
+
 ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10, 11))
 eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3))
 RENDER_EPISODE_LENGTH = 1000
@@ -55,7 +62,7 @@ eval_metrics = eval_rollout_jit(eval_env, nets, 128, 500, jax.random.key(SEED))
 wandb.log({**eval_metrics, "n_steps": training_state.steps_taken})
 nets.train() # Set the network back to train mode
 
-for iter in range(10_000):
+for iter in range(20_000):
     new_training_state, metrics = ppo_step_jit(
         train_env, training_state, 
         config.n_envs, config.rollout_length,
@@ -70,10 +77,9 @@ for iter in range(10_000):
         nets.eval() # Set network to eval mode
         eval_metrics = eval_rollout_jit(eval_env, nets, 128, 500, jax.random.key(SEED))
         metrics.update(eval_metrics)
-        metrics["n_steps"] = training_state.steps_taken
         nets.train() # Set the network back to train mode
 
-    # Log rendered eval rollout video every 500 iterations
+    # Log rendered eval rollout video every 1000 iterations
     if iter % 1000 == 0 and hasattr(eval_env, 'render'):
         print(f"Iter {iter}: starting render eval")
         nets.eval()
@@ -87,6 +93,4 @@ for iter in range(10_000):
         video_array = np.stack(frames).transpose(0, 3, 1, 2)
         metrics["eval_video"] = wandb.Video(video_array, fps=50, format="mp4")
         nets.train()
-
     wandb.log(metrics)
-    break

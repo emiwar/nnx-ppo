@@ -19,14 +19,13 @@ from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 from nnx_ppo.algorithms import ppo, rollout
 from nnx_ppo.wrappers import reward_scaling_wrapper
 
-env_name = 'CartpoleSwingup'
+env_name = 'WalkerStand'
 
 env = mujoco_playground.registry.load(env_name)
 env_cfg = mujoco_playground.registry.get_default_config(env_name)
 ppo_params = mujoco_playground.config.dm_control_suite_params.brax_ppo_config(env_name)
 ppo_params.num_evals = 100
 
-'''
 print("BRAX")
 x_data, y_data, y_dataerr = [np.nan], [np.nan], [np.nan]
 times = [datetime.now()]
@@ -49,7 +48,6 @@ make_inference_fn, params, metrics = brax.training.agents.ppo.train.train(
 
 df = pd.DataFrame(dict(times=times, steps=x_data, reward=y_data, reward_std=y_dataerr, impl="brax"))
 df.to_csv(f"benchmark_results/dm_control_suite/{env_name}_brax.csv")
-'''
 
 print("NNX-PPO")
 x_data, y_data, y_dataerr = [np.nan], [np.nan], [np.nan]
@@ -63,15 +61,18 @@ nnx_ppo_conf = config_dict.create(
     discounting_factor = ppo_params.discounting,
     clip_range = 0.3,
     normalize_advantages = True,
-    normalize_observations = ppo_params.normalize_observations,
+    normalize_observations = False,#ppo_params.normalize_observations,
     n_epochs = ppo_params.num_updates_per_batch,
     episode_length = ppo_params.episode_length,
+    entropy_weight = ppo_params.entropy_cost,
+    learning_rate = ppo_params.learning_rate,
+    n_minibatches = 8#ppo_params.num_minibatches,
 )
 
 # Better params?
-nnx_ppo_conf.entropy_weight = 1e-3
-nnx_ppo_conf.learning_rate = 1e-4
-nnx_ppo_conf.n_epochs = 4
+#nnx_ppo_conf.entropy_weight = 1e-3
+#nnx_ppo_conf.learning_rate = 1e-4
+#nnx_ppo_conf.n_epochs = 4
 
 train_env = reward_scaling_wrapper.RewardScalingWrapper(env, ppo_params.reward_scaling)
 rngs = nnx.Rngs(SEED)
@@ -85,7 +86,7 @@ nets = MLPActorCritic(train_env.observation_size, train_env.action_size,
                       normalize_obs=nnx_ppo_conf.normalize_observations)
 training_state = ppo.new_training_state(train_env, nets, n_envs=nnx_ppo_conf.n_envs,
                                         learning_rate=nnx_ppo_conf.learning_rate, seed=SEED)
-ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9))
+ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10, 11))
 eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3))
 last_eval = -ppo_params.num_timesteps
 while training_state.steps_taken < ppo_params.num_timesteps:
@@ -105,7 +106,8 @@ while training_state.steps_taken < ppo_params.num_timesteps:
         nnx_ppo_conf.n_envs, nnx_ppo_conf.rollout_length,
         nnx_ppo_conf.gae_lambda, nnx_ppo_conf.discounting_factor,
         nnx_ppo_conf.clip_range, nnx_ppo_conf.normalize_advantages,
-        nnx_ppo_conf.n_epochs, ppo.LoggingLevel.NONE
+        nnx_ppo_conf.n_epochs,   nnx_ppo_conf.n_minibatches, ppo.LoggingLevel.NONE,
+        (0, 25, 50, 75, 100)
     )
     training_state = new_training_state
     

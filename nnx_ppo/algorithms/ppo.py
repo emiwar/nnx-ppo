@@ -23,6 +23,7 @@ def default_config() -> config_dict.ConfigDict:
         gae_lambda = 0.95,
         discounting_factor = 0.9,
         clip_range = 0.2,
+        learning_rate = 1e-4,
         normalize_advantages = True,
         n_epochs = 4,
         n_minibatches = 4,
@@ -35,7 +36,7 @@ class TrainingState:
     env_states: mujoco_playground.State
     optimizer: nnx.Optimizer
     rng_key: jax.Array
-    steps_taken: int
+    steps_taken: jax.Array
 
 class LoggingLevel(enum.Flag):
     LOSSES = enum.auto()
@@ -131,6 +132,15 @@ def ppo_step(env: mujoco_playground.MjxEnv,
     # Take the last metrics from the scan
     metrics = jax.tree.map(lambda x: x[-1], all_metrics)
 
+    if LoggingLevel.TRAINING_ENV_METRICS in logging_level:
+        for k, v in rollout_data.metrics.items():
+            _log_metric(metrics, k, v, logging_percentiles)
+    if LoggingLevel.TRAIN_ROLLOUT_STATS in logging_level:
+        _log_metric(metrics, "rollout_batch/reward", rollout_data.rewards, logging_percentiles)
+        _log_metric(metrics, "rollout_batch/action", rollout_data.network_output.actions, logging_percentiles)
+        metrics["rollout_batch/done_rate"] = rollout_data.done.mean()
+        metrics["rollout_batch/truncation_rate"] = rollout_data.truncated.mean()
+
     # Now that all updates are done, we can replace all the network (and environment)
     # states in training state. Note that this would have been incorrect to update
     # earlier (see note above).
@@ -163,20 +173,15 @@ def _log_metrics(metrics: Dict[str, jax.Array],
         _log_metric(metrics, "losses/target_value", target_values, percentile_levels)
         _log_metric(metrics, "advantages", advantages, percentile_levels)
         metrics["losses/critic_R^2"] = 1.0 - 2 * metrics["losses/critic"] / (jp.var(target_values) + 1e-8)
-    if LoggingLevel.TRAIN_ROLLOUT_STATS in logging_level:
-        _log_metric(metrics, "rollout_batch/reward", rollout_data.rewards, percentile_levels)
-        _log_metric(metrics, "rollout_batch/action", rollout_data.network_output.actions, percentile_levels)
-        metrics["rollout_batch/done_rate"] = rollout_data.done.mean()
-    if LoggingLevel.TRAINING_ENV_METRICS in logging_level:
-        for k, v in rollout_data.metrics.items():
-            _log_metric(metrics, k, v, percentile_levels)
 
 def _log_metric(metrics: Dict[str, jax.Array], name: str, x: Union[Mapping, jax.Array], percentile_levels: Optional[Tuple] = None):
     if isinstance(x, Mapping):
         for k, v in x.items():
             _log_metric(metrics, f"{name}/{k}", v, percentile_levels)
         return
-    if percentile_levels is None or len(percentile_levels) == 0:
+    if name.startswith("env/termination"): #These are boolean, but casted to float earlier
+        metrics[name] = jp.mean(x)
+    elif percentile_levels is None or len(percentile_levels) == 0:
         metrics[f"{name}/mean"] = jp.mean(x)
         metrics[f"{name}/std"] = jp.std(x)
     else:
@@ -308,7 +313,7 @@ def new_training_state(env: mujoco_playground.MjxEnv,
     # Setup optimizer
     optimizer = nnx.Optimizer(networks, optax.adam(learning_rate=learning_rate), wrt=nnx.Param)
     return TrainingState(networks, network_states, env_states,
-                         optimizer, training_key, 0)
+                         optimizer, training_key, jp.array(0))
 
 def checkify_tree_equals(A, B, msg: str):
     jax.tree.map(lambda a,b: checkify.check(jp.all(a == b), msg), A, B)
