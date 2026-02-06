@@ -35,18 +35,14 @@ def single_transition(env: mjx_env.MjxEnv,
                             "env": next_env_state.metrics,
                             "net": network_output.metrics,
                           })
-  @jax.vmap
-  def reset_env_state(done, state, rng):
-    return jax.lax.cond(done, env.reset, lambda rng: state, rng)
-  next_env_state = reset_env_state(transition.done,
-                                   next_env_state,
-                                   rng_keys_for_env_reset)
   
-  @jax.vmap
-  def reset_net_state(done, state):
-    return jax.lax.cond(done, networks.initialize_state, lambda _: state, done.shape)
-  next_network_state = reset_net_state(transition.done,
-                                       next_network_state)
+  done = transition.done
+  reset_states = jax.vmap(env.reset)(rng_keys_for_env_reset)
+  next_env_state = tree_where(done, reset_states, next_env_state)
+
+  reset_network_states = networks.initialize_state(done.shape)
+  next_network_state = tree_where(done, reset_network_states, next_network_state)
+  
   return (next_network_state, next_env_state), transition
 
 def unroll_env(env: mjx_env.MjxEnv,
@@ -164,3 +160,9 @@ def unstack_trajectory(stacked_states, final_state, max_episode_length: int):
   trajectory = [jax.tree.map(lambda x: x[i], stacked_states) for i in range(max_episode_length)]
   trajectory.append(final_state)
   return trajectory
+
+def tree_where(cond, on_true, on_false):
+  def broadcast_where(x, y):
+    cond_reshaped = cond.reshape(cond.shape + (1,) * (x.ndim - cond.ndim))
+    return jp.where(cond_reshaped, x, y)
+  return jax.tree.map(broadcast_where, on_true, on_false)

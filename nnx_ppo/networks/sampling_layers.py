@@ -65,7 +65,7 @@ class NormalTanhSampler(ActionSampler):
     # Modify the log-likelihood due to tanh transformation. Should be log|d/dz tanh(z)|.
     # The expression below is a numerically stable version of log|d/dz tanh(z)| borrowed from Brax
     log_det_jacobian = 2.0 * (jp.log(2.0) - z - jax.nn.softplus(-2.0 * z))
-    log_prob += log_det_jacobian
+    log_prob -= log_det_jacobian
 
     # Sum over last dimension if needed
     log_prob = jp.sum(log_prob, axis=-1)
