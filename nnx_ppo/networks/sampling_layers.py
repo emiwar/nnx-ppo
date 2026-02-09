@@ -25,7 +25,7 @@ class NormalTanhSampler(ActionSampler):
     if self.preclamp:
       # The sampling will clamp the actions to be in (-1, 1), but we might also want
       # clamp the mean and std themselves.
-      mean_and_std = jp.tanh(mean_and_std)
+      mean_and_std = 5.0 * jp.tanh(mean_and_std)
 
     mean, std = jp.split(mean_and_std, 2, axis=-1)
     std = (jax.nn.softplus(std) + self.min_std) * self.std_scale

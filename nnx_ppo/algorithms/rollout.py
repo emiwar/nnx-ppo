@@ -1,4 +1,4 @@
-from typing import Union, Dict, Tuple, Any
+from typing import Union, Dict, Tuple, Any, Optional
 import functools
 
 from flax import struct, nnx
@@ -76,7 +76,8 @@ def eval_rollout(env: mjx_env.MjxEnv,
                  networks: nnx_ppo.networks.types.PPONetwork,
                  n_envs: int,
                  max_episode_length: int,
-                 key: jax.Array):
+                 key: jax.Array,
+                 logging_percentiles: Optional[jax.Array] = None):
   env_keys = jax.random.split(key, n_envs)
   env_states = jax.vmap(env.reset)(env_keys)
   net_states = networks.initialize_state(n_envs)
@@ -97,12 +98,20 @@ def eval_rollout(env: mjx_env.MjxEnv,
                        length = max_episode_length)
   init_carry = (env_states, net_states, env_states.reward, jp.zeros(n_envs))
   _, _, cuml_reward, lifespan = step_scan(networks, init_carry)
-  return dict(
+  
+  metrics = dict(
     episode_reward_mean = cuml_reward.mean(),
     episode_reward_std = cuml_reward.std(),
     lifespan_mean = lifespan.mean(),
     lifespan_std = lifespan.std(),
   )
+  if logging_percentiles is not None:
+    metrics = {}
+    for name, arr in [("episode_reward", cuml_reward), ("lifespan", lifespan)]:
+      percentiles = jp.percentile(arr, jp.array(logging_percentiles))
+      for (pl, p) in zip(logging_percentiles, percentiles):
+        metrics[f"{name}/p{int(pl)}"] = p
+  return metrics
 
 def eval_rollout_for_render_scan(env: mjx_env.MjxEnv,
                                   networks: nnx_ppo.networks.types.PPONetwork,

@@ -44,6 +44,7 @@ class LoggingLevel(enum.Flag):
     ACTOR_EXTRA = enum.auto()
     TRAIN_ROLLOUT_STATS = enum.auto()
     TRAINING_ENV_METRICS = enum.auto()
+    GRAD_NORM = enum.auto()
     BASIC = LOSSES
     ALL = LOSSES | ACTOR_EXTRA | CRITIC_EXTRA | TRAIN_ROLLOUT_STATS | TRAINING_ENV_METRICS
     NONE = 0
@@ -118,6 +119,9 @@ def ppo_step(env: mujoco_playground.MjxEnv,
             logging_level=logging_level,
             logging_percentiles=logging_percentiles,
         )
+        if LoggingLevel.GRAD_NORM in logging_level:
+            grad_norm = jp.sqrt(sum(jp.sum(g**2) for g in jax.tree.leaves(grads)))
+            loss_metrics["grad_norm"] = grad_norm
         optimizer.update(networks, grads)
         return loss_metrics
 
@@ -132,14 +136,7 @@ def ppo_step(env: mujoco_playground.MjxEnv,
     # Take the last metrics from the scan
     metrics = jax.tree.map(lambda x: x[-1], all_metrics)
 
-    if LoggingLevel.TRAINING_ENV_METRICS in logging_level:
-        for k, v in rollout_data.metrics.items():
-            _log_metric(metrics, k, v, logging_percentiles)
-    if LoggingLevel.TRAIN_ROLLOUT_STATS in logging_level:
-        _log_metric(metrics, "rollout_batch/reward", rollout_data.rewards, logging_percentiles)
-        _log_metric(metrics, "rollout_batch/action", rollout_data.network_output.actions, logging_percentiles)
-        metrics["rollout_batch/done_rate"] = rollout_data.done.mean()
-        metrics["rollout_batch/truncation_rate"] = rollout_data.truncated.mean()
+    _log_metrics(metrics, rollout_data, logging_level, logging_percentiles)
 
     # Now that all updates are done, we can replace all the network (and environment)
     # states in training state. Note that this would have been incorrect to update
@@ -155,24 +152,23 @@ def ppo_step(env: mujoco_playground.MjxEnv,
 
 def _log_metrics(metrics: Dict[str, jax.Array],
                  rollout_data: rollout.Transition,
-                 advantages: jax.Array,
-                 target_values: jax.Array,
                  logging_level: LoggingLevel,
                  percentile_levels: Optional[Tuple] = None):
+    if LoggingLevel.TRAINING_ENV_METRICS in logging_level:
+        for k, v in rollout_data.metrics.items():
+            _log_metric(metrics, k, v, percentile_levels)
+    if LoggingLevel.TRAIN_ROLLOUT_STATS in logging_level:
+        _log_metric(metrics, "rollout_batch/reward", rollout_data.rewards, percentile_levels)
+        _log_metric(metrics, "rollout_batch/action", rollout_data.network_output.actions, percentile_levels)
+        metrics["rollout_batch/done_rate"] = rollout_data.done.mean()
+        metrics["rollout_batch/truncation_rate"] = rollout_data.truncated.mean()
     if LoggingLevel.ACTOR_EXTRA in logging_level:
         _log_metric(metrics, "loglikelihood", rollout_data.network_output.loglikelihoods, percentile_levels)
         if rollout_data.network_output.actions.shape[-1] == 1:
             metrics["correlations/action_ll"] = jp.corrcoef(rollout_data.network_output.loglikelihoods.flatten(),
                                                     rollout_data.network_output.actions.flatten())[0, 1]
-            metrics["correlations/advantage_action"] = jp.corrcoef(advantages.flatten(),
-                                                                   rollout_data.network_output.actions.flatten())[0, 1]
-        metrics["correlations/ll_advantage"] = jp.corrcoef(rollout_data.network_output.loglikelihoods.flatten(),
-                                                   advantages.flatten())[0, 1]
     if LoggingLevel.CRITIC_EXTRA in logging_level:
         _log_metric(metrics, "losses/predicted_value", rollout_data.network_output.value_estimates, percentile_levels)
-        _log_metric(metrics, "losses/target_value", target_values, percentile_levels)
-        _log_metric(metrics, "advantages", advantages, percentile_levels)
-        metrics["losses/critic_R^2"] = 1.0 - 2 * metrics["losses/critic"] / (jp.var(target_values) + 1e-8)
 
 def _log_metric(metrics: Dict[str, jax.Array], name: str, x: Union[Mapping, jax.Array], percentile_levels: Optional[Tuple] = None):
     if isinstance(x, Mapping):
@@ -283,12 +279,21 @@ def ppo_loss(networks: PPONetwork,
     critic_loss = 0.5 * jp.mean((network_output.value_estimates - target_values)**2)
     regularization_loss = jp.mean(network_output.regularization_loss)
     
-
     if LoggingLevel.LOSSES in logging_level:
         metrics["losses/actor"] = actor_loss
         metrics["losses/critic"] = critic_loss
         metrics["losses/regularization"] = regularization_loss
-    _log_metrics(metrics, rollout_data, advantages, target_values, logging_level, logging_percentiles)
+    if LoggingLevel.ACTOR_EXTRA in logging_level:
+            metrics["correlations/advantage_action"] = jp.corrcoef(advantages.flatten(),
+                                                                   rollout_data.network_output.actions.flatten())[0, 1]
+            metrics["correlations/ll_advantage"] = jp.corrcoef(rollout_data.network_output.loglikelihoods.flatten(),
+                                                    advantages.flatten())[0, 1]
+            _log_metric(metrics, "likelihood ratios", likelihood_ratios, logging_percentiles)
+            metrics["clipping_fraction"] = jp.mean(jp.logical_or(likelihood_ratios<1-clip_range, likelihood_ratios>1+clip_range))
+    if LoggingLevel.CRITIC_EXTRA in logging_level:
+        _log_metric(metrics, "losses/predicted_value", rollout_data.network_output.value_estimates, logging_percentiles)
+        _log_metric(metrics, "advantages", advantages, logging_percentiles)
+        metrics["losses/critic_R^2"] = 1.0 - 2 * metrics["losses/critic"] / (jp.var(target_values) + 1e-8)
 
     total_loss = actor_loss + critic_loss + regularization_loss
 
@@ -313,7 +318,7 @@ def new_training_state(env: mujoco_playground.MjxEnv,
     # Setup optimizer
     optimizer = nnx.Optimizer(networks, optax.adam(learning_rate=learning_rate), wrt=nnx.Param)
     return TrainingState(networks, network_states, env_states,
-                         optimizer, training_key, jp.array(0))
+                         optimizer, training_key, jp.array(0.0))
 
 def checkify_tree_equals(A, B, msg: str):
     jax.tree.map(lambda a,b: checkify.check(jp.all(a == b), msg), A, B)
