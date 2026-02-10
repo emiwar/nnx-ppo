@@ -143,6 +143,7 @@ def compute_metrics(loss_metrics: Dict[str, jax.Array],
         _log_metric(metrics, "rollout_batch/action", rollout_data.network_output.actions, percentile_levels)
         metrics["rollout_batch/done_rate"] = rollout_data.done.mean()
         metrics["rollout_batch/truncation_rate"] = rollout_data.truncated.mean()
+        metrics["rollout_batch/obs_NaN"] = 1.0 - jp.isfinite(rollout_data.obs).mean()
     if LoggingLevel.ACTOR_EXTRA in logging_level:
         _log_metric(metrics, "loglikelihood", rollout_data.network_output.loglikelihoods, percentile_levels)
         if rollout_data.network_output.actions.shape[-1] == 1:
@@ -261,6 +262,8 @@ def ppo_loss(networks: PPONetwork,
         loss_metrics["correlations/ll_advantage"] = jp.corrcoef(rollout_data.network_output.loglikelihoods.flatten(), advantages.flatten())[0, 1]
         loss_metrics["losses/likelihood_ratios"] = likelihood_ratios
         loss_metrics["losses/clipping_fraction"] = jp.mean(jp.logical_or(likelihood_ratios<1-clip_range, likelihood_ratios>1+clip_range))
+        loss_metrics["losses/new_loglikelihoods"] = network_output.loglikelihoods
+        loss_metrics["losses/loglikelihood_diff"] = network_output.loglikelihoods - old_loglikelihoods
     if LoggingLevel.CRITIC_EXTRA in logging_level:
         loss_metrics["losses/predicted_value"] = values_excl_last
         loss_metrics["losses/advantages"] = advantages
