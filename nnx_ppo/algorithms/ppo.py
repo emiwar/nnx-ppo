@@ -261,15 +261,26 @@ def ppo_loss(networks: PPONetwork,
     if LoggingLevel.ACTOR_EXTRA in logging_level:
         loss_metrics["correlations/ll_advantage"] = jp.corrcoef(rollout_data.network_output.loglikelihoods.flatten(), advantages.flatten())[0, 1]
         loss_metrics["losses/likelihood_ratios"] = likelihood_ratios
+        loss_metrics["losses/likelihood_ratios_mean"] = jp.mean(likelihood_ratios)
         loss_metrics["losses/clipping_fraction"] = jp.mean(jp.logical_or(likelihood_ratios<1-clip_range, likelihood_ratios>1+clip_range))
         loss_metrics["losses/new_loglikelihoods"] = network_output.loglikelihoods
         loss_metrics["losses/loglikelihood_diff"] = network_output.loglikelihoods - old_loglikelihoods
+        loss_metrics["losses/mu_diff"] = network_output.metrics["action_sampler"]["mu"] - rollout_data.network_output.metrics["action_sampler"]["mu"]
+        loss_metrics["losses/sigma_diff"] = network_output.metrics["action_sampler"]["sigma"] - rollout_data.network_output.metrics["action_sampler"]["sigma"]
     if LoggingLevel.CRITIC_EXTRA in logging_level:
         loss_metrics["losses/predicted_value"] = values_excl_last
         loss_metrics["losses/advantages"] = advantages
         loss_metrics["losses/critic_R^2"] = 1.0 - 2 * critic_loss / (jp.var(target_values) + 1e-8)
 
     total_loss = actor_loss + critic_loss + regularization_loss
+
+    #Sometimes, for some inexplicable reason, the network produces garbage outputs
+    #during this function, but not during earlier rollouts. So a heuristic is that
+    #if the _mean_ likelihood ratio is out of clipping bounds, the minibatch is bad
+    #and we just ignore it by setting the loss to 0.0. 
+    total_loss *= jp.mean(likelihood_ratios) > (1-clip_range)
+    total_loss *= jp.mean(likelihood_ratios) < (1+clip_range)
+
     return total_loss, loss_metrics
 
 def new_training_state(env: mujoco_playground.MjxEnv,
