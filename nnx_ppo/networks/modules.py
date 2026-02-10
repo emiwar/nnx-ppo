@@ -157,8 +157,8 @@ class Normalizer(StatefulModule):
         # Compute variance from M2
         std = jax.lax.cond(self.counter.value>0,
                            self.M2_to_std,
-                           lambda M2: jax.tree.map(lambda x: jp.full_like(x, 10.0), M2),
-                           self.M2)
+                           lambda M2: jax.tree.map(lambda x: jp.full(x.shape, 10.0), M2),
+                           self.M2.value)
         output = jax.tree.map(lambda x, m, s: (x-m)/s, x, self.mean, std)
         return StatefulModuleOutput(
             next_state = (),
