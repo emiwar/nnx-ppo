@@ -4,6 +4,7 @@ import jax.numpy as jp
 from flax import nnx
 
 from nnx_ppo.networks import modules, types
+from nnx_ppo.algorithms.types import Transition
 
 class ModulesTest(absltest.TestCase):
 
@@ -132,7 +133,15 @@ class ModulesTest(absltest.TestCase):
         data = jax.random.normal(mean_key, (OBS_SIZE,)) + jax.random.normal(var_key, (N_STEPS+1, BATCH_SIZE, OBS_SIZE))
         state = nets.initialize_state(BATCH_SIZE)
         for i in range(N_STEPS):
-            state, _ = nets(state, data[i])
+            state, network_output = nets(state, data[i])
+            dummy_transition = Transition(obs=data[i:i+1],
+                                          network_output=network_output,
+                                          rewards=jp.zeros((1, BATCH_SIZE)),
+                                          done=jp.zeros((1, BATCH_SIZE), jp.bool),
+                                          truncated=jp.zeros((1, BATCH_SIZE), jp.bool),
+                                          next_obs=jp.zeros_like(data[i:i+1]),
+                                          metrics={})
+            nets.update_statistics(dummy_transition, (i+1) * BATCH_SIZE)
             self.assertEqual(nets.preprocessor.counter.value, (i+1) * BATCH_SIZE)
             self.assertEqual(nets.preprocessor.mean.value.shape, (OBS_SIZE,))
             self.assertEqual(nets.preprocessor.M2.value.shape, (OBS_SIZE,))
@@ -144,15 +153,6 @@ class ModulesTest(absltest.TestCase):
             est_std = jp.sqrt(est_var)
             self.assertLess(jp.max(jp.abs(est_mean - true_mean)), 1e-6)
             self.assertLess(jp.max(jp.abs(est_std - true_std)), 1e-6)
-
-        # Check that the normalizer isn't updated in eval mode
-        state, _ = nets(state, data[i], gradient_mode=True)
-        self.assertEqual(nets.preprocessor.counter.value, N_STEPS * BATCH_SIZE)
-        est_mean = nets.preprocessor.mean
-        est_var = nets.preprocessor.M2 / nets.preprocessor.counter
-        est_std = jp.sqrt(est_var)
-        self.assertLess(jp.max(jp.abs(est_mean - true_mean)), 1e-6)
-        self.assertLess(jp.max(jp.abs(est_std - true_std)), 1e-6)
         
 if __name__ == '__main__':
     absltest.main()

@@ -6,22 +6,13 @@ import jax
 import jax.numpy as jp
 from mujoco_playground._src import mjx_env
 import nnx_ppo.networks.types
+from nnx_ppo.algorithms.types import Transition
 
-@struct.dataclass
-class Transition:
-  """Environment state for training and inference."""
-  obs: mjx_env.Observation
-  network_output: nnx_ppo.networks.types.PPONetworkOutput
-  rewards: Union[Dict, jax.Array]
-  done: jax.Array
-  truncated: jax.Array
-  next_obs: mjx_env.Observation
-  metrics: Dict[str, Any]
 
 def single_transition(env: mjx_env.MjxEnv,
                       networks: nnx_ppo.networks.types.PPONetwork,
                       carry: Tuple[Dict, mjx_env.State],
-                      rng_keys_for_env_reset: jax.Array):
+                      rng_keys_for_env_reset: jax.Array) -> Tuple[Tuple, Transition]:
   network_state, env_state = carry
   next_network_state, network_output = networks(network_state, env_state.obs)
   next_env_state = jax.vmap(env.step)(env_state, network_output.actions)
@@ -84,7 +75,7 @@ def eval_rollout(env: mjx_env.MjxEnv,
 
   def step(env, networks, carry):
     env_state, network_state, cuml_reward, lifespan = carry
-    next_network_state, network_output = networks(network_state, env_state.obs, gradient_mode=True)
+    next_network_state, network_output = networks(network_state, env_state.obs)
     next_env_state = jax.vmap(env.step)(env_state, network_output.actions)
     next_env_state = next_env_state.replace(done = jp.logical_or(next_env_state.done, env_state.done).astype(float))
     # Only accumulate reward if env was not already done before this step
@@ -134,7 +125,7 @@ def eval_rollout_for_render_scan(env: mjx_env.MjxEnv,
 
     obs_batched = jax.tree.map(lambda x: x[None], env_state.obs)
     net_state_batched = jax.tree.map(lambda x: x[None], net_state)
-    next_net_state, network_output = networks(net_state_batched, obs_batched, gradient_mode=True)
+    next_net_state, network_output = networks(net_state_batched, obs_batched)
     next_net_state = jax.tree.map(lambda x: x[0], next_net_state)
     action = network_output.actions[0]
 

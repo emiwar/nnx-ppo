@@ -1,19 +1,17 @@
 from typing import Any, Optional, Tuple, Dict, Union, Mapping
-import enum
-import copy
-import warnings
 
 from ml_collections import config_dict
 import mujoco_playground
-import flax.struct
+
 from flax import nnx
 import jax
 import jax.numpy as jp
 from jax.experimental import checkify
 import optax
 
-from nnx_ppo.networks.types import PPONetwork, PPONetworkOutput
+from nnx_ppo.networks.types import PPONetwork
 from nnx_ppo.algorithms import rollout
+from nnx_ppo.algorithms.types import TrainingState, LoggingLevel
 
 def default_config() -> config_dict.ConfigDict:
     return config_dict.create(
@@ -28,26 +26,6 @@ def default_config() -> config_dict.ConfigDict:
         n_epochs = 4,
         n_minibatches = 4,
     )
-
-@flax.struct.dataclass
-class TrainingState:
-    networks: PPONetwork
-    network_states: Any
-    env_states: mujoco_playground.State
-    optimizer: nnx.Optimizer
-    rng_key: jax.Array
-    steps_taken: jax.Array
-
-class LoggingLevel(enum.Flag):
-    LOSSES = enum.auto()
-    CRITIC_EXTRA = enum.auto()
-    ACTOR_EXTRA = enum.auto()
-    TRAIN_ROLLOUT_STATS = enum.auto()
-    TRAINING_ENV_METRICS = enum.auto()
-    GRAD_NORM = enum.auto()
-    BASIC = LOSSES
-    ALL = LOSSES | ACTOR_EXTRA | CRITIC_EXTRA | TRAIN_ROLLOUT_STATS | TRAINING_ENV_METRICS
-    NONE = 0
 
 def train_ppo(env: mujoco_playground.MjxEnv,
               networks: PPONetwork,
@@ -132,11 +110,11 @@ def ppo_step(env: mujoco_playground.MjxEnv,
         length=total_iterations
     )
 
-    all_metrics = scan_update(training_state.networks, training_state.optimizer, all_indices)
-    # Take the last metrics from the scan
-    metrics = jax.tree.map(lambda x: x[-1], all_metrics)
-
-    _log_metrics(metrics, rollout_data, logging_level, logging_percentiles)
+    loss_metrics = scan_update(training_state.networks, training_state.optimizer, all_indices)
+    total_steps = training_state.steps_taken + rollout_length * n_envs
+    metrics = compute_metrics(loss_metrics, rollout_data, logging_level, logging_percentiles)
+    metrics["total_steps"] = total_steps
+    training_state.networks.update_statistics(rollout_data, total_steps)
 
     # Now that all updates are done, we can replace all the network (and environment)
     # states in training state. Note that this would have been incorrect to update
@@ -145,15 +123,18 @@ def ppo_step(env: mujoco_playground.MjxEnv,
         network_states = next_net_state,
         env_states = next_env_state,
         rng_key = new_key,
-        steps_taken = training_state.steps_taken + rollout_length * n_envs,
+        steps_taken = total_steps,
     )
-    metrics["total_steps"] = training_state.steps_taken
+    
     return training_state, metrics
 
-def _log_metrics(metrics: Dict[str, jax.Array],
-                 rollout_data: rollout.Transition,
-                 logging_level: LoggingLevel,
-                 percentile_levels: Optional[Tuple] = None):
+def compute_metrics(loss_metrics: Dict[str, jax.Array],
+                    rollout_data: rollout.Transition,
+                    logging_level: LoggingLevel,
+                    percentile_levels: Optional[Tuple] = None):
+    metrics = {}
+    for k, v in loss_metrics.items():
+        _log_metric(metrics, k, v, percentile_levels)
     if LoggingLevel.TRAINING_ENV_METRICS in logging_level:
         for k, v in rollout_data.metrics.items():
             _log_metric(metrics, k, v, percentile_levels)
@@ -169,6 +150,7 @@ def _log_metrics(metrics: Dict[str, jax.Array],
                                                     rollout_data.network_output.actions.flatten())[0, 1]
     if LoggingLevel.CRITIC_EXTRA in logging_level:
         _log_metric(metrics, "losses/predicted_value", rollout_data.network_output.value_estimates, percentile_levels)
+    return metrics
 
 def _log_metric(metrics: Dict[str, jax.Array], name: str, x: Union[Mapping, jax.Array], percentile_levels: Optional[Tuple] = None):
     if isinstance(x, Mapping):
@@ -218,14 +200,12 @@ def ppo_loss(networks: PPONetwork,
              logging_level: LoggingLevel,
              logging_percentiles: Optional[Tuple] = None):
     rollout_data = jax.lax.stop_gradient(rollout_data)
-    metrics = dict()
-
     @jax.vmap
     def reset_net_state(done, state):
         return jax.lax.cond(done, networks.initialize_state, lambda _: state, done.shape)
     
     def step_network(networks: PPONetwork, net_state, obs, done, raw_action):
-        net_state, network_output = networks(net_state, obs, raw_action, gradient_mode=True)
+        net_state, network_output = networks(net_state, obs, raw_action)
         net_state = reset_net_state(done, net_state)
         return net_state, network_output
 
@@ -237,15 +217,8 @@ def ppo_loss(networks: PPONetwork,
         network_output = network_output.replace(
             value_estimates = network_output.value_estimates[:, :, 0]
         )
-
-    #if LoggingLevel.ASSERTS in logging_level:
-    #    metrics["asserts/actions_max_diff"] = jp.max(jp.abs(network_output.actions - rollout_data.network_output.actions))
-    #    metrics["asserts/likelihoods_max_diff"] = jp.max(jp.abs(network_output.loglikelihoods - rollout_data.network_output.loglikelihoods))
-    #    metrics["asserts/critic_values_max_diff"] = jp.max(jp.abs(network_output.value_estimates - rollout_data.network_output.value_estimates))
-    #    metrics["asserts/net_state_identical"] = jax.tree.reduce(jp.logical_and, jax.tree.map(jp.allclose, next_net_state_again, next_net_state), jp.array(True)).astype(int)
-    # We need the value of the final observation
     last_obs = jax.tree.map(lambda x: x[-1], rollout_data.next_obs)
-    _, network_output_last = networks(next_net_state_again, last_obs, gradient_mode=True)
+    _, network_output_last = networks(next_net_state_again, last_obs)
     last_value = jax.lax.stop_gradient(network_output_last.value_estimates)
     assert last_value.shape[0] == rollout_data.rewards.shape[1]
     last_value = last_value.reshape((1, last_value.shape[0]))
@@ -279,25 +252,22 @@ def ppo_loss(networks: PPONetwork,
     critic_loss = 0.5 * jp.mean((network_output.value_estimates - target_values)**2)
     regularization_loss = jp.mean(network_output.regularization_loss)
     
+    loss_metrics = dict()
     if LoggingLevel.LOSSES in logging_level:
-        metrics["losses/actor"] = actor_loss
-        metrics["losses/critic"] = critic_loss
-        metrics["losses/regularization"] = regularization_loss
+        loss_metrics["losses/actor"] = actor_loss
+        loss_metrics["losses/critic"] = critic_loss
+        loss_metrics["losses/regularization"] = regularization_loss
     if LoggingLevel.ACTOR_EXTRA in logging_level:
-            metrics["correlations/advantage_action"] = jp.corrcoef(advantages.flatten(),
-                                                                   rollout_data.network_output.actions.flatten())[0, 1]
-            metrics["correlations/ll_advantage"] = jp.corrcoef(rollout_data.network_output.loglikelihoods.flatten(),
-                                                    advantages.flatten())[0, 1]
-            _log_metric(metrics, "likelihood ratios", likelihood_ratios, logging_percentiles)
-            metrics["clipping_fraction"] = jp.mean(jp.logical_or(likelihood_ratios<1-clip_range, likelihood_ratios>1+clip_range))
+        loss_metrics["correlations/ll_advantage"] = jp.corrcoef(rollout_data.network_output.loglikelihoods.flatten(), advantages.flatten())[0, 1]
+        loss_metrics["losses/likelihood_ratios"] = likelihood_ratios
+        loss_metrics["losses/clipping_fraction"] = jp.mean(jp.logical_or(likelihood_ratios<1-clip_range, likelihood_ratios>1+clip_range))
     if LoggingLevel.CRITIC_EXTRA in logging_level:
-        _log_metric(metrics, "losses/predicted_value", rollout_data.network_output.value_estimates, logging_percentiles)
-        _log_metric(metrics, "advantages", advantages, logging_percentiles)
-        metrics["losses/critic_R^2"] = 1.0 - 2 * metrics["losses/critic"] / (jp.var(target_values) + 1e-8)
+        loss_metrics["losses/predicted_value"] = values_excl_last
+        loss_metrics["losses/advantages"] = advantages
+        loss_metrics["losses/critic_R^2"] = 1.0 - 2 * critic_loss / (jp.var(target_values) + 1e-8)
 
     total_loss = actor_loss + critic_loss + regularization_loss
-
-    return total_loss, metrics
+    return total_loss, loss_metrics
 
 def new_training_state(env: mujoco_playground.MjxEnv,
                        networks: PPONetwork,

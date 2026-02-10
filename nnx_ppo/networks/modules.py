@@ -1,10 +1,11 @@
-from typing import Tuple, Dict, List, Callable, Optional
+from typing import Any, Tuple, Dict, List, Callable, Optional, Union
 
 import jax
 import jax.flatten_util
 import jax.numpy as jp
 from flax import nnx
 
+from nnx_ppo.algorithms.types import Transition
 from nnx_ppo.networks.sampling_layers import ActionSampler, NormalTanhSampler
 from nnx_ppo.networks.types import PPONetwork, PPONetworkOutput, StatefulModule, ModuleState, StatefulModuleOutput
 
@@ -18,12 +19,12 @@ class PPOActorCritic(PPONetwork, nnx.Module):
          self.action_sampler = action_sampler
          self.preprocessor = preprocessor
 
-    def __call__(self, network_state, obs, raw_action: Optional[jax.Array] = None, gradient_mode: bool = False) -> Tuple[Dict, PPONetworkOutput]:
+    def __call__(self, network_state, obs, raw_action: Optional[jax.Array] = None) -> Tuple[Dict, PPONetworkOutput]:
         #if self.flatten_obs:
         #    obs = jax.vmap(lambda obs: jax.flatten_util.ravel_pytree(obs)[0], (0,))(obs)
         regularization_loss = jp.array(0.0)
         if self.preprocessor is not None:
-            preprocessor_output = self.preprocessor(network_state["preprocessor"], obs, gradient_mode)
+            preprocessor_output = self.preprocessor(network_state["preprocessor"], obs)
             obs = preprocessor_output.output
             network_state["preprocessor"] = preprocessor_output.next_state
             regularization_loss += preprocessor_output.regularization_loss
@@ -59,6 +60,14 @@ class PPOActorCritic(PPONetwork, nnx.Module):
              "critic": self.critic.initialize_state(batch_size),
              "action_sampler": self.action_sampler.initialize_state(batch_size),
         }
+    
+    def update_statistics(self, last_rollout: Transition, total_steps: jax.Array) -> None:
+        if self.preprocessor is not None:
+            self.preprocessor.update_statistics(last_rollout, total_steps)
+        self.actor.update_statistics(last_rollout, total_steps)
+        self.critic.update_statistics(last_rollout, total_steps)
+        self.action_sampler.update_statistics(last_rollout, total_steps)
+
 
 class MLP(StatefulModule):
     def __init__(self, sizes: List[int], rngs,
@@ -126,44 +135,56 @@ class Sequential(StatefulModule):
     def __getitem__(self, ind) -> StatefulModule:
         return self.layers[ind]
     
+    def update_statistics(self, last_rollout: Transition, total_steps: jax.Array) -> None:
+        for layer in self.layers:
+            layer.update_statistics(last_rollout, total_steps)
+    
 class NormalizerStatistics(nnx.Variable): pass
 
 class Normalizer(StatefulModule):
 
     def __init__(self, shape):
-        self.mean = NormalizerStatistics(jp.zeros(shape))
-        self.M2 = NormalizerStatistics(jp.zeros(shape))
+        if isinstance(shape, (tuple, list, int)):
+            self.mean = NormalizerStatistics(jp.zeros(shape))
+            self.M2 = NormalizerStatistics(jp.zeros(shape))
+        else:
+            self.mean = NormalizerStatistics(jax.tree.map(jp.zeros_like, shape))
+            self.M2 = NormalizerStatistics(jax.tree.map(jp.zeros_like, shape))
         self.counter = NormalizerStatistics(jp.array(0.0))
         self.epsilon = 1e-6
 
-    def __call__(self, state, x, gradient_mode: bool = True):
-        if not gradient_mode:
-            batch_count = x.shape[0]
-            new_count = self.counter.value + batch_count
-
-            # Welford's algorithm for batched updates
-            batch_mean = jp.mean(x, axis=0)
-            delta_old = batch_mean - self.mean
-
-            # Update mean
-            self.mean.value += delta_old * (batch_count / new_count)
-
-            # Update M2 (sum of squared differences)
-            delta_new = batch_mean - self.mean
-            # Batch variance contribution
-            batch_var = jp.var(x, axis=0)
-            # M2 update: add within-batch variance and between-batch variance
-            self.M2.value += batch_count * batch_var + batch_count * delta_old * delta_new
-
-            # Update counter
-            self.counter.value += batch_count
-
+    def __call__(self, state, x):
         # Compute variance from M2
-        var = self.M2 / jp.maximum(self.counter, 1.0)  # Avoid division by zero
-        std = jp.sqrt(jp.maximum(var, self.epsilon))
+        std = jax.lax.cond(self.counter.value>0,
+                           self.M2_to_std,
+                           lambda M2: jax.tree.map(lambda x: jp.full_like(x, 10.0), M2),
+                           self.M2)
+        output = jax.tree.map(lambda x, m, s: (x-m)/s, x, self.mean, std)
         return StatefulModuleOutput(
             next_state = (),
-            output = (x - self.mean) / std,
+            output = output,
             regularization_loss = jp.array(0.0),
             metrics={}
         )
+
+    def M2_to_std(self, M2):
+        return jax.tree.map(lambda x: jp.sqrt(jp.maximum(x/self.counter, self.epsilon)), M2)
+    
+    def update_statistics(self, last_rollout: Transition, total_steps: jax.Array) -> None:
+        obs = last_rollout.obs
+        batch_count = last_rollout.done.size
+        new_count = self.counter.value + batch_count
+        frac = batch_count / new_count
+
+        # Welford's algorithm for batched updates
+        batch_mean = jax.tree.map(lambda x: jp.mean(x, axis=(0, 1)), obs)
+        delta_old = jax.tree.map(lambda batch_mean, old: batch_mean-old, batch_mean, self.mean.value)
+        self.mean.value = jax.tree.map(lambda old, delta: old + delta * frac, self.mean.value, delta_old)
+        delta_new = jax.tree.map(lambda batch_mean, old: batch_mean-old, batch_mean, self.mean.value)
+
+        batch_var = jax.tree.map(lambda x: jp.var(x, axis=(0, 1)), obs)
+        self.M2.value = jax.tree.map(lambda old, batch_var, delta_old, delta_new: old + batch_count*batch_var + batch_count*delta_old*delta_new, 
+                                     self.M2.value, batch_var, delta_old, delta_new)
+
+        # Update counter
+        self.counter.value += batch_count

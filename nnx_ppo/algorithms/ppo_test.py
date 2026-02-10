@@ -1,15 +1,12 @@
-import functools
 from typing import Tuple, Any, Dict
 
-from absl.testing import absltest, parameterized
-import jax
+from absl.testing import absltest
 import jax.numpy as jp
 import numpy as np
-from jax.experimental import checkify
 from flax import nnx
 import mujoco_playground
 
-from nnx_ppo.networks import modules, types
+from nnx_ppo.networks import modules
 from nnx_ppo.algorithms import rollout, ppo
 import nnx_ppo.test_dummies.move_to_center_env
 

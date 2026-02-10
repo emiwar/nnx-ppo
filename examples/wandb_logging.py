@@ -18,7 +18,7 @@ import nnx_ppo.test_dummies.move_from_center_env
 #jax.config.update("jax_debug_nans", True)
 
 SEED = 40
-env_name = "HopperHop"
+env_name = "CartpoleSwingup"
 
 if env_name == "ParrotEnv":
     env = nnx_ppo.test_dummies.parrot_env.ParrotEnv(reward_falloff=1.0)
@@ -37,7 +37,7 @@ nets = MLPActorCritic(env.observation_size, env.action_size,
                       critic_hidden_sizes=[256,] * 2,
                       rngs=rngs,
                       transfer_function=nnx.swish,
-                      action_sampler=NormalTanhSampler(rngs, entropy_weight=5e-4, min_std=5e-3, std_scale=1.0, preclamp=False),
+                      action_sampler=NormalTanhSampler(rngs, entropy_weight=1e-2, min_std=5e-3, std_scale=1.0, preclamp=False),
                       normalize_obs=True)
 config = ppo.default_config()
 config.normalize_advantages = True

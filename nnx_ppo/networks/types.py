@@ -18,8 +18,7 @@ class PPONetwork(abc.ABC):
   
   @abc.abstractmethod
   def __call__(self, network_state: ModuleState, obs,
-               raw_action: Optional[jax.Array] = None,
-               gradient_mode: bool = False) -> Tuple[Any, PPONetworkOutput]:
+               raw_action: Optional[jax.Array] = None) -> Tuple[Any, PPONetworkOutput]:
     '''Apply both actor and critic networks to the environment observation `obs`.
     
     Calling the critic on rollouts might be somewhat inefficient, but by grouping
@@ -58,6 +57,18 @@ class PPONetwork(abc.ABC):
     Args:
       batch_size (int): The batch size of the returned state.
       '''
+    
+  def update_statistics(self, last_rollout: "Transition", total_steps: jax.Array) -> None:
+    '''Called after the network is updated. In this function, it's safe to update the
+    iteself.
+     
+    Args:
+    last_rollout (Transition[T, B, ...]): dataclass with the most recent rollout. Fields start
+                                           time and batch dimensions.
+    total_steps: Total number of steps taken. Note that this might be a tracer, so jax
+                 restrictions on control flow applies. 
+    '''
+    return None
 
 @flax.struct.dataclass
 class StatefulModuleOutput:
@@ -119,3 +130,15 @@ class StatefulModule(abc.ABC, nnx.Module):
         this method.
         '''
         return ()
+    
+    def update_statistics(self, last_rollout: "Transition", total_steps: jax.Array) -> None:
+      '''Called after the network is updated. In this function, it's safe to update the
+      iteself.
+      
+      Args:
+      last_rollout (Transition[T, B, ...]): dataclass with the most recent rollout. Fields start
+                                            time and batch dimensions.
+      total_steps: Total number of steps taken. Note that this might be a tracer, so jax
+                  restrictions on control flow applies. 
+      '''
+      return None
