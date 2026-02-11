@@ -28,6 +28,7 @@ class NormalTanhSampler(ActionSampler):
       mean_and_std = 5.0 * jp.tanh(mean_and_std)
 
     mean, std = jp.split(mean_and_std, 2, axis=-1)
+    #std = self.std_scale*0.5*(jp.tanh(std)+1) + self.min_std
     std = (jax.nn.softplus(std) + self.min_std) * self.std_scale
     
     # We want to sample an action even if raw_action is specified, so that the

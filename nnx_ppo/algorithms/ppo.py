@@ -144,6 +144,7 @@ def compute_metrics(loss_metrics: Dict[str, jax.Array],
         metrics["rollout_batch/done_rate"] = rollout_data.done.mean()
         metrics["rollout_batch/truncation_rate"] = rollout_data.truncated.mean()
         metrics["rollout_batch/obs_NaN"] = 1.0 - jp.isfinite(rollout_data.obs).mean()
+        metrics["rollout_batch/next_obs_NaN"] = 1.0 - jp.isfinite(rollout_data.next_obs).mean()
     if LoggingLevel.ACTOR_EXTRA in logging_level:
         _log_metric(metrics, "loglikelihood", rollout_data.network_output.loglikelihoods, percentile_levels)
         if rollout_data.network_output.actions.shape[-1] == 1:
@@ -174,10 +175,10 @@ def gae(rewards, values, done, truncation, lambda_: float, gamma: float):
     assert rewards.shape == done.shape
     assert truncation.shape == done.shape
     def inner_step(next_advantage, reward, old_value, next_value, done, truncated):
-        next_value *= (1 - done)
+        next_value = jp.where(done, 0.0, next_value)
         new_value = reward + gamma * next_value
         advantage = new_value - old_value
-        advantage *= (1 - truncated)
+        advantage = jp.where(truncated, 0.0, advantage)
         gae_advantage = advantage + (1 - done) * gamma * lambda_ * next_advantage
         return gae_advantage, gae_advantage
     time_scan = nnx.scan(inner_step,
@@ -265,11 +266,15 @@ def ppo_loss(networks: PPONetwork,
         loss_metrics["losses/clipping_fraction"] = jp.mean(jp.logical_or(likelihood_ratios<1-clip_range, likelihood_ratios>1+clip_range))
         loss_metrics["losses/new_loglikelihoods"] = network_output.loglikelihoods
         loss_metrics["losses/loglikelihood_diff"] = network_output.loglikelihoods - old_loglikelihoods
+        loss_metrics["losses/new_mu"] = network_output.metrics["action_sampler"]["mu"]
+        loss_metrics["losses/new_sigma"] = network_output.metrics["action_sampler"]["sigma"]
         loss_metrics["losses/mu_diff"] = network_output.metrics["action_sampler"]["mu"] - rollout_data.network_output.metrics["action_sampler"]["mu"]
         loss_metrics["losses/sigma_diff"] = network_output.metrics["action_sampler"]["sigma"] - rollout_data.network_output.metrics["action_sampler"]["sigma"]
+        loss_metrics["losses/sigma_ratio"] = network_output.metrics["action_sampler"]["sigma"] / rollout_data.network_output.metrics["action_sampler"]["sigma"]
     if LoggingLevel.CRITIC_EXTRA in logging_level:
         loss_metrics["losses/predicted_value"] = values_excl_last
         loss_metrics["losses/advantages"] = advantages
+        loss_metrics["losses/advantages_NaN"] = 1.0 - jp.isfinite(advantages).mean()
         loss_metrics["losses/critic_R^2"] = 1.0 - 2 * critic_loss / (jp.var(target_values) + 1e-8)
 
     total_loss = actor_loss + critic_loss + regularization_loss
@@ -278,8 +283,8 @@ def ppo_loss(networks: PPONetwork,
     #during this function, but not during earlier rollouts. So a heuristic is that
     #if the _mean_ likelihood ratio is out of clipping bounds, the minibatch is bad
     #and we just ignore it by setting the loss to 0.0. 
-    total_loss *= jp.mean(likelihood_ratios) > (1-clip_range)
-    total_loss *= jp.mean(likelihood_ratios) < (1+clip_range)
+    #total_loss *= jp.median(likelihood_ratios) > (1-clip_range)
+    #total_loss *= jp.median(likelihood_ratios) < (1+clip_range)
 
     return total_loss, loss_metrics
 
