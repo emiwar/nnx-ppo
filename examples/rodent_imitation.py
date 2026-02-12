@@ -36,9 +36,11 @@ net_config = config_dict.create(
     min_std = 1e-2,
     std_scale = 1.0,
     preclamp_sampling = False,
+    normalize_obs = True,
+    initalizer_scale = 1.0,
 )
 
-train_env = FlattenObsWrapper(Imitation(config_overrides={'solver': 'newton'}))
+train_env = FlattenObsWrapper(Imitation(env_config))
 eval_env = train_env
 
 
@@ -54,7 +56,8 @@ nets = MLPActorCritic(train_env.observation_size, train_env.action_size,
                                                        min_std=net_config.min_std,
                                                        std_scale=net_config.std_scale,
                                                        preclamp=net_config.preclamp_sampling),
-                      normalize_obs=True)
+                      normalize_obs=net_config.normalize_obs,
+                      initalizer_scale=net_config.initalizer_scale)
 config = ppo.default_config()
 config.normalize_advantages = True
 config.discounting_factor = 0.95
@@ -72,7 +75,9 @@ exp_name = f"SimpleMLP-{timestamp}"
 wandb.init(project="nnx-ppo-rodent-imitation",
            config={"env": "StandardImitation",
                    "SEED": SEED,
-                   "ppo_params": config.to_dict()},
+                   "ppo_params": config.to_dict(),
+                   "net_params": net_config.to_dict(),
+                   "env_params": env_config.to_dict()},
            name=exp_name,
            tags=(["MLP"]),
            notes="Trying logging weights.")
