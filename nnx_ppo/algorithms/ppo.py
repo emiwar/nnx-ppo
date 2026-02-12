@@ -25,6 +25,8 @@ def default_config() -> config_dict.ConfigDict:
         normalize_advantages = True,
         n_epochs = 4,
         n_minibatches = 4,
+        gradient_clipping = None,
+        weight_decay = None,
     )
 
 def train_ppo(env: mujoco_playground.MjxEnv,
@@ -32,7 +34,10 @@ def train_ppo(env: mujoco_playground.MjxEnv,
               config: config_dict.ConfigDict = default_config(),
               seed: int = 17,
               logging_level: LoggingLevel = LoggingLevel.BASIC):
-    training_state = new_training_state(env, networks, config.n_envs, seed)
+    training_state = new_training_state(env, networks, config.n_envs, seed,
+                                        config.learning_rate,
+                                        config.gradient_clipping,
+                                        config.weight_decay)
     ppo_step_jit = nnx.jit(ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10))
     metrics = None
     while training_state.steps_taken < config.n_steps:
@@ -114,6 +119,8 @@ def ppo_step(env: mujoco_playground.MjxEnv,
     total_steps = training_state.steps_taken + rollout_length * n_envs
     metrics = compute_metrics(loss_metrics, rollout_data, logging_level, logging_percentiles)
     metrics["total_steps"] = total_steps
+    if LoggingLevel.WEIGHTS in logging_level:
+        _log_weight_stats(metrics, training_state.networks, logging_percentiles)
     training_state.networks.update_statistics(rollout_data, total_steps)
 
     # Now that all updates are done, we can replace all the network (and environment)
@@ -168,6 +175,22 @@ def _log_metric(metrics: Dict[str, jax.Array], name: str, x: Union[Mapping, jax.
         percentiles = jp.percentile(x, jp.array(percentile_levels))
         for (pl, p) in zip(percentile_levels, percentiles):
             metrics[f"{name}/p{int(pl)}"] = p
+
+
+def _log_weight_stats(metrics: Dict[str, jax.Array],
+                      networks: PPONetwork,
+                      percentile_levels: Optional[Tuple] = None):
+    """Log weight statistics for actor and critic networks separately."""
+    # Extract parameters using nnx.state
+    actor_params = nnx.state(networks.actor, nnx.Param)
+    critic_params = nnx.state(networks.critic, nnx.Param)
+
+    # Flatten all actor weights into single array
+    actor_weights = jp.concatenate([p.flatten() for p in jax.tree.leaves(actor_params)])
+    critic_weights = jp.concatenate([p.flatten() for p in jax.tree.leaves(critic_params)])
+
+    _log_metric(metrics, "weights/actor", actor_weights, percentile_levels)
+    _log_metric(metrics, "weights/critic", critic_weights, percentile_levels)
 
 
 def gae(rewards, values, done, truncation, lambda_: float, gamma: float):
@@ -292,7 +315,9 @@ def new_training_state(env: mujoco_playground.MjxEnv,
                        networks: PPONetwork,
                        n_envs: int,
                        seed: int,
-                       learning_rate: float=1e-4):
+                       learning_rate: float=1e-4,
+                       gradient_clipping: Optional[float] = None,
+                       weight_decay: Optional[float] = None):
     # Setup keys
     key = jax.random.key(seed)
     key, training_key = jax.random.split(key)
@@ -305,7 +330,17 @@ def new_training_state(env: mujoco_playground.MjxEnv,
     network_states = networks.initialize_state(n_envs)
 
     # Setup optimizer
-    optimizer = nnx.Optimizer(networks, optax.adam(learning_rate=learning_rate), wrt=nnx.Param)
+    optimizer_chain_links = []
+    if gradient_clipping is not None:
+        optimizer_chain_links.append(optax.clip_by_global_norm(gradient_clipping))
+    if weight_decay is None:
+        optimizer_chain_links.append(optax.adam(learning_rate=learning_rate))
+    elif isinstance(weight_decay, bool) and weight_decay:
+        #Optax default decay
+        optimizer_chain_links.append(optax.adamw(learning_rate=learning_rate))
+    else:
+        optimizer_chain_links.append(optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay))
+    optimizer = nnx.Optimizer(networks, optax.chain(*optimizer_chain_links), wrt=nnx.Param)
     return TrainingState(networks, network_states, env_states,
                          optimizer, training_key, jp.array(0.0))
 

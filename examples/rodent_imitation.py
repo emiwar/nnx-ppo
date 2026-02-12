@@ -6,11 +6,13 @@ os.environ["PYOPENGL_PLATFORM"] = "egl"
 
 from datetime import datetime
 
+
 import jax
 import jax.numpy as jp
 import numpy as np
 from flax import nnx
 import wandb
+from ml_collections import config_dict
 
 from vnl_playground.tasks.rodent.imitation import Imitation, default_config
 from vnl_playground.tasks.wrappers import FlattenObsWrapper
@@ -19,22 +21,39 @@ from nnx_ppo.networks.modules import MLPActorCritic
 from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 from nnx_ppo.algorithms import ppo, rollout
 
+
 SEED = 42
 env_config = default_config()
 env_config.solver = "newton"
 env_config.reward_terms["bodies_pos"]["weight"] = 0.0
 env_config.reward_terms["joints_vel"]["weight"] = 0.0
 
+net_config = config_dict.create(
+    actor_hidden_sizes = [1024,] * 4,
+    critic_hidden_sizes = [1024,] * 2,
+    transfer_function = "swish",
+    entropy_weight = 3e-3,
+    min_std = 1e-2,
+    std_scale = 1.0,
+    preclamp_sampling = False,
+)
+
 train_env = FlattenObsWrapper(Imitation(config_overrides={'solver': 'newton'}))
 eval_env = train_env
 
+
 rngs = nnx.Rngs(SEED)
+transfer_function = {"swish": nnx.swish, "tanh": nnx.tanh, "relu": nnx.relu}[net_config.transfer_function]
 nets = MLPActorCritic(train_env.observation_size, train_env.action_size,
-                      actor_hidden_sizes=[1024,] * 4,
-                      critic_hidden_sizes=[1024,] * 2,
+                      actor_hidden_sizes=net_config.actor_hidden_sizes,
+                      critic_hidden_sizes=net_config.critic_hidden_sizes,
                       rngs=rngs,
-                      transfer_function=nnx.swish,
-                      action_sampler=NormalTanhSampler(rngs, entropy_weight=3e-3, min_std=1e-2, std_scale=1.0, preclamp=False),
+                      transfer_function=transfer_function,
+                      action_sampler=NormalTanhSampler(rngs,
+                                                       entropy_weight=net_config.entropy_weight,
+                                                       min_std=net_config.min_std,
+                                                       std_scale=net_config.std_scale,
+                                                       preclamp=net_config.preclamp_sampling),
                       normalize_obs=True)
 config = ppo.default_config()
 config.normalize_advantages = True
@@ -44,6 +63,8 @@ config.rollout_length = 20
 config.learning_rate = 1e-4
 config.n_epochs = 4
 config.n_minibatches = 16
+config.gradient_clipping = None
+config.weight_decay = True
 
 now = datetime.now()
 timestamp = now.strftime("%Y%m%d-%H%M%S")
@@ -54,10 +75,11 @@ wandb.init(project="nnx-ppo-rodent-imitation",
                    "ppo_params": config.to_dict()},
            name=exp_name,
            tags=(["MLP"]),
-           notes="Should be identical to previous, except more logging.")
+           notes="Trying logging weights.")
 
-training_state_init = nnx.jit(ppo.new_training_state, static_argnums=[0,2,4])
-training_state = training_state_init(train_env, nets, config.n_envs, SEED, config.learning_rate)
+training_state_init = nnx.jit(ppo.new_training_state, static_argnums=[0,2,4,5,6])
+training_state = training_state_init(train_env, nets, config.n_envs, SEED, config.learning_rate, config.gradient_clipping,
+                                     config.weight_decay)
 
 ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10, 11))
 eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3))

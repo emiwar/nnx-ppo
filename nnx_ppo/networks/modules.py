@@ -96,19 +96,18 @@ class MLPActorCritic(PPOActorCritic):
                  rngs: nnx.Rngs,
                  transfer_function: Callable = nnx.relu,
                  action_sampler: Optional[ActionSampler] = None,
-                 normalize_obs: bool = False):
+                 normalize_obs: bool = False,
+                 initalizer_scale = 1.0):
         if action_sampler is None:
           action_sampler = NormalTanhSampler(rngs, entropy_weight=1e-3)
         actor_sizes = [obs_size] + actor_hidden_sizes + [action_size*2]
         self.preprocessor = Normalizer(obs_size) if normalize_obs else None
         self.actor = MLP(actor_sizes, rngs, transfer_function, transfer_function_last_layer=False,
-                         params_for_Linear={'kernel_init': nnx.initializers.lecun_normal()})
+                         params_for_Linear={'kernel_init': nnx.initializers.variance_scaling(initalizer_scale, "fan_in", "uniform")})
         critic_sizes = [obs_size] + critic_hidden_sizes + [1]
         self.critic = MLP(critic_sizes, rngs, transfer_function, transfer_function_last_layer=False,
-                          params_for_Linear={'kernel_init': nnx.initializers.lecun_normal()})
-        #'kernel_init': nnx.initializers.lecun_uniform()})
+                          params_for_Linear={'kernel_init': nnx.initializers.variance_scaling(initalizer_scale, "fan_in", "uniform")})
         self.action_sampler = action_sampler
-        #self.flatten_obs = True
 
 class Sequential(StatefulModule):
     def __init__(self, layers: List[StatefulModule]):
