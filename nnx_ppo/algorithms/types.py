@@ -33,9 +33,10 @@ class LoggingLevel(enum.Flag):
     CRITIC_EXTRA = enum.auto()
     ACTOR_EXTRA = enum.auto()
     TRAIN_ROLLOUT_STATS = enum.auto()
+    ROLLOUT_OBS = enum.auto()
     TRAINING_ENV_METRICS = enum.auto()
     GRAD_NORM = enum.auto()
     WEIGHTS = enum.auto()
     BASIC = LOSSES
-    ALL = LOSSES | ACTOR_EXTRA | CRITIC_EXTRA | TRAIN_ROLLOUT_STATS | TRAINING_ENV_METRICS | GRAD_NORM | WEIGHTS
+    ALL = LOSSES | ACTOR_EXTRA | CRITIC_EXTRA | TRAIN_ROLLOUT_STATS | TRAINING_ENV_METRICS | GRAD_NORM | WEIGHTS | ROLLOUT_OBS
     NONE = 0

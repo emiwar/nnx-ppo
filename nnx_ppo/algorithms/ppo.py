@@ -152,6 +152,9 @@ def compute_metrics(loss_metrics: Dict[str, jax.Array],
         metrics["rollout_batch/truncation_rate"] = rollout_data.truncated.mean()
         metrics["rollout_batch/obs_NaN"] = 1.0 - jp.isfinite(rollout_data.obs).mean()
         metrics["rollout_batch/next_obs_NaN"] = 1.0 - jp.isfinite(rollout_data.next_obs).mean()
+    if LoggingLevel.ROLLOUT_OBS in logging_level:
+        _log_metric(metrics, "rollout_batch/obs", rollout_data.obs, percentile_levels)
+        _log_metric(metrics, "rollout_batch/next_obs", rollout_data.next_obs, percentile_levels)
     if LoggingLevel.ACTOR_EXTRA in logging_level:
         _log_metric(metrics, "loglikelihood", rollout_data.network_output.loglikelihoods, percentile_levels)
         if rollout_data.network_output.actions.shape[-1] == 1:
