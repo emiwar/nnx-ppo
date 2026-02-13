@@ -27,6 +27,10 @@ env_config = default_config()
 env_config.solver = "newton"
 env_config.reward_terms["bodies_pos"]["weight"] = 0.0
 env_config.reward_terms["joints_vel"]["weight"] = 0.0
+env_config.mujoco_impl = "warp"
+#env_config.nconmax = 256
+env_config.naconmax = 2048
+env_config.njmax = 256
 
 net_config = config_dict.create(
     actor_hidden_sizes = [1024,] * 4,
@@ -61,13 +65,13 @@ nets = MLPActorCritic(train_env.observation_size, train_env.action_size,
 config = ppo.default_config()
 config.normalize_advantages = True
 config.discounting_factor = 0.95
-config.n_envs = 4096
+config.n_envs = 256
 config.rollout_length = 20
 config.learning_rate = 1e-4
 config.n_epochs = 4
-config.n_minibatches = 16
+config.n_minibatches = 2
 config.gradient_clipping = None
-config.weight_decay = True
+config.weight_decay = None
 
 now = datetime.now()
 timestamp = now.strftime("%Y%m%d-%H%M%S")
@@ -80,7 +84,7 @@ wandb.init(project="nnx-ppo-rodent-imitation",
                    "env_params": env_config.to_dict()},
            name=exp_name,
            tags=(["MLP"]),
-           notes="Trying logging weights.")
+           notes="Trying warp locally again.")
 
 training_state_init = nnx.jit(ppo.new_training_state, static_argnums=[0,2,4,5,6])
 training_state = training_state_init(train_env, nets, config.n_envs, SEED, config.learning_rate, config.gradient_clipping,

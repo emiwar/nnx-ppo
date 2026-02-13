@@ -163,6 +163,8 @@ def unstack_trajectory(stacked_states, final_state, max_episode_length: int):
 
 def tree_where(cond, on_true, on_false):
   def broadcast_where(x, y):
+    if x.shape[0] != cond.shape[0]: #Hack to handle mujoco-warp data which has some fields that are shared and don't have a batch dimension
+      return x
     cond_reshaped = cond.reshape(cond.shape + (1,) * (x.ndim - cond.ndim))
     return jp.where(cond_reshaped, x, y)
   return jax.tree.map(broadcast_where, on_true, on_false)
