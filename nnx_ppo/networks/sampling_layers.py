@@ -41,7 +41,7 @@ class NormalTanhSampler(ActionSampler):
       raw_action = jax.lax.stop_gradient(sampled_action)
     action = jp.tanh(raw_action)
     loglikelihood = self._loglikelihood(raw_action, mean, std)
-    entropy_cost = -self.entropy_weight * self._entropy(std)
+    entropy_cost = -self.entropy_weight * self._entropy(mean, std)
     return StatefulModuleOutput(
       next_state=(),
       output=(action, raw_action, loglikelihood),
@@ -73,6 +73,9 @@ class NormalTanhSampler(ActionSampler):
     
     return log_prob
   
-  def _entropy(self, std):
+  def _entropy(self, mean, std):
     # Entropy per dimension, sum over action dimensions
-    return jp.sum(0.5 + 0.5 * jp.log(2.0 * jp.pi) + jp.log(std), axis=-1)
+    normal_entropy = 0.5 + 0.5 * jp.log(2.0 * jp.pi) + jp.log(std)
+    z = mean + std * jax.lax.stop_gradient(jax.random.normal(self.rng(), mean.shape))
+    log_det_jacobian = 2.0 * (jp.log(2.0) - z - jax.nn.softplus(-2.0 * z))
+    return jp.sum(normal_entropy + log_det_jacobian, axis=-1)

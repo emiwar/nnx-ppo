@@ -97,7 +97,6 @@ def eval_rollout(env: mjx_env.MjxEnv,
     lifespan_std = lifespan.std(),
   )
   if logging_percentiles is not None:
-    metrics = {}
     for name, arr in [("episode_reward", cuml_reward), ("lifespan", lifespan)]:
       percentiles = jp.percentile(arr, jp.array(logging_percentiles))
       for (pl, p) in zip(logging_percentiles, percentiles):

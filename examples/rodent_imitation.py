@@ -22,22 +22,22 @@ from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 from nnx_ppo.algorithms import ppo, rollout
 
 
-SEED = 42
+SEED = 40
 env_config = default_config()
 env_config.solver = "newton"
 env_config.reward_terms["bodies_pos"]["weight"] = 0.0
 env_config.reward_terms["joints_vel"]["weight"] = 0.0
 env_config.mujoco_impl = "warp"
 #env_config.nconmax = 256
-env_config.naconmax = 2048
+env_config.naconmax = 32*2048
 env_config.njmax = 256
 
 net_config = config_dict.create(
     actor_hidden_sizes = [1024,] * 4,
     critic_hidden_sizes = [1024,] * 2,
     transfer_function = "swish",
-    entropy_weight = 3e-3,
-    min_std = 1e-2,
+    entropy_weight = 1e-2,
+    min_std = 1e-1,
     std_scale = 1.0,
     preclamp_sampling = False,
     normalize_obs = True,
@@ -65,12 +65,12 @@ nets = MLPActorCritic(train_env.observation_size, train_env.action_size,
 config = ppo.default_config()
 config.normalize_advantages = True
 config.discounting_factor = 0.95
-config.n_envs = 256
+config.n_envs = 2048
 config.rollout_length = 20
 config.learning_rate = 1e-4
 config.n_epochs = 4
-config.n_minibatches = 2
-config.gradient_clipping = None
+config.n_minibatches = 8
+config.gradient_clipping = 1.0
 config.weight_decay = None
 
 now = datetime.now()
@@ -83,20 +83,20 @@ wandb.init(project="nnx-ppo-rodent-imitation",
                    "net_params": net_config.to_dict(),
                    "env_params": env_config.to_dict()},
            name=exp_name,
-           tags=(["MLP"]),
-           notes="Trying warp locally again.")
+           tags=("MLP","warp"),
+           notes="Trying warp again.")
 
 training_state_init = nnx.jit(ppo.new_training_state, static_argnums=[0,2,4,5,6])
 training_state = training_state_init(train_env, nets, config.n_envs, SEED, config.learning_rate, config.gradient_clipping,
                                      config.weight_decay)
 
 ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10, 11))
-eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3))
+eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3, 5))
 RENDER_EPISODE_LENGTH = 1000
 eval_rollout_render_jit = nnx.jit(rollout.eval_rollout_for_render_scan, static_argnums=(0, 2))
 
 nets.eval() # Set network to eval mode
-eval_metrics = eval_rollout_jit(eval_env, nets, 256, 500, jax.random.key(SEED))
+eval_metrics = eval_rollout_jit(eval_env, nets, 256, 500, jax.random.key(SEED), (0, 25, 50, 75, 100))
 wandb.log({**eval_metrics, "n_steps": training_state.steps_taken})
 nets.train() # Set the network back to train mode
 
@@ -113,7 +113,7 @@ for iter in range(200_000):
     if iter % 100 == 0:
         print(f"Iter {iter}: starting eval")
         nets.eval() # Set network to eval mode
-        eval_metrics = eval_rollout_jit(eval_env, nets, 256, 500, jax.random.key(SEED))
+        eval_metrics = eval_rollout_jit(eval_env, nets, 256, 500, jax.random.key(SEED), (0, 25, 50, 75, 100))
         metrics.update(eval_metrics)
         nets.train() # Set the network back to train mode
 
@@ -131,4 +131,6 @@ for iter in range(200_000):
         video_array = np.stack(frames).transpose(0, 3, 1, 2)
         metrics["eval_video"] = wandb.Video(video_array, fps=50, format="mp4")
         nets.train()
+
+    #if iter % 100 == 0:
     wandb.log(metrics)
