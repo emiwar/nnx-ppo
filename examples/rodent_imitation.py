@@ -17,7 +17,7 @@ from ml_collections import config_dict
 from vnl_playground.tasks.rodent.imitation import Imitation, default_config
 from vnl_playground.tasks.wrappers import FlattenObsWrapper
 
-from nnx_ppo.networks.modules import MLPActorCritic
+from nnx_ppo.networks.feedforward import MLPActorCritic
 from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 from nnx_ppo.algorithms import ppo, rollout
 

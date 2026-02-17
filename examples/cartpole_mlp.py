@@ -2,7 +2,7 @@ import mujoco_playground
 import jax
 from flax import nnx
 
-from nnx_ppo.networks.modules import MLPActorCritic
+from nnx_ppo.networks.feedforward import MLPActorCritic
 from nnx_ppo.algorithms import ppo, rollout
 
 

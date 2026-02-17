@@ -2,7 +2,8 @@ import mujoco_playground
 from flax import nnx
 
 
-from nnx_ppo.networks.modules import PPOActorCritic, MLP, Sequential
+from nnx_ppo.networks.containers import PPOActorCritic, Sequential
+from nnx_ppo.networks.feedforward import MLP
 from nnx_ppo.networks.future_modules import LSTM, VariationalBottleneck
 from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 import nnx_ppo.algorithms.ppo

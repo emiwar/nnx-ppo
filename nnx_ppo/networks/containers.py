@@ -1,0 +1,97 @@
+from typing import Any, Tuple, Dict, List, Optional
+
+import jax
+import jax.numpy as jp
+from flax import nnx
+
+from nnx_ppo.algorithms.types import Transition
+from nnx_ppo.networks.sampling_layers import ActionSampler
+from nnx_ppo.networks.types import PPONetwork, PPONetworkOutput, StatefulModule, ModuleState, StatefulModuleOutput
+
+
+class PPOActorCritic(PPONetwork, nnx.Module):
+    '''A general PPO actor-critic network consisting of separate actor and critic
+       networks.'''
+
+    def __init__(self, actor: StatefulModule, critic: StatefulModule, action_sampler: ActionSampler, preprocessor: Optional[StatefulModule] = None):
+         self.actor = actor
+         self.critic = critic
+         self.action_sampler = action_sampler
+         self.preprocessor = preprocessor
+
+    def __call__(self, network_state, obs, raw_action: Optional[jax.Array] = None) -> Tuple[Dict, PPONetworkOutput]:
+        regularization_loss = jp.array(0.0)
+        if self.preprocessor is not None:
+            preprocessor_output = self.preprocessor(network_state["preprocessor"], obs)
+            obs = preprocessor_output.output
+            network_state["preprocessor"] = preprocessor_output.next_state
+            regularization_loss += preprocessor_output.regularization_loss
+        actor_output = self.actor(network_state["actor"], obs)
+        sampler_output = self.action_sampler(network_state["action_sampler"], actor_output.output, raw_action)
+        action, raw_action, loglikelihood = sampler_output.output
+        critic_output = self.critic(network_state["critic"], obs)
+
+        network_state["actor"] = actor_output.next_state
+        network_state["action_sampler"] = sampler_output.next_state
+        network_state["critic"] = critic_output.next_state
+        regularization_loss += actor_output.regularization_loss
+        regularization_loss += sampler_output.regularization_loss
+        regularization_loss += critic_output.regularization_loss
+        return network_state, PPONetworkOutput(
+            actions = action,
+            raw_actions = raw_action,
+            loglikelihoods = loglikelihood,
+            regularization_loss = regularization_loss,
+            value_estimates = critic_output.output,
+            metrics = {
+                "preprocessor": preprocessor_output.metrics if self.preprocessor is not None else {},
+                "actor": actor_output.metrics,
+                "critic": critic_output.metrics,
+                "action_sampler": sampler_output.metrics,
+            }
+        )
+
+    def initialize_state(self, batch_size: int) -> ModuleState:
+        return {
+             "preprocessor": self.preprocessor.initialize_state(batch_size) if self.preprocessor is not None else (),
+             "actor": self.actor.initialize_state(batch_size),
+             "critic": self.critic.initialize_state(batch_size),
+             "action_sampler": self.action_sampler.initialize_state(batch_size),
+        }
+
+    def update_statistics(self, last_rollout: Transition, total_steps: jax.Array) -> None:
+        if self.preprocessor is not None:
+            self.preprocessor.update_statistics(last_rollout, total_steps)
+        self.actor.update_statistics(last_rollout, total_steps)
+        self.critic.update_statistics(last_rollout, total_steps)
+        self.action_sampler.update_statistics(last_rollout, total_steps)
+
+
+class Sequential(StatefulModule):
+    def __init__(self, layers: List[StatefulModule]):
+        self.layers = nnx.List(layers)
+
+    def __call__(self, network_state: List, obs) -> StatefulModuleOutput:
+        new_network_state = []
+        x = obs
+        regularization_loss = jp.array(0.0)
+        for layer, layer_state in zip(self.layers, network_state):
+            layer_output = layer(layer_state, x)
+            new_state = layer_output.next_state
+            x = layer_output.output
+            new_network_state.append(new_state)
+            regularization_loss += layer_output.regularization_loss
+        return StatefulModuleOutput(new_network_state, x, regularization_loss, {})
+
+    def initialize_state(self, batch_size) -> List:
+        state = []
+        for layer in self.layers:
+            state.append(layer.initialize_state(batch_size))
+        return state
+
+    def __getitem__(self, ind) -> StatefulModule:
+        return self.layers[ind]
+
+    def update_statistics(self, last_rollout: Transition, total_steps: jax.Array) -> None:
+        for layer in self.layers:
+            layer.update_statistics(last_rollout, total_steps)

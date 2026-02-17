@@ -8,7 +8,7 @@ import jax.numpy as jp
 from flax import nnx
 import mujoco_playground
 
-from nnx_ppo.networks import modules, types
+from nnx_ppo.networks import feedforward, types
 from nnx_ppo.algorithms.rollout import unroll_env
 from nnx_ppo.test_dummies import dummy_counter
 from nnx_ppo.test_dummies import stateful_nets, parrot_env, move_to_center_env
@@ -18,7 +18,7 @@ class RolloutTest(absltest.TestCase):
         SEED = 17
 
         self.env = mujoco_playground.registry.load("CartpoleSwingup")
-        self.nets = modules.MLPActorCritic(self.env.observation_size, self.env.action_size,
+        self.nets = feedforward.MLPActorCritic(self.env.observation_size, self.env.action_size,
                                            actor_hidden_sizes=[16, 16],
                                            critic_hidden_sizes=[16, 16],
                                            rngs = nnx.Rngs(SEED, action_sampling=SEED))
@@ -177,7 +177,7 @@ class RolloutTest(absltest.TestCase):
         N_STEPS = 30
         key = jax.random.key(SEED)
         env = move_to_center_env.MoveToCenterEnv(reward_falloff=1.0, border_radius=10.0)
-        net = modules.MLPActorCritic(env.observation_size, env.action_size,
+        net = feedforward.MLPActorCritic(env.observation_size, env.action_size,
                                       actor_hidden_sizes=[128, 128],
                                       critic_hidden_sizes=[128, 128],
                                       rngs = nnx.Rngs(SEED, action_sampling=SEED))

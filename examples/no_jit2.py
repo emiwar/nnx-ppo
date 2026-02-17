@@ -6,7 +6,7 @@ import jax
 from flax import nnx
 import wandb
 
-from nnx_ppo.networks.modules import MLPActorCritic
+from nnx_ppo.networks.feedforward import MLPActorCritic
 from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 from nnx_ppo.algorithms import ppo, rollout
 

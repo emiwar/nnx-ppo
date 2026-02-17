@@ -6,7 +6,7 @@ import numpy as np
 from flax import nnx
 import mujoco_playground
 
-from nnx_ppo.networks import modules
+from nnx_ppo.networks import feedforward
 from nnx_ppo.algorithms import rollout, ppo
 import nnx_ppo.test_dummies.move_to_center_env
 
@@ -15,7 +15,7 @@ class PPOTest(absltest.TestCase):
     def setUp(self):
         SEED = 17
         self.env = mujoco_playground.registry.load("CartpoleBalance")
-        self.nets = modules.MLPActorCritic(self.env.observation_size, self.env.action_size,
+        self.nets = feedforward.MLPActorCritic(self.env.observation_size, self.env.action_size,
                                            actor_hidden_sizes=[16, 16],
                                            critic_hidden_sizes=[16, 16],
                                            rngs = nnx.Rngs(SEED, action_sampling=SEED),
@@ -156,7 +156,7 @@ class PPOTest(absltest.TestCase):
     def test_ppo_move_to_center_env(self):
         SEED = 22
         env = nnx_ppo.test_dummies.move_to_center_env.MoveToCenterEnv(reward_falloff=1.0, border_radius=10.0)
-        nets = modules.MLPActorCritic(env.observation_size, env.action_size,
+        nets = feedforward.MLPActorCritic(env.observation_size, env.action_size,
                                       actor_hidden_sizes=[128, 128],
                                       critic_hidden_sizes=[128, 128],
                                       rngs = nnx.Rngs(SEED, action_sampling=SEED))
@@ -182,7 +182,7 @@ class PPOTest(absltest.TestCase):
     def test_ppo_normalize_obs_counter(self):
         SEED = 22
         env = nnx_ppo.test_dummies.move_to_center_env.MoveToCenterEnv(reward_falloff=1.0, border_radius=10.0)
-        nets = modules.MLPActorCritic(env.observation_size, env.action_size,
+        nets = feedforward.MLPActorCritic(env.observation_size, env.action_size,
                                       actor_hidden_sizes=[64, 64],
                                       critic_hidden_sizes=[64, 64],
                                       rngs = nnx.Rngs(SEED, action_sampling=SEED),
