@@ -230,7 +230,7 @@ def ppo_loss(networks: PPONetwork,
     rollout_data = jax.lax.stop_gradient(rollout_data)
     @jax.vmap
     def reset_net_state(done, state):
-        return jax.lax.cond(done, networks.initialize_state, lambda _: state, done.shape)
+        return jax.lax.cond(done, networks.reset_state, lambda x: x, state)
     
     def step_network(networks: PPONetwork, net_state, obs, done, raw_action):
         net_state, network_output = networks(net_state, obs, raw_action)

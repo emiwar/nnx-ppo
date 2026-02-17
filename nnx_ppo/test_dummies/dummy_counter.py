@@ -58,3 +58,6 @@ class DummyCounterNet(types.PPONetwork, nnx.Module):
     
     def initialize_state(self, batch_size: int) -> Dict:
         return {"counter_state": {"counter": jp.zeros(batch_size, dtype=int)}}
+    
+    def reset_state(self, prev_state):
+        return jax.tree.map(jp.zeros_like, prev_state)

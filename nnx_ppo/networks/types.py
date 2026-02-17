@@ -56,8 +56,17 @@ class PPONetwork(abc.ABC):
 
     Args:
       batch_size (int): The batch size of the returned state.
-      '''
-    
+    '''
+  
+  def reset_state(self, prev_state: ModuleState) -> ModuleState:
+    '''Specifies how the network should be transformed when the corresponding
+    environment is reset.
+
+    Args:
+      prev_state: The state of the network before the environment was reset 
+    '''
+    return prev_state
+
   def update_statistics(self, last_rollout: "Transition", total_steps: jax.Array) -> None:
     '''Called after the network is updated. In this function, it's safe to update the
     iteself.
@@ -130,6 +139,9 @@ class StatefulModule(abc.ABC, nnx.Module):
         this method.
         '''
         return ()
+    
+    def reset_state(self, prev_state: ModuleState) -> ModuleState:
+        return prev_state
     
     def update_statistics(self, last_rollout: "Transition", total_steps: jax.Array) -> None:
       '''Called after the network is updated. In this function, it's safe to update the

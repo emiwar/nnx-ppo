@@ -51,21 +51,26 @@ class PPOActorCritic(PPONetwork, nnx.Module):
             }
         )
 
-    def initialize_state(self, batch_size: int) -> ModuleState:
-        return {
-             "preprocessor": self.preprocessor.initialize_state(batch_size) if self.preprocessor is not None else (),
-             "actor": self.actor.initialize_state(batch_size),
-             "critic": self.critic.initialize_state(batch_size),
-             "action_sampler": self.action_sampler.initialize_state(batch_size),
+    @property
+    def components(self):
+        components = {
+             "actor": self.actor,
+             "critic": self.critic,
+             "action_sampler": self.action_sampler,
         }
+        if self.preprocessor is not None:
+            components["preprocessor"] = self.preprocessor
+        return components
+
+    def initialize_state(self, batch_size: int) -> ModuleState:
+        return {k: v.initialize_state(batch_size) for k,v in self.components.items()}
+
+    def reset_state(self, prev_state: ModuleState) -> ModuleState:
+        return {k: v.reset_state(prev_state[k]) for k,v in self.components.items()}
 
     def update_statistics(self, last_rollout: Transition, total_steps: jax.Array) -> None:
-        if self.preprocessor is not None:
-            self.preprocessor.update_statistics(last_rollout, total_steps)
-        self.actor.update_statistics(last_rollout, total_steps)
-        self.critic.update_statistics(last_rollout, total_steps)
-        self.action_sampler.update_statistics(last_rollout, total_steps)
-
+        for comp in self.components.values():
+            comp.update_statistics(last_rollout, total_steps)
 
 class Sequential(StatefulModule):
     def __init__(self, layers: List[StatefulModule]):
@@ -88,6 +93,12 @@ class Sequential(StatefulModule):
         for layer in self.layers:
             state.append(layer.initialize_state(batch_size))
         return state
+    
+    def reset_state(self, prev_state) -> List:
+        new_states = []
+        for layer, layer_prev_state in zip(self.layers, prev_state):
+            new_states.append(layer.reset_state(layer_prev_state))
+        return new_states
 
     def __getitem__(self, ind) -> StatefulModule:
         return self.layers[ind]
