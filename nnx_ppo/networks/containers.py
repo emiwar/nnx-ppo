@@ -80,13 +80,15 @@ class Sequential(StatefulModule):
         new_network_state = []
         x = obs
         regularization_loss = jp.array(0.0)
+        metrics = {}
         for layer, layer_state in zip(self.layers, network_state):
             layer_output = layer(layer_state, x)
             new_state = layer_output.next_state
             x = layer_output.output
             new_network_state.append(new_state)
             regularization_loss += layer_output.regularization_loss
-        return StatefulModuleOutput(new_network_state, x, regularization_loss, {})
+            metrics[len(metrics)] = layer_output.metrics
+        return StatefulModuleOutput(new_network_state, x, regularization_loss, metrics)
 
     def initialize_state(self, batch_size) -> List:
         state = []
@@ -106,3 +108,41 @@ class Sequential(StatefulModule):
     def update_statistics(self, last_rollout: Transition, total_steps: jax.Array) -> None:
         for layer in self.layers:
             layer.update_statistics(last_rollout, total_steps)
+
+class Concat(StatefulModule):
+    def __init__(self, **kwargs):
+        self.components = nnx.Dict(kwargs)
+
+    def __call__(self, state, x) -> StatefulModuleOutput:
+        new_state = {}
+        regularization_loss = jp.array(0.0)
+        outputs = []
+        metrics = {}
+        for key, component in self.components.items():
+            component_input = x[key]
+            component_output = component(state[key], component_input)
+            regularization_loss += component_output.regularization_loss
+            new_state[key] = component_output.next_state
+            metrics[key] = component_output.metrics
+            outputs.append(component_output.output)
+        concated = jp.concatenate(outputs, axis=-1)
+        return StatefulModuleOutput(new_state, concated, regularization_loss, metrics)
+    
+    def initialize_state(self, batch_size: int) -> Any:
+        return {k: c.initialize_state(batch_size) for k,c in self.components.items()}
+    
+    def reset_state(self, prev_state) -> Any:
+        return {k: c.reset_state(prev_state[k]) for k,c in self.components.items()}
+    
+    def update_statistics(self, last_rollout: Transition, total_steps: jax.Array) -> None:
+        for component in self.components.values():
+            component.update_statistics(last_rollout, total_steps)
+
+class Flattener(StatefulModule):
+    '''Takes a PyTree as input and concatenates each leaf along the last axis.'''
+    def __call__(self, state, x):
+        flattened, _ = jax.tree.flatten(x)
+        flattened = [a.reshape((a.shape[0], -1)) for a in flattened]
+        concated = jp.concatenate(flattened, axis=-1)
+        return StatefulModuleOutput((), concated, jp.array(0.0), {})
+

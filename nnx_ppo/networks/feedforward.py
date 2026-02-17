@@ -31,7 +31,7 @@ class MLP(StatefulModule):
 # Import PPOActorCritic here to avoid circular import (it depends on MLP)
 from nnx_ppo.networks.containers import PPOActorCritic
 
-
+#TODO: This could just be a function calling the PPOActorCritic constructor
 class MLPActorCritic(PPOActorCritic):
     def __init__(self,
                  obs_size: int,

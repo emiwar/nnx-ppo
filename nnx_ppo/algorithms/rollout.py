@@ -133,7 +133,7 @@ def eval_rollout_for_render_scan(env: mjx_env.MjxEnv,
     new_cumulative_reward = cumulative_reward + jp.where(already_done, 0.0, next_env_state.reward)
     new_already_done = jp.logical_or(already_done, next_env_state.done)
     next_env_state = jax.lax.cond(next_env_state.done, env.reset, lambda rng: next_env_state, rng)
-    next_net_state = jax.lax.cond(next_env_state.done, networks.reset_state, lambda x: x, next_env_state)
+    next_net_state = jax.lax.cond(next_env_state.done, networks.reset_state, lambda x: x, next_net_state)
 
     new_rng, = jax.random.split(rng, 1)
     return (next_env_state, next_net_state, new_cumulative_reward, new_already_done, new_rng), env_state
