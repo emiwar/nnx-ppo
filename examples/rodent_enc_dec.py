@@ -17,7 +17,7 @@ from vnl_playground.tasks.rodent.imitation import Imitation, default_config
 from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 from nnx_ppo.networks.containers import PPOActorCritic, Sequential, Concat, Flattener
 from nnx_ppo.networks.feedforward import MLP
-from nnx_ppo.networks.variational import VariationalBottleneck
+from nnx_ppo.networks.variational import AR1VariationalBottleneck
 from nnx_ppo.networks.normalizer import Normalizer
 from nnx_ppo.algorithms import ppo
 from nnx_ppo.algorithms.types import LoggingLevel
@@ -68,7 +68,7 @@ actor = Sequential([
         imitation_target=Sequential([
             Flattener(),
             MLP(enc_sizes, rngs, transfer_function, False),
-            VariationalBottleneck(net_config.latent_size, rngs, net_config.kl_weight, net_config.latent_min_std),
+            AR1VariationalBottleneck(net_config.latent_size, rngs, net_config.kl_weight, net_config.latent_min_std),
         ]),
         proprioception=Flattener(),
     ),
@@ -97,7 +97,7 @@ config = TrainConfig(
     ppo=PPOConfig(
         n_envs=512,
         rollout_length=20,
-        total_steps=1_000_000_000
+        total_steps=1_000_000_000,
         discounting_factor=0.95,
         normalize_advantages=True,
         learning_rate=1e-4,
@@ -144,7 +144,7 @@ wandb.init(
     },
     name=exp_name,
     tags=("MLP", "warp", "EncDec"),
-    notes="Encoder-decoder with variational bottleneck",
+    notes="Testing AR1 bottleneck",
 )
 
 # Train with wandb callbacks
