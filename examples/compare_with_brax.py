@@ -61,12 +61,12 @@ nnx_ppo_conf = config_dict.create(
     discounting_factor = ppo_params.discounting,
     clip_range = 0.3,
     normalize_advantages = True,
-    normalize_observations = False,#ppo_params.normalize_observations,
+    normalize_observations = ppo_params.normalize_observations,
     n_epochs = ppo_params.num_updates_per_batch,
     episode_length = ppo_params.episode_length,
     entropy_weight = ppo_params.entropy_cost,
     learning_rate = ppo_params.learning_rate,
-    n_minibatches = 8#ppo_params.num_minibatches,
+    n_minibatches = ppo_params.num_minibatches,
 )
 
 # Better params?
