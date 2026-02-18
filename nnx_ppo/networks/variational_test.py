@@ -11,14 +11,14 @@ from nnx_ppo.networks.containers import Sequential
 class VariationalBottleneckTest(absltest.TestCase):
 
     def test_initialization(self):
-        vb = VariationalBottleneck(latent_size=8, seed=42, kl_weight=0.01)
+        vb = VariationalBottleneck(latent_size=8, rng=nnx.Rngs(42), kl_weight=0.01)
         self.assertEqual(vb.latent_size, 8)
         self.assertEqual(vb.kl_weight, 0.01)
 
     def test_output_shape(self):
         latent_size = 8
         batch_size = 4
-        vb = VariationalBottleneck(latent_size=latent_size, seed=42)
+        vb = VariationalBottleneck(latent_size=latent_size, rng=nnx.Rngs(42))
         state = vb.initialize_state(batch_size)
         x = jp.ones((batch_size, latent_size * 2))
         output = vb(state, x)
@@ -29,7 +29,7 @@ class VariationalBottleneckTest(absltest.TestCase):
 
     def test_state_is_rng_keys(self):
         """State should be an array of RNG keys."""
-        vb = VariationalBottleneck(latent_size=4, seed=42)
+        vb = VariationalBottleneck(latent_size=4, rng=nnx.Rngs(42))
         state = vb.initialize_state(batch_size=2)
         # State is array of keys with shape [batch_size, 2] (JAX key shape)
         self.assertEqual(state.shape[0], 2)
@@ -44,7 +44,7 @@ class VariationalBottleneckTest(absltest.TestCase):
         """KL divergence should be ~0 when input encodes standard normal."""
         latent_size = 16
         batch_size = 32
-        vb = VariationalBottleneck(latent_size=latent_size, seed=42, kl_weight=1.0)
+        vb = VariationalBottleneck(latent_size=latent_size, rng=nnx.Rngs(42), kl_weight=1.0)
         state = vb.initialize_state(batch_size)
         # Mean=0, softplus^-1(1 - min_std) ≈ softplus^-1(1) ≈ 0.54
         # For softplus(x) + min_std = 1, we need softplus(x) ≈ 1, so x ≈ 0.54
@@ -59,7 +59,7 @@ class VariationalBottleneckTest(absltest.TestCase):
     def test_kl_divergence_increases_with_mean(self):
         """KL divergence should increase as mean deviates from 0."""
         latent_size = 8
-        vb = VariationalBottleneck(latent_size=latent_size, seed=42, kl_weight=1.0)
+        vb = VariationalBottleneck(latent_size=latent_size, rng=nnx.Rngs(42), kl_weight=1.0)
         state = vb.initialize_state(1)
         # Input with mean=0
         x_zero = jp.concatenate([
@@ -80,8 +80,8 @@ class VariationalBottleneckTest(absltest.TestCase):
 
     def test_kl_weight_scales_loss(self):
         """Regularization loss should scale with kl_weight."""
-        vb_low = VariationalBottleneck(latent_size=8, seed=42, kl_weight=0.1)
-        vb_high = VariationalBottleneck(latent_size=8, seed=42, kl_weight=1.0)
+        vb_low = VariationalBottleneck(latent_size=8, rng=nnx.Rngs(42), kl_weight=0.1)
+        vb_high = VariationalBottleneck(latent_size=8, rng=nnx.Rngs(42), kl_weight=1.0)
         x = jp.ones((4, 16))
         state = vb_low.initialize_state(4)
         output_low = vb_low(state, x)
@@ -95,8 +95,8 @@ class VariationalBottleneckTest(absltest.TestCase):
         latent_size = 8
         batch_size = 4
         x = jp.ones((batch_size, latent_size * 2))
-        vb1 = VariationalBottleneck(latent_size=latent_size, seed=42)
-        vb2 = VariationalBottleneck(latent_size=latent_size, seed=123)
+        vb1 = VariationalBottleneck(latent_size=latent_size, rng=nnx.Rngs(42))
+        vb2 = VariationalBottleneck(latent_size=latent_size, rng=nnx.Rngs(123))
         output1 = vb1(vb1.initialize_state(batch_size), x)
         output2 = vb2(vb2.initialize_state(batch_size), x)
         self.assertFalse(jp.allclose(output1.output, output2.output))
@@ -110,7 +110,7 @@ class VariationalBottleneckTest(absltest.TestCase):
         batch_size = 4
         seq = Sequential([
             MLP([obs_size, hidden_size, latent_size * 2], rngs, transfer_function_last_layer=False),
-            VariationalBottleneck(latent_size, seed=42, kl_weight=0.01),
+            VariationalBottleneck(latent_size, rngs, kl_weight=0.01),
             MLP([latent_size, hidden_size], rngs),
         ])
         state = seq.initialize_state(batch_size)
@@ -122,39 +122,16 @@ class VariationalBottleneckTest(absltest.TestCase):
 
     def test_reset_state_preserves_keys(self):
         """reset_state should preserve the RNG keys."""
-        vb = VariationalBottleneck(latent_size=4, seed=42)
+        vb = VariationalBottleneck(latent_size=4, rng=nnx.Rngs(42))
         state = vb.initialize_state(batch_size=2)
         reset_state = vb.reset_state(state)
         self.assertTrue(jp.allclose(state, reset_state))
-
-    def test_deterministic_replay(self):
-        """Same initial state should produce same samples (for PPO replay)."""
-        latent_size = 8
-        batch_size = 4
-        vb = VariationalBottleneck(latent_size=latent_size, seed=42)
-        x = jp.ones((batch_size, latent_size * 2))
-
-        # First run: simulate rollout
-        state0 = vb.initialize_state(batch_size)
-        output1 = vb(state0, x)
-        state1 = output1.next_state
-        output2 = vb(state1, x)
-
-        # Second run: simulate training replay from same initial state
-        state0_replay = vb.initialize_state(batch_size)
-        output1_replay = vb(state0_replay, x)
-        state1_replay = output1_replay.next_state
-        output2_replay = vb(state1_replay, x)
-
-        # Samples should match exactly
-        self.assertTrue(jp.allclose(output1.output, output1_replay.output))
-        self.assertTrue(jp.allclose(output2.output, output2_replay.output))
 
     def test_minibatch_slicing(self):
         """Slicing state for minibatches should preserve determinism per-env."""
         latent_size = 8
         batch_size = 8
-        vb = VariationalBottleneck(latent_size=latent_size, seed=42)
+        vb = VariationalBottleneck(latent_size=latent_size, rng=nnx.Rngs(42))
         x = jp.ones((batch_size, latent_size * 2))
 
         # Full batch

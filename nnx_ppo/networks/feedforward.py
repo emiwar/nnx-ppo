@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jp
 from flax import nnx
 
+from nnx_ppo.networks.containers import PPOActorCritic
 from nnx_ppo.networks.sampling_layers import ActionSampler, NormalTanhSampler
 from nnx_ppo.networks.types import StatefulModule, StatefulModuleOutput
 from nnx_ppo.networks.normalizer import Normalizer
@@ -26,10 +27,6 @@ class MLP(StatefulModule):
         if self.transfer_function_last_layer:
             x = self.transfer_function(x)
         return StatefulModuleOutput(state, x, jp.array(0.0), {})
-
-
-# Import PPOActorCritic here to avoid circular import (it depends on MLP)
-from nnx_ppo.networks.containers import PPOActorCritic
 
 #TODO: This could just be a function calling the PPOActorCritic constructor
 class MLPActorCritic(PPOActorCritic):

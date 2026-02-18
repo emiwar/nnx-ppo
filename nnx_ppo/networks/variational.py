@@ -15,7 +15,7 @@ class VariationalBottleneck(StatefulModule):
     and adds KL divergence against a standard normal prior to the regularization loss.
     """
 
-    def __init__(self, latent_size: int, seed: int, kl_weight: float = 1.0, min_std: float = 1e-6):
+    def __init__(self, latent_size: int, rng, kl_weight: float = 1.0, min_std: float = 1e-6):
         """Initialize the variational bottleneck.
 
         Args:
@@ -25,7 +25,7 @@ class VariationalBottleneck(StatefulModule):
             min_std: Minimum standard deviation to prevent numerical instability.
         """
         self.latent_size = latent_size
-        self.seed = seed
+        self.rng = rng
         self.kl_weight = kl_weight
         self.min_std = min_std
 
@@ -72,7 +72,7 @@ class VariationalBottleneck(StatefulModule):
         )
 
     def initialize_state(self, batch_size: int) -> jax.Array:
-        return jax.random.split(jax.random.key(self.seed), batch_size)
+        return jax.random.split(self.rng(), batch_size)
     
     def reset_state(self, prev_state: jax.Array) -> jax.Array:
         # It's fine to keep the chain of rng keys across env resets

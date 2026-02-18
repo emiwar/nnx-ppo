@@ -1,7 +1,8 @@
-from typing import Any, Optional, Tuple, Dict, Union, Mapping
+from typing import Any, Optional, Tuple, Dict, Callable, List
+import dataclasses
 
-from ml_collections import config_dict
 import mujoco_playground
+import numpy as np
 
 from flax import nnx
 import jax
@@ -12,43 +13,180 @@ import optax
 from nnx_ppo.networks.types import PPONetwork
 from nnx_ppo.algorithms import rollout
 from nnx_ppo.algorithms.types import TrainingState, LoggingLevel
+from nnx_ppo.algorithms.config import (
+    TrainConfig, PPOConfig, EvalConfig, VideoConfig,
+    VideoData, TrainResult
+)
+from nnx_ppo.algorithms.metrics import compute_metrics, log_weight_stats
+from nnx_ppo.algorithms.callbacks import wandb_video_fn
 
-def default_config() -> config_dict.ConfigDict:
-    return config_dict.create(
-        n_envs = 256,
-        rollout_length = 20,
-        n_steps = 256*20*100,
-        gae_lambda = 0.95,
-        discounting_factor = 0.9,
-        clip_range = 0.2,
-        learning_rate = 1e-4,
-        normalize_advantages = True,
-        n_epochs = 4,
-        n_minibatches = 4,
-        gradient_clipping = None,
-        weight_decay = None,
+def default_config() -> TrainConfig:
+    """Return default training configuration."""
+    return TrainConfig()
+
+
+def _should_run(steps: int, last_step: int, every_steps: int) -> bool:
+    """Check if we should run an action at this step count."""
+    if every_steps <= 0:
+        return False
+    return (steps // every_steps) > (last_step // every_steps)
+
+
+def train_ppo(
+    env: mujoco_playground.MjxEnv,
+    networks: PPONetwork,
+    config: Optional[TrainConfig] = None,
+    *,
+    total_steps: Optional[int] = None,
+    seed: Optional[int] = None,
+    log_fn: Optional[Callable[[Dict[str, Any], int], None]] = None,
+    video_fn: Optional[Callable[[VideoData], None]] = None,
+    eval_env: Optional[mujoco_playground.MjxEnv] = None,
+    initial_state: Optional[TrainingState] = None,
+) -> TrainResult:
+    """Train a PPO agent.
+
+    Args:
+        env: Training environment (MjxEnv).
+        networks: PPO network (actor-critic).
+        config: Training configuration. If None, uses default_config().
+        total_steps: Override config.ppo.total_steps (convenience parameter).
+        seed: Override config.seed (convenience parameter).
+        log_fn: Called with (metrics_dict, step) after each PPO step.
+                If None, no logging is performed.
+        video_fn: Called with VideoData after rendering eval episodes.
+                  If None, no videos are recorded even if config.video.enabled.
+        eval_env: Environment for evaluation rollouts. If None, uses env.
+        initial_state: Resume training from an existing TrainingState.
+                       If None, creates a new TrainingState.
+
+    Returns:
+        TrainResult containing final TrainingState, metrics, and eval history.
+    """
+    # Setup config with overrides
+    if config is None:
+        config = default_config()
+    if total_steps is not None:
+        config = dataclasses.replace(
+            config,
+            ppo=dataclasses.replace(config.ppo, total_steps=total_steps)
+        )
+    if seed is not None:
+        config = dataclasses.replace(config, seed=seed)
+
+    # Setup eval_env
+    if eval_env is None:
+        eval_env = env
+
+    # Initialize or resume training state
+    if initial_state is None:
+        training_state = new_training_state(
+            env, networks, config.ppo.n_envs, config.seed,
+            config.ppo.learning_rate, config.ppo.gradient_clipping,
+            config.ppo.weight_decay
+        )
+    else:
+        training_state = initial_state
+
+    # JIT compile functions
+    ppo_step_jit = nnx.jit(ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10, 11))
+    eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3, 5))
+    eval_rollout_render_jit = nnx.jit(
+        rollout.eval_rollout_for_render_scan, static_argnums=(0, 2)
     )
 
-def train_ppo(env: mujoco_playground.MjxEnv,
-              networks: PPONetwork,
-              config: config_dict.ConfigDict = default_config(),
-              seed: int = 17,
-              logging_level: LoggingLevel = LoggingLevel.BASIC):
-    training_state = new_training_state(env, networks, config.n_envs, seed,
-                                        config.learning_rate,
-                                        config.gradient_clipping,
-                                        config.weight_decay)
-    ppo_step_jit = nnx.jit(ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10))
-    metrics = None
-    while training_state.steps_taken < config.n_steps:
-        training_state, metrics = ppo_step_jit(
-            env, training_state, 
-            config.n_envs, config.rollout_length,
-            config.gae_lambda, config.discounting_factor,
-            config.clip_range, config.normalize_advantages,
-            config.n_epochs, config.n_minibatches, logging_level
+    # Training loop state
+    eval_history: List[Dict[str, Any]] = []
+    last_eval_step = -config.eval.every_steps  # Ensure eval at step 0
+    last_video_step = -config.video.every_steps  # Ensure video at step 0
+    metrics: Dict[str, Any] = {}
+    n_iterations = 0
+
+    # Helper for running eval
+    def run_eval(steps: int) -> Dict[str, Any]:
+        networks.eval()
+        eval_metrics = eval_rollout_jit(
+            eval_env, networks,
+            config.eval.n_envs, config.eval.max_episode_length,
+            jax.random.key(config.seed), config.eval.logging_percentiles
         )
-    return training_state, metrics
+        networks.train()
+        return dict(eval_metrics)
+
+    # Helper for running video
+    def run_video(steps: int, iteration: int) -> None:
+        if video_fn is None or not hasattr(eval_env, 'render'):
+            return
+        networks.eval()
+        render_key = jax.random.fold_in(jax.random.key(config.seed), iteration)
+        stacked_states, final_state, episode_reward = eval_rollout_render_jit(
+            eval_env, networks, config.video.episode_length, render_key
+        )
+        trajectory = rollout.unstack_trajectory(
+            stacked_states, final_state, config.video.episode_length
+        )
+        frames = eval_env.render(trajectory, **config.video.render_kwargs)
+        video_data = VideoData(
+            frames=np.stack(frames),
+            step=steps,
+            episode_reward=float(episode_reward),
+            episode_length=config.video.episode_length
+        )
+        video_fn(video_data)
+        networks.train()
+
+    # Initial eval/video at step 0
+    steps = int(training_state.steps_taken)
+    if config.eval.enabled:
+        eval_metrics = run_eval(steps)
+        metrics.update(eval_metrics)
+        eval_history.append({"step": steps, **eval_metrics})
+        last_eval_step = steps
+    if config.video.enabled:
+        run_video(steps, n_iterations)
+        last_video_step = steps
+    if log_fn is not None and metrics:
+        log_fn(metrics, steps)
+
+    # Main training loop
+    while int(training_state.steps_taken) < config.ppo.total_steps:
+        # PPO step
+        training_state, metrics = ppo_step_jit(
+            env, training_state,
+            config.ppo.n_envs, config.ppo.rollout_length,
+            config.ppo.gae_lambda, config.ppo.discounting_factor,
+            config.ppo.clip_range, config.ppo.normalize_advantages,
+            config.ppo.n_epochs, config.ppo.n_minibatches,
+            config.ppo.logging_level, config.ppo.logging_percentiles
+        )
+        n_iterations += 1
+        steps = int(training_state.steps_taken)
+
+        # Eval rollout
+        if config.eval.enabled and _should_run(steps, last_eval_step, config.eval.every_steps):
+            eval_metrics = run_eval(steps)
+            metrics.update(eval_metrics)
+            eval_history.append({"step": steps, **eval_metrics})
+            last_eval_step = steps
+
+        # Video recording
+        if config.video.enabled and _should_run(steps, last_video_step, config.video.every_steps):
+            run_video(steps, n_iterations)
+            last_video_step = steps
+
+        # Logging
+        if log_fn is not None:
+            log_fn(metrics, steps)
+
+    # Return result
+    return TrainResult(
+        training_state=training_state,
+        final_metrics=metrics,
+        eval_history=eval_history,
+        total_steps=int(training_state.steps_taken),
+        total_iterations=n_iterations
+    )
+
 
 def ppo_step(env: mujoco_playground.MjxEnv,
              training_state: TrainingState,
@@ -120,7 +258,7 @@ def ppo_step(env: mujoco_playground.MjxEnv,
     metrics = compute_metrics(loss_metrics, rollout_data, logging_level, logging_percentiles)
     metrics["total_steps"] = total_steps
     if LoggingLevel.WEIGHTS in logging_level:
-        _log_weight_stats(metrics, training_state.networks, logging_percentiles)
+        log_weight_stats(metrics, training_state.networks, logging_percentiles)
     training_state.networks.update_statistics(rollout_data, total_steps)
 
     # Now that all updates are done, we can replace all the network (and environment)
@@ -134,68 +272,6 @@ def ppo_step(env: mujoco_playground.MjxEnv,
     )
     
     return training_state, metrics
-
-def compute_metrics(loss_metrics: Dict[str, jax.Array],
-                    rollout_data: rollout.Transition,
-                    logging_level: LoggingLevel,
-                    percentile_levels: Optional[Tuple] = None):
-    metrics = {}
-    for k, v in loss_metrics.items():
-        _log_metric(metrics, k, v, percentile_levels)
-    if LoggingLevel.TRAINING_ENV_METRICS in logging_level:
-        for k, v in rollout_data.metrics.items():
-            _log_metric(metrics, k, v, percentile_levels)
-    if LoggingLevel.TRAIN_ROLLOUT_STATS in logging_level:
-        _log_metric(metrics, "rollout_batch/reward", rollout_data.rewards, percentile_levels)
-        _log_metric(metrics, "rollout_batch/action", rollout_data.network_output.actions, percentile_levels)
-        metrics["rollout_batch/done_rate"] = rollout_data.done.mean()
-        metrics["rollout_batch/truncation_rate"] = rollout_data.truncated.mean()
-        #metrics["rollout_batch/obs_NaN"] = 1.0 - jp.isfinite(rollout_data.obs).mean()
-        #metrics["rollout_batch/next_obs_NaN"] = 1.0 - jp.isfinite(rollout_data.next_obs).mean()
-    if LoggingLevel.ROLLOUT_OBS in logging_level:
-        pass
-        #_log_metric(metrics, "rollout_batch/obs", rollout_data.obs, percentile_levels)
-        #_log_metric(metrics, "rollout_batch/next_obs", rollout_data.next_obs, percentile_levels)
-    if LoggingLevel.ACTOR_EXTRA in logging_level:
-        _log_metric(metrics, "loglikelihood", rollout_data.network_output.loglikelihoods, percentile_levels)
-        if rollout_data.network_output.actions.shape[-1] == 1:
-            metrics["correlations/action_ll"] = jp.corrcoef(rollout_data.network_output.loglikelihoods.flatten(),
-                                                    rollout_data.network_output.actions.flatten())[0, 1]
-    if LoggingLevel.CRITIC_EXTRA in logging_level:
-        _log_metric(metrics, "losses/predicted_value", rollout_data.network_output.value_estimates, percentile_levels)
-    return metrics
-
-def _log_metric(metrics: Dict[str, jax.Array], name: str, x: Union[Mapping, jax.Array], percentile_levels: Optional[Tuple] = None):
-    if isinstance(x, Mapping):
-        for k, v in x.items():
-            _log_metric(metrics, f"{name}/{k}", v, percentile_levels)
-        return
-    if name.startswith("env/termination"): #These are boolean, but casted to float earlier
-        metrics[name] = jp.mean(x)
-    elif percentile_levels is None or len(percentile_levels) == 0:
-        metrics[f"{name}/mean"] = jp.mean(x)
-        metrics[f"{name}/std"] = jp.std(x)
-    else:
-        percentiles = jp.percentile(x, jp.array(percentile_levels))
-        for (pl, p) in zip(percentile_levels, percentiles):
-            metrics[f"{name}/p{int(pl)}"] = p
-
-
-def _log_weight_stats(metrics: Dict[str, jax.Array],
-                      networks: PPONetwork,
-                      percentile_levels: Optional[Tuple] = None):
-    """Log weight statistics for actor and critic networks separately."""
-    # Extract parameters using nnx.state
-    actor_params = nnx.state(networks.actor, nnx.Param)
-    critic_params = nnx.state(networks.critic, nnx.Param)
-
-    # Flatten all actor weights into single array
-    actor_weights = jp.concatenate([p.flatten() for p in jax.tree.leaves(actor_params)])
-    critic_weights = jp.concatenate([p.flatten() for p in jax.tree.leaves(critic_params)])
-
-    _log_metric(metrics, "weights/actor", actor_weights, percentile_levels)
-    _log_metric(metrics, "weights/critic", critic_weights, percentile_levels)
-
 
 def gae(rewards, values, done, truncation, lambda_: float, gamma: float):
     assert values.shape == (rewards.shape[0]+1, rewards.shape[1])
