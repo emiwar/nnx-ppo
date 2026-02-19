@@ -49,6 +49,7 @@ net_config = config_dict.create(
     kl_weight=0.01,
     latent_min_std=0.01,
     latent_size=32,
+    latent_ar1_weight=0.1,
 )
 
 config = TrainConfig(
@@ -104,7 +105,8 @@ actor = Sequential([
         imitation_target=Sequential([
             Flattener(),
             *make_mlp_layers(enc_sizes, rngs, activation, activation_last_layer=False),
-            VariationalBottleneck(net_config.latent_size, rngs, net_config.kl_weight, net_config.latent_min_std),
+            AR1VariationalBottleneck(net_config.latent_size, rngs, net_config.kl_weight,
+                                     net_config.latent_min_std, net_config.latent_ar1_weight),
         ]),
         proprioception=Flattener(),
     ),

@@ -147,9 +147,10 @@ class AR1VariationalBottleneck(StatefulModule):
         kl_loss = self.kl_weight * kl_divergence
 
         # AR1 loss
-        l2_diff = jp.where(jp.any(jp.isnan(prev_z), axis=-1),
-                           0.0,
-                           jp.mean(jp.square(z - prev_z), axis=-1))
+        # Replace NaN in prev_z with z so that (z - safe_prev_z) = 0 when prev_z is NaN.
+        # This avoids NaN gradients during backprop while also making l2_diff = 0.
+        safe_prev_z = jp.where(jp.isnan(prev_z), z, prev_z)
+        l2_diff = jp.mean(jp.square(z - safe_prev_z), axis=-1)
         ar1_loss = self.ar1_weight * l2_diff
 
         total_regularization_loss = kl_loss + ar1_loss
