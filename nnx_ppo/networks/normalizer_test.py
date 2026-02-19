@@ -11,14 +11,14 @@ class NormalizerTest(absltest.TestCase):
 
     def test_normalizer_initialization(self):
         normalizer = Normalizer(10)
-        self.assertEqual(normalizer.mean.value.shape, (10,))
-        self.assertEqual(normalizer.M2.value.shape, (10,))
-        self.assertEqual(normalizer.counter.value, 0.0)
+        self.assertEqual(normalizer.mean[...].shape, (10,))
+        self.assertEqual(normalizer.M2[...].shape, (10,))
+        self.assertEqual(normalizer.counter[...], 0.0)
 
     def test_normalizer_tuple_shape(self):
         normalizer = Normalizer((5, 3))
-        self.assertEqual(normalizer.mean.value.shape, (5, 3))
-        self.assertEqual(normalizer.M2.value.shape, (5, 3))
+        self.assertEqual(normalizer.mean[...].shape, (5, 3))
+        self.assertEqual(normalizer.M2[...].shape, (5, 3))
 
     def test_normalizer_initial_call(self):
         """Before any statistics are collected, normalizer uses default std."""
@@ -64,13 +64,13 @@ class NormalizerTest(absltest.TestCase):
                 metrics={}
             )
             normalizer.update_statistics(dummy_transition, (i+1) * BATCH_SIZE)
-            self.assertEqual(normalizer.counter.value, (i+1) * BATCH_SIZE)
+            self.assertEqual(normalizer.counter[...], (i+1) * BATCH_SIZE)
 
         # After all updates, check statistics accuracy
         true_data_mean = jp.mean(data, axis=(0, 1))
         true_data_std = jp.std(data, axis=(0, 1))
-        est_mean = normalizer.mean.value
-        est_std = jp.sqrt(normalizer.M2.value / normalizer.counter.value)
+        est_mean = normalizer.mean[...]
+        est_std = jp.sqrt(normalizer.M2[...] / normalizer.counter[...])
 
         self.assertLess(jp.max(jp.abs(est_mean - true_data_mean)), 1e-5)
         self.assertLess(jp.max(jp.abs(est_std - true_data_std)), 1e-5)

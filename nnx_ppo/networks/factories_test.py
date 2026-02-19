@@ -29,8 +29,8 @@ class MakeMLPActorCriticTest(absltest.TestCase):
         # Test actor and critic were independently initialized
         # Actor and critic are Sequential of Dense layers
         for actor_dense, critic_dense in zip(net.actor.layers, net.critic.layers):
-            self.assertFalse(jp.allclose(actor_dense.linear.kernel.value,
-                                         critic_dense.linear.kernel.value))
+            self.assertFalse(jp.allclose(actor_dense.linear.kernel[...],
+                                         critic_dense.linear.kernel[...]))
 
     def test_actor_layers_independently_initialized(self):
         SEED = 123
@@ -49,8 +49,8 @@ class MakeMLPActorCriticTest(absltest.TestCase):
         # Test actor layers were independently initialized
         first_actor_dense = net.actor.layers[0]
         for actor_dense in net.actor.layers[1:]:
-            self.assertFalse(jp.allclose(first_actor_dense.linear.kernel.value,
-                                         actor_dense.linear.kernel.value))
+            self.assertFalse(jp.allclose(first_actor_dense.linear.kernel[...],
+                                         actor_dense.linear.kernel[...]))
 
     def test_init_state(self):
         net = self.mlp_net
@@ -152,9 +152,9 @@ class MakeMLPActorCriticTest(absltest.TestCase):
                                           next_obs=jp.zeros_like(data[i:i+1]),
                                           metrics={})
             nets.update_statistics(dummy_transition, (i+1) * BATCH_SIZE)
-            self.assertEqual(nets.preprocessor.counter.value, (i+1) * BATCH_SIZE)
-            self.assertEqual(nets.preprocessor.mean.value.shape, (OBS_SIZE,))
-            self.assertEqual(nets.preprocessor.M2.value.shape, (OBS_SIZE,))
+            self.assertEqual(nets.preprocessor.counter[...], (i+1) * BATCH_SIZE)
+            self.assertEqual(nets.preprocessor.mean[...].shape, (OBS_SIZE,))
+            self.assertEqual(nets.preprocessor.M2[...].shape, (OBS_SIZE,))
 
             true_mean = jp.mean(data[:i+1], axis=(0, 1))
             true_std = jp.std(data[:i+1], axis=(0, 1))

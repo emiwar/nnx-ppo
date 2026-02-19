@@ -194,7 +194,7 @@ class PPOTest(absltest.TestCase):
             )
             n_updates += 1
             self.assertEqual(training_state.steps_taken, n_updates * config.ppo.rollout_length * config.ppo.n_envs)
-            self.assertEqual(nets.preprocessor.counter.value, n_updates * config.ppo.rollout_length * config.ppo.n_envs)
+            self.assertEqual(nets.preprocessor.counter[...], n_updates * config.ppo.rollout_length * config.ppo.n_envs)
 
             # Arbitrary threshold that empirically has been reasonably easy to reach
             if training_state.steps_taken > 1_500_000:

@@ -155,7 +155,7 @@ class RolloutTest(absltest.TestCase):
 
         next_net_state, next_env_state, rollout_data = unroll_env(
             env, env_state, net, net_state, N_STEPS, reset_key)
-        self.assertEqual(net.n_calls.value, N_STEPS * N_ENVS)
+        self.assertEqual(net.n_calls[...], N_STEPS * N_ENVS)
 
     def test_stateful_net_batch(self):
         N_ENVS = 256
@@ -169,4 +169,4 @@ class RolloutTest(absltest.TestCase):
 
         next_net_state, next_env_state, rollout_data = unroll_env(
             env, env_state, net, net_state, N_STEPS, reset_key)
-        self.assertEqual(net.n_calls.value, N_STEPS * N_ENVS)
+        self.assertEqual(net.n_calls[...], N_STEPS * N_ENVS)
