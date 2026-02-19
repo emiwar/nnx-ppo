@@ -59,7 +59,6 @@ class LSTM(StatefulModule):
         self.in_features = in_features
         self.hidden_features = hidden_features
         self.trainable_initial_state = trainable_initial_state
-        self.rngs = rngs
 
         # Build kwargs for cell constructor
         cell_kwargs = {
@@ -115,9 +114,12 @@ class LSTM(StatefulModule):
         if self.trainable_initial_state:
             h = jp.broadcast_to(self.initial_h[...], (batch_size, self.hidden_features))
             c = jp.broadcast_to(self.initial_c[...], (batch_size, self.hidden_features))
-            return (h, c)
         else:
-            return self.cell.initialize_carry((batch_size, self.in_features), rngs=self.rngs)
+            # Initialize to zeros directly. Flax's initialize_carry also defaults to zeros,
+            # but requires an RNG parameter (which it then ignores). This is clearer.
+            h = jp.zeros((batch_size, self.hidden_features))
+            c = jp.zeros((batch_size, self.hidden_features))
+        return (h, c)
 
     def initialize_state(self, batch_size: int) -> LSTMCarry:
         """Initialize the LSTM hidden state.
