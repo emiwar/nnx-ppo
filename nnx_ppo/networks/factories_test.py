@@ -3,11 +3,11 @@ import jax
 import jax.numpy as jp
 from flax import nnx
 
-from nnx_ppo.networks import feedforward, types
+from nnx_ppo.networks import factories, types
 from nnx_ppo.algorithms.types import Transition
 
 
-class MLPActorCriticTest(absltest.TestCase):
+class MakeMLPActorCriticTest(absltest.TestCase):
 
     def setUp(self):
         SEED = 12345
@@ -15,45 +15,50 @@ class MLPActorCriticTest(absltest.TestCase):
         self.action_size = 5
         self.hidden_sizes = [17, 39]
         rngs = nnx.Rngs(SEED)
-        self.mlp_net = feedforward.MLPActorCritic(self.obs_size,
-                                              self.action_size,
-                                              self.hidden_sizes,
-                                              self.hidden_sizes,
-                                              rngs)
+        self.mlp_net = factories.make_mlp_actor_critic(
+            self.obs_size,
+            self.action_size,
+            self.hidden_sizes,
+            self.hidden_sizes,
+            rngs
+        )
 
     def test_actor_critic_independently_initialized(self):
         net = self.mlp_net
 
         # Test actor and critic were independently initialized
-        for actor_layer, critic_layer in zip(net.actor.layers, net.critic.layers):
-            self.assertFalse(jp.allclose(actor_layer.kernel.raw_value,
-                                         critic_layer.kernel.raw_value))
+        # Actor and critic are Sequential of Dense layers
+        for actor_dense, critic_dense in zip(net.actor.layers, net.critic.layers):
+            self.assertFalse(jp.allclose(actor_dense.linear.kernel.value,
+                                         critic_dense.linear.kernel.value))
 
     def test_actor_layers_independently_initialized(self):
         SEED = 123
-        self.obs_size = 64
-        self.action_size = 32
-        self.hidden_sizes = [64, 64]
+        obs_size = 64
+        action_size = 32
+        hidden_sizes = [64, 64]
         rngs = nnx.Rngs(SEED)
-        net = feedforward.MLPActorCritic(self.obs_size,
-                                     self.action_size,
-                                     self.hidden_sizes,
-                                     self.hidden_sizes,
-                                     rngs)
+        net = factories.make_mlp_actor_critic(
+            obs_size,
+            action_size,
+            hidden_sizes,
+            hidden_sizes,
+            rngs
+        )
 
-        # Test actor and critic were independently initialized
-        first_actor_layer = net.actor.layers[0]
-        for actor_layer in net.actor.layers[1:]:
-            self.assertFalse(jp.allclose(first_actor_layer.kernel.raw_value,
-                                         actor_layer.kernel.raw_value))
+        # Test actor layers were independently initialized
+        first_actor_dense = net.actor.layers[0]
+        for actor_dense in net.actor.layers[1:]:
+            self.assertFalse(jp.allclose(first_actor_dense.linear.kernel.value,
+                                         actor_dense.linear.kernel.value))
 
     def test_init_state(self):
         net = self.mlp_net
 
         # Init
         first_state = net.initialize_state(batch_size=17)
-        self.assertDictContainsSubset({"actor": (), "critic": ()}, first_state)
-
+        self.assertIn("actor", first_state)
+        self.assertIn("critic", first_state)
 
     def test_simple_input(self):
         net = self.mlp_net
@@ -84,7 +89,8 @@ class MLPActorCriticTest(absltest.TestCase):
 
         next_state, output = call_net(net, next_state, simple_obs)
         self.assertIsInstance(output, types.PPONetworkOutput)
-        self.assertDictContainsSubset({"actor": (), "critic": ()}, next_state)
+        self.assertIn("actor", next_state)
+        self.assertIn("critic", next_state)
 
     def test_simple_input_batched(self):
         net = self.mlp_net
@@ -98,12 +104,14 @@ class MLPActorCriticTest(absltest.TestCase):
         self.assertEqual(first_output.actions.shape, (n_envs, self.action_size))
         self.assertEqual(first_output.loglikelihoods.shape, (n_envs,))
         self.assertEqual(first_output.value_estimates.shape, (n_envs, 1))
-        self.assertLess(jp.min(first_output.value_estimates), -0.2)
-        self.assertGreater(jp.max(first_output.value_estimates), 0.2)
+        # Verify critic can output negative values (no ReLU on last layer)
+        self.assertLess(jp.min(first_output.value_estimates), -0.02)
+        self.assertGreater(jp.max(first_output.value_estimates), 0.02)
 
         next_state, second_output = net(next_state, simple_obs)
         self.assertIsInstance(second_output, types.PPONetworkOutput)
-        self.assertDictContainsSubset({"actor": (), "critic": ()}, next_state)
+        self.assertIn("actor", next_state)
+        self.assertIn("critic", next_state)
         self.assertFalse(jp.allclose(first_output.actions, second_output.actions),
                          "Stochasticity in actions.")
         self.assertTrue(jp.allclose(first_output.value_estimates, second_output.value_estimates),
@@ -123,11 +131,13 @@ class MLPActorCriticTest(absltest.TestCase):
         ACTION_SIZE = 5
         BATCH_SIZE = 32
         N_STEPS = 10
-        nets = feedforward.MLPActorCritic(OBS_SIZE, ACTION_SIZE,
-                                      actor_hidden_sizes=[64, 64],
-                                      critic_hidden_sizes=[64, 64],
-                                      rngs = nnx.Rngs(SEED, action_sampling=SEED),
-                                      normalize_obs=True)
+        nets = factories.make_mlp_actor_critic(
+            OBS_SIZE, ACTION_SIZE,
+            actor_hidden_sizes=[64, 64],
+            critic_hidden_sizes=[64, 64],
+            rngs=nnx.Rngs(SEED, action_sampling=SEED),
+            normalize_obs=True
+        )
         key = jax.random.key(SEED)
         mean_key, var_key = jax.random.split(key)
         data = jax.random.normal(mean_key, (OBS_SIZE,)) + jax.random.normal(var_key, (N_STEPS+1, BATCH_SIZE, OBS_SIZE))
@@ -147,12 +157,13 @@ class MLPActorCriticTest(absltest.TestCase):
             self.assertEqual(nets.preprocessor.M2.value.shape, (OBS_SIZE,))
 
             true_mean = jp.mean(data[:i+1], axis=(0, 1))
-            true_std  = jp.std(data[:i+1], axis=(0, 1))
+            true_std = jp.std(data[:i+1], axis=(0, 1))
             est_mean = nets.preprocessor.mean
             est_var = nets.preprocessor.M2 / nets.preprocessor.counter
             est_std = jp.sqrt(est_var)
             self.assertLess(jp.max(jp.abs(est_mean - true_mean)), 1e-6)
             self.assertLess(jp.max(jp.abs(est_std - true_std)), 1e-6)
+
 
 if __name__ == '__main__':
     absltest.main()

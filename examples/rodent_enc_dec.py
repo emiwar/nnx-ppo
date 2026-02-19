@@ -16,7 +16,7 @@ from vnl_playground.tasks.rodent.imitation import Imitation, default_config
 
 from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 from nnx_ppo.networks.containers import PPOActorCritic, Sequential, Concat, Flattener
-from nnx_ppo.networks.feedforward import MLP
+from nnx_ppo.networks.factories import make_mlp, make_mlp_layers
 from nnx_ppo.networks.variational import AR1VariationalBottleneck
 from nnx_ppo.networks.normalizer import Normalizer
 from nnx_ppo.algorithms import ppo
@@ -40,7 +40,7 @@ net_config = config_dict.create(
     enc_hidden_sizes=[512] * 4,
     dec_hidden_sizes=[512] * 4,
     critic_hidden_sizes=[1024] * 2,
-    transfer_function="swish",
+    activation="swish",
     entropy_weight=1e-2,
     min_std=1e-1,
     std_scale=1.0,
@@ -51,48 +51,6 @@ net_config = config_dict.create(
     latent_size=32,
 )
 
-train_env = Imitation(env_config)
-eval_env = train_env
-obs_size = train_env.non_flattened_observation_size
-
-# Build encoder-decoder network
-rngs = nnx.Rngs(SEED)
-transfer_function = {"swish": nnx.swish, "tanh": nnx.tanh, "relu": nnx.relu}[net_config.transfer_function]
-reference_size = int(sum(jax.tree.flatten(obs_size["imitation_target"])[0]))
-proprio_size = int(sum(jax.tree.flatten(obs_size["proprioception"])[0]))
-enc_sizes = [reference_size] + net_config.enc_hidden_sizes + [net_config.latent_size * 2]
-dec_sizes = [net_config.latent_size + proprio_size] + net_config.dec_hidden_sizes + [train_env.action_size * 2]
-
-actor = Sequential([
-    Concat(
-        imitation_target=Sequential([
-            Flattener(),
-            MLP(enc_sizes, rngs, transfer_function, False),
-            AR1VariationalBottleneck(net_config.latent_size, rngs, net_config.kl_weight, net_config.latent_min_std),
-        ]),
-        proprioception=Flattener(),
-    ),
-    MLP(dec_sizes, rngs, transfer_function, False)
-])
-critic_sizes = [reference_size + proprio_size] + net_config.critic_hidden_sizes + [1]
-critic = Sequential([
-    Flattener(),
-    MLP(critic_sizes, rngs, transfer_function, transfer_function_last_layer=False),
-])
-sampler = NormalTanhSampler(
-    rngs,
-    entropy_weight=net_config.entropy_weight,
-    min_std=net_config.min_std,
-    std_scale=net_config.std_scale
-)
-nets = PPOActorCritic(
-    preprocessor=Normalizer(obs_size),
-    actor=actor,
-    critic=critic,
-    action_sampler=sampler,
-)
-
-# Setup config using new dataclass API
 config = TrainConfig(
     ppo=PPOConfig(
         n_envs=512,
@@ -128,6 +86,49 @@ config = TrainConfig(
     ),
     seed=SEED,
 )
+
+train_env = Imitation(env_config)
+eval_env = train_env
+obs_size = train_env.non_flattened_observation_size
+
+# Build encoder-decoder network
+rngs = nnx.Rngs(SEED)
+activation = {"swish": nnx.swish, "tanh": nnx.tanh, "relu": nnx.relu}[net_config.activation]
+reference_size = int(sum(jax.tree.flatten(obs_size["imitation_target"])[0]))
+proprio_size = int(sum(jax.tree.flatten(obs_size["proprioception"])[0]))
+enc_sizes = [reference_size] + net_config.enc_hidden_sizes + [net_config.latent_size * 2]
+dec_sizes = [net_config.latent_size + proprio_size] + net_config.dec_hidden_sizes + [train_env.action_size * 2]
+
+actor = Sequential([
+    Concat(
+        imitation_target=Sequential([
+            Flattener(),
+            *make_mlp_layers(enc_sizes, rngs, activation, activation_last_layer=False),
+            VariationalBottleneck(net_config.latent_size, rngs, net_config.kl_weight, net_config.latent_min_std),
+        ]),
+        proprioception=Flattener(),
+    ),
+    make_mlp(dec_sizes, rngs, activation, activation_last_layer=False)
+])
+critic_sizes = [reference_size + proprio_size] + net_config.critic_hidden_sizes + [1]
+critic = Sequential([
+    Flattener(),
+    *make_mlp_layers(critic_sizes, rngs, activation, activation_last_layer=False),
+])
+sampler = NormalTanhSampler(
+    rngs,
+    entropy_weight=net_config.entropy_weight,
+    min_std=net_config.min_std,
+    std_scale=net_config.std_scale
+)
+nets = PPOActorCritic(
+    preprocessor=Normalizer(obs_size),
+    actor=actor,
+    critic=critic,
+    action_sampler=sampler,
+)
+
+
 
 # Initialize wandb
 now = datetime.now()

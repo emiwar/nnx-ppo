@@ -7,7 +7,7 @@ import jax.numpy as jp
 from flax import nnx
 import mujoco_playground
 
-from nnx_ppo.networks import feedforward, types
+from nnx_ppo.networks import factories, types
 from nnx_ppo.algorithms.rollout import unroll_env
 from nnx_ppo.test_dummies import parrot_env
 from nnx_ppo.wrappers import episode_wrapper
@@ -19,10 +19,10 @@ class EpisodeWrapperTest(absltest.TestCase):
 
         base_env = parrot_env.ParrotEnv(obs_size=3)
         self.env = episode_wrapper.EpisodeWrapper(base_env, max_len=10)
-        self.nets = feedforward.MLPActorCritic(self.env.observation_size, self.env.action_size,
+        self.nets = factories.make_mlp_actor_critic(self.env.observation_size, self.env.action_size,
                                            actor_hidden_sizes=[16, 16],
                                            critic_hidden_sizes=[16, 16],
-                                           rngs = nnx.Rngs(SEED, action_sampling=SEED))
+                                           rngs = nnx.Rngs(SEED))
         
     def test_single_env_rollout(self):
         N_STEPS = 24

@@ -6,8 +6,6 @@ os.environ["PYOPENGL_PLATFORM"] = "egl"
 from datetime import datetime
 import dataclasses
 
-import jax
-import numpy as np
 from flax import nnx
 import wandb
 from ml_collections import config_dict
@@ -15,8 +13,7 @@ from ml_collections import config_dict
 from vnl_playground.tasks.rodent.imitation import Imitation, default_config
 from vnl_playground.tasks.wrappers import FlattenObsWrapper
 
-from nnx_ppo.networks.feedforward import MLPActorCritic
-from nnx_ppo.networks.sampling_layers import NormalTanhSampler
+from nnx_ppo.networks.factories import make_mlp_actor_critic
 from nnx_ppo.algorithms import ppo
 from nnx_ppo.algorithms.types import LoggingLevel
 from nnx_ppo.algorithms.config import (
@@ -37,7 +34,7 @@ env_config.njmax = 256
 net_config = config_dict.create(
     actor_hidden_sizes=[1024] * 4,
     critic_hidden_sizes=[1024] * 2,
-    transfer_function="swish",
+    activation="swish",
     entropy_weight=1e-2,
     min_std=1e-1,
     std_scale=1.0,
@@ -45,30 +42,6 @@ net_config = config_dict.create(
     initalizer_scale=1.0,
 )
 
-train_env = FlattenObsWrapper(Imitation(env_config))
-eval_env = train_env
-
-# Setup network
-rngs = nnx.Rngs(SEED)
-transfer_function = {"swish": nnx.swish, "tanh": nnx.tanh, "relu": nnx.relu}[net_config.transfer_function]
-nets = MLPActorCritic(
-    train_env.observation_size,
-    train_env.action_size,
-    actor_hidden_sizes=net_config.actor_hidden_sizes,
-    critic_hidden_sizes=net_config.critic_hidden_sizes,
-    rngs=rngs,
-    transfer_function=transfer_function,
-    action_sampler=NormalTanhSampler(
-        rngs,
-        entropy_weight=net_config.entropy_weight,
-        min_std=net_config.min_std,
-        std_scale=net_config.std_scale,
-    ),
-    normalize_obs=net_config.normalize_obs,
-    initalizer_scale=net_config.initalizer_scale
-)
-
-# Setup config using new dataclass API
 config = TrainConfig(
     ppo=PPOConfig(
         n_envs=2048,
@@ -103,6 +76,19 @@ config = TrainConfig(
         },
     ),
     seed=SEED,
+)
+
+train_env = FlattenObsWrapper(Imitation(env_config))
+eval_env = train_env
+
+# Setup network
+rngs = nnx.Rngs(SEED)
+
+nets = make_mlp_actor_critic(
+    train_env.observation_size,
+    train_env.action_size,
+    rngs=rngs,
+    **net_config
 )
 
 # Initialize wandb

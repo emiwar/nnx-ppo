@@ -6,8 +6,7 @@ import mujoco_playground
 from flax import nnx
 import wandb
 
-from nnx_ppo.networks.feedforward import MLPActorCritic
-from nnx_ppo.networks.sampling_layers import NormalTanhSampler
+from nnx_ppo.networks.factories import make_mlp_actor_critic
 from nnx_ppo.algorithms import ppo
 from nnx_ppo.algorithms.types import LoggingLevel
 from nnx_ppo.algorithms.config import (
@@ -40,17 +39,17 @@ eval_env = env
 
 # Setup network
 rngs = nnx.Rngs(SEED)
-nets = MLPActorCritic(
+nets = make_mlp_actor_critic(
     env.observation_size,
     env.action_size,
     actor_hidden_sizes=[64] * 4,
     critic_hidden_sizes=[256] * 2,
     rngs=rngs,
-    transfer_function=nnx.swish,
-    action_sampler=NormalTanhSampler(
-        rngs, entropy_weight=1e-2, min_std=5e-3, std_scale=1.0
-    ),
-    normalize_obs=True
+    activation=nnx.swish,
+    normalize_obs=True,
+    entropy_weight=1e-2,
+    min_std=5e-3,
+    std_scale=1.0,
 )
 
 # Setup config using new dataclass API

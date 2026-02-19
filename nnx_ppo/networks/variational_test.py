@@ -4,7 +4,7 @@ import jax.numpy as jp
 from flax import nnx
 
 from nnx_ppo.networks.variational import VariationalBottleneck
-from nnx_ppo.networks.feedforward import MLP
+from nnx_ppo.networks.factories import make_mlp
 from nnx_ppo.networks.containers import Sequential
 
 
@@ -109,9 +109,9 @@ class VariationalBottleneckTest(absltest.TestCase):
         hidden_size = 32
         batch_size = 4
         seq = Sequential([
-            MLP([obs_size, hidden_size, latent_size * 2], rngs, transfer_function_last_layer=False),
+            make_mlp([obs_size, hidden_size, latent_size * 2], rngs, activation_last_layer=False),
             VariationalBottleneck(latent_size, rngs, kl_weight=0.01),
-            MLP([latent_size, hidden_size], rngs),
+            make_mlp([latent_size, hidden_size], rngs),
         ])
         state = seq.initialize_state(batch_size)
         x = jp.ones((batch_size, obs_size))

@@ -4,7 +4,7 @@ import jax.numpy as jp
 from flax import nnx
 
 from nnx_ppo.networks.recurrent import LSTM
-from nnx_ppo.networks.feedforward import MLP
+from nnx_ppo.networks.factories import make_mlp
 from nnx_ppo.networks.containers import Sequential
 
 
@@ -145,9 +145,9 @@ class LSTMTest(absltest.TestCase):
         output_features = 8
         batch_size = 4
         seq = Sequential([
-            MLP([in_features, 24], rngs),
+            make_mlp([in_features, 24], rngs),
             LSTM(in_features=24, hidden_features=hidden_features, rngs=rngs),
-            MLP([hidden_features, output_features], rngs),
+            make_mlp([hidden_features, output_features], rngs),
         ])
         state = seq.initialize_state(batch_size)
         x = jp.ones((batch_size, in_features))

@@ -14,8 +14,7 @@ import brax.training.agents.ppo.train
 import brax.training.agents.ppo.networks
 
 from flax import nnx
-from nnx_ppo.networks.feedforward import MLPActorCritic
-from nnx_ppo.networks.sampling_layers import NormalTanhSampler
+from nnx_ppo.networks.factories import make_mlp_actor_critic
 from nnx_ppo.algorithms import ppo, rollout
 from nnx_ppo.algorithms.types import LoggingLevel
 from nnx_ppo.algorithms.config import TrainConfig, PPOConfig, EvalConfig
@@ -81,17 +80,16 @@ config = TrainConfig(
 
 train_env = reward_scaling_wrapper.RewardScalingWrapper(env, ppo_params.reward_scaling)
 rngs = nnx.Rngs(SEED)
-nets = MLPActorCritic(
+nets = make_mlp_actor_critic(
     train_env.observation_size, train_env.action_size,
     actor_hidden_sizes=[32] * 4,
     critic_hidden_sizes=[256] * 5,
     rngs=rngs,
-    transfer_function=nnx.swish,
-    action_sampler=NormalTanhSampler(
-        rngs, entropy_weight=ppo_params.entropy_cost,
-        min_std=1e-3, std_scale=1.0
-    ),
-    normalize_obs=ppo_params.normalize_observations
+    activation=nnx.swish,
+    normalize_obs=ppo_params.normalize_observations,
+    entropy_weight=ppo_params.entropy_cost,
+    min_std=1e-3,
+    std_scale=1.0,
 )
 
 # Manual training loop for precise timing comparison
