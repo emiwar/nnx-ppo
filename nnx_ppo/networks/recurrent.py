@@ -109,18 +109,6 @@ class LSTM(StatefulModule):
             metrics={},
         )
 
-    def _get_initial_carry(self, batch_size: int) -> LSTMCarry:
-        """Get initial carry, either zeros or trainable parameters."""
-        if self.trainable_initial_state:
-            h = jp.broadcast_to(self.initial_h[...], (batch_size, self.hidden_features))
-            c = jp.broadcast_to(self.initial_c[...], (batch_size, self.hidden_features))
-        else:
-            # Initialize to zeros directly. Flax's initialize_carry also defaults to zeros,
-            # but requires an RNG parameter (which it then ignores). This is clearer.
-            h = jp.zeros((batch_size, self.hidden_features))
-            c = jp.zeros((batch_size, self.hidden_features))
-        return (h, c)
-
     def initialize_state(self, batch_size: int) -> LSTMCarry:
         """Initialize the LSTM hidden state.
 
@@ -132,18 +120,30 @@ class LSTM(StatefulModule):
             (batch_size, hidden_features). If trainable_initial_state=True,
             these are learned parameters; otherwise zeros.
         """
-        return self._get_initial_carry(batch_size)
+        if self.trainable_initial_state:
+            h = jp.broadcast_to(self.initial_h[...], (batch_size, self.hidden_features))
+            c = jp.broadcast_to(self.initial_c[...], (batch_size, self.hidden_features))
+        else:
+            h = jp.zeros((batch_size, self.hidden_features))
+            c = jp.zeros((batch_size, self.hidden_features))
+        return (h, c)
 
     def reset_state(self, prev_state: LSTMCarry) -> LSTMCarry:
         """Reset LSTM state (called when environment resets).
 
         Args:
-            prev_state: Previous carry state (used to infer batch size).
+            prev_state: Previous carry state (used to preserve shape).
 
         Returns:
-            Initial carry with same batch size as prev_state.
-            If trainable_initial_state=True, returns learned initial state;
-            otherwise returns zeros.
+            Initial carry with same shape as prev_state.
+            If trainable_initial_state=True, returns learned initial state
+            broadcast to match prev_state shape; otherwise returns zeros.
         """
-        batch_size = prev_state[0].shape[0]
-        return self._get_initial_carry(batch_size)
+        if self.trainable_initial_state:
+            # Broadcast learned initial state to match prev_state shape
+            h = jp.broadcast_to(self.initial_h[...], prev_state[0].shape)
+            c = jp.broadcast_to(self.initial_c[...], prev_state[1].shape)
+            return (h, c)
+        else:
+            # Return zeros with same shape as prev_state
+            return (jp.zeros_like(prev_state[0]), jp.zeros_like(prev_state[1]))

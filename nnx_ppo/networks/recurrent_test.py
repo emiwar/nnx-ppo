@@ -4,8 +4,14 @@ import jax.numpy as jp
 from flax import nnx
 
 from nnx_ppo.networks.recurrent import LSTM
+from nnx_ppo.networks.feedforward import Dense
 from nnx_ppo.networks.factories import make_mlp
-from nnx_ppo.networks.containers import Sequential
+from nnx_ppo.networks.containers import Sequential, PPOActorCritic
+from nnx_ppo.networks.sampling_layers import NormalTanhSampler
+from nnx_ppo.algorithms import rollout
+from nnx_ppo.algorithms.ppo import ppo_step, new_training_state
+from nnx_ppo.algorithms.types import LoggingLevel
+from nnx_ppo.test_dummies.mock_env import MockEnv
 
 
 class LSTMTest(absltest.TestCase):
@@ -197,6 +203,108 @@ class LSTMTest(absltest.TestCase):
         x = jp.ones((4, 16))
         output = lstm(state, x)
         self.assertTrue(jp.allclose(output.regularization_loss, jp.zeros(4)))
+
+    def test_rollout_with_resets(self):
+        """LSTM should work correctly during rollout with environment resets."""
+        rngs = nnx.Rngs(42)
+        obs_size = 16
+        hidden_size = 32
+        action_size = 4
+        batch_size = 8
+        unroll_length = 20
+        max_steps = 5  # Env resets every 5 steps
+
+        env = MockEnv(obs_size, action_size, max_steps=max_steps)
+
+        # Create network with LSTM in actor
+        actor = Sequential([
+            Dense(obs_size, hidden_size, rngs, activation=nnx.relu),
+            LSTM(in_features=hidden_size, hidden_features=hidden_size, rngs=rngs),
+            Dense(hidden_size, action_size * 2, rngs, activation=None),
+        ])
+
+        critic = Sequential([
+            Dense(obs_size, hidden_size, rngs, activation=nnx.relu),
+            Dense(hidden_size, 1, rngs, activation=None),
+        ])
+
+        sampler = NormalTanhSampler(rngs, entropy_weight=1e-3)
+        networks = PPOActorCritic(actor=actor, critic=critic, action_sampler=sampler)
+
+        # Initialize states
+        key = jax.random.PRNGKey(0)
+        env_keys = jax.random.split(key, batch_size)
+        env_states = jax.vmap(env.reset)(env_keys)
+        network_states = networks.initialize_state(batch_size)
+
+        # Run rollout
+        rollout_key = jax.random.PRNGKey(1)
+        final_net_state, final_env_state, rollout_data = rollout.unroll_env(
+            env, env_states, networks, network_states, unroll_length, rollout_key
+        )
+
+        # Check that multiple resets occurred
+        total_dones = jp.sum(rollout_data.done)
+        self.assertGreater(float(total_dones), 0, "Expected at least one reset to occur")
+
+        # Check no NaNs in network outputs
+        self.assertFalse(jp.any(jp.isnan(rollout_data.network_output.actions)))
+        self.assertFalse(jp.any(jp.isnan(rollout_data.network_output.value_estimates)))
+        self.assertFalse(jp.any(jp.isnan(rollout_data.network_output.loglikelihoods)))
+
+    def test_ppo_step_with_lstm(self):
+        """LSTM should work correctly during ppo_step including backward pass."""
+        rngs = nnx.Rngs(42)
+        obs_size = 16
+        hidden_size = 32
+        action_size = 4
+        n_envs = 8
+        rollout_length = 20
+        max_steps = 5
+
+        env = MockEnv(obs_size, action_size, max_steps=max_steps)
+
+        actor = Sequential([
+            Dense(obs_size, hidden_size, rngs, activation=nnx.relu),
+            LSTM(in_features=hidden_size, hidden_features=hidden_size, rngs=rngs),
+            Dense(hidden_size, action_size * 2, rngs, activation=None),
+        ])
+
+        critic = Sequential([
+            Dense(obs_size, hidden_size, rngs, activation=nnx.relu),
+            Dense(hidden_size, 1, rngs, activation=None),
+        ])
+
+        sampler = NormalTanhSampler(rngs, entropy_weight=1e-3)
+        networks = PPOActorCritic(actor=actor, critic=critic, action_sampler=sampler)
+
+        training_state = new_training_state(
+            env, networks, n_envs, seed=42,
+            learning_rate=1e-4, gradient_clipping=1.0
+        )
+
+        new_state, metrics = ppo_step(
+            env, training_state,
+            n_envs=n_envs,
+            rollout_length=rollout_length,
+            gae_lambda=0.95,
+            discounting_factor=0.99,
+            clip_range=0.2,
+            normalize_advantages=True,
+            n_epochs=2,
+            n_minibatches=2,
+            logging_level=LoggingLevel.LOSSES,
+        )
+
+        # Check no NaNs in losses
+        self.assertFalse(jp.any(jp.isnan(metrics["losses/actor/mean"])))
+        self.assertFalse(jp.any(jp.isnan(metrics["losses/critic/mean"])))
+        self.assertFalse(jp.any(jp.isnan(metrics["losses/regularization/mean"])))
+
+        # Check no NaNs in network parameters after update
+        params = nnx.state(new_state.networks, nnx.Param)
+        for leaf in jax.tree.leaves(params):
+            self.assertFalse(jp.any(jp.isnan(leaf)))
 
 
 if __name__ == '__main__':
