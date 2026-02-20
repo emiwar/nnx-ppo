@@ -1,16 +1,12 @@
-from typing import Tuple, Any, Dict, Sequence
 import jax
 import jax.numpy as jp
 import mujoco_playground
-from flax import nnx
-
-from nnx_ppo.networks import types
 
 
 class ParrotEnv:
     """Dummy environment that gives maximal reward when action=last_obs"""
 
-    def __init__(self, obs_size: Sequence[int] = (3,), reward_falloff: float = 0.5):
+    def __init__(self, obs_size: int | tuple[int, ...] = (3,), reward_falloff: float = 0.5):
         self.obs_size = obs_size
         self.reward_falloff = reward_falloff
 

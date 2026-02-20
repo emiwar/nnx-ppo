@@ -1,9 +1,10 @@
-from typing import Tuple, Optional
+from typing import Optional
 import abc
 
 import jax
 import jax.numpy as jp
 from flax import nnx
+from jaxtyping import Array, Float
 
 from nnx_ppo.networks.types import StatefulModule, StatefulModuleOutput
 
@@ -12,9 +13,18 @@ class ActionSampler(StatefulModule, abc.ABC):
 
     @abc.abstractmethod
     def __call__(
-        self, state, mean_and_std: jax.Array, raw_action: Optional[jax.Array] = None
+        self,
+        state: tuple[()],
+        mean_and_std: Float[Array, "batch mean_std_dim"],
+        raw_action: Optional[Float[Array, "batch mean_std_dim//2"]] = None,
     ) -> StatefulModuleOutput:
-        """Apply the layer."""
+        """Apply the layer.
+
+        Args:
+            state: Empty tuple (stateless sampler).
+            mean_and_std: Concatenated mean and std, shape (batch, 2*action_dim).
+            raw_action: Optional pre-sampled action, shape (batch, action_dim).
+        """
 
 
 class NormalTanhSampler(ActionSampler):
@@ -34,7 +44,10 @@ class NormalTanhSampler(ActionSampler):
         self.entropy_weight = entropy_weight
 
     def __call__(
-        self, state, mean_and_std: jax.Array, raw_action: Optional[jax.Array] = None
+        self,
+        state: tuple[()],
+        mean_and_std: Float[Array, "batch mean_std_dim"],
+        raw_action: Optional[Float[Array, "batch mean_std_dim//2"]] = None,
     ) -> StatefulModuleOutput:
         mean, std = jp.split(mean_and_std, 2, axis=-1)
         # std = self.std_scale*0.5*(jp.tanh(std)+1) + self.min_std
@@ -58,10 +71,15 @@ class NormalTanhSampler(ActionSampler):
             metrics={"mu": mean, "sigma": std},
         )
 
-    def initialize_state(self, batch_size: int) -> Tuple[()]:
+    def initialize_state(self, batch_size: int) -> tuple[()]:
         return ()
 
-    def _loglikelihood(self, raw_action, mean, std) -> jax.Array:
+    def _loglikelihood(
+        self,
+        raw_action: Float[Array, "batch action_dim"],
+        mean: Float[Array, "batch action_dim"],
+        std: Float[Array, "batch action_dim"],
+    ) -> Float[Array, "batch"]:
         z = raw_action
 
         # Log-likelihood for normal:
@@ -79,7 +97,11 @@ class NormalTanhSampler(ActionSampler):
 
         return log_prob
 
-    def _entropy(self, mean, std):
+    def _entropy(
+        self,
+        mean: Float[Array, "batch action_dim"],
+        std: Float[Array, "batch action_dim"],
+    ) -> Float[Array, "batch"]:
         # Entropy per dimension, sum over action dimensions
         normal_entropy = 0.5 + 0.5 * jp.log(2.0 * jp.pi) + jp.log(std)
         # No analytical formula for entropy, use a single Monte Carlo sample

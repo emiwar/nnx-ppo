@@ -1,6 +1,6 @@
 """Callback helpers for training logging."""
 
-from typing import Callable
+from collections.abc import Callable
 
 from nnx_ppo.algorithms.config import VideoData
 

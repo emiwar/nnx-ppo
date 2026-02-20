@@ -69,8 +69,8 @@ class MakeMLPActorCriticTest(absltest.TestCase):
         self.assertIsInstance(output, types.PPONetworkOutput)
 
     def test_simple_input_jit(self):
-        @nnx.jit
-        def init_state(net, batch_size: int):
+        @nnx.jit(static_argnums=[1])
+        def init_state(net, batch_size):
             return net.initialize_state(batch_size)
 
         @nnx.jit
@@ -101,7 +101,7 @@ class MakeMLPActorCriticTest(absltest.TestCase):
         self.assertIsInstance(first_output, types.PPONetworkOutput)
         self.assertEqual(first_output.actions.shape, (n_envs, self.action_size))
         self.assertEqual(first_output.loglikelihoods.shape, (n_envs,))
-        self.assertEqual(first_output.value_estimates.shape, (n_envs, 1))
+        self.assertEqual(first_output.value_estimates.shape, (n_envs,))
         # Verify critic can output negative values (no ReLU on last layer)
         self.assertLess(jp.min(first_output.value_estimates), -0.02)
         self.assertGreater(jp.max(first_output.value_estimates), 0.02)

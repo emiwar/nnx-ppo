@@ -48,7 +48,7 @@ class NormalizerTest(absltest.TestCase):
             raw_actions=jp.zeros((BATCH_SIZE, 1)),
             loglikelihoods=jp.zeros((BATCH_SIZE,)),
             regularization_loss=jp.array(0.0),
-            value_estimates=jp.zeros((BATCH_SIZE, 1)),
+            value_estimates=jp.zeros((BATCH_SIZE,)),
             metrics={},
         )
 
@@ -98,7 +98,7 @@ class NormalizerTest(absltest.TestCase):
             raw_actions=jp.zeros((BATCH_SIZE, 1)),
             loglikelihoods=jp.zeros((BATCH_SIZE,)),
             regularization_loss=jp.array(0.0),
-            value_estimates=jp.zeros((BATCH_SIZE, 1)),
+            value_estimates=jp.zeros((BATCH_SIZE,)),
             metrics={},
         )
 

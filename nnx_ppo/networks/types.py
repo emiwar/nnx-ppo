@@ -1,29 +1,36 @@
-from typing import Optional, Dict, Any, Tuple
+import dataclasses
+from typing import Optional, Any, Union
 import abc
 import jax
-import flax.struct
 from flax import nnx
+from jaxtyping import Array, Float, PyTree, ScalarLike
+
+from nnx_ppo.jax_dataclass import JaxDataclass
 
 
-@flax.struct.dataclass
-class PPONetworkOutput:
-    actions: jax.Array
-    raw_actions: jax.Array
-    loglikelihoods: jax.Array
-    regularization_loss: jax.Array
-    value_estimates: jax.Array
-    metrics: Dict[str, Any]
+@jax.tree_util.register_pytree_node_class
+@dataclasses.dataclass(frozen=True)
+class PPONetworkOutput(JaxDataclass):
+    actions: Float[Array, "*time batch action_dim"]
+    raw_actions: Float[Array, "*time batch action_dim"]
+    loglikelihoods: Float[Array, "*time batch"]
+    regularization_loss: Float[Array, "..."]  # Scalar or batch-sized; broadcastable
+    value_estimates: Float[Array, "*time batch"]
+    metrics: dict[str, Any]
 
 
-ModuleState = Any  # TODO: make into a proper type alias
+ModuleState = PyTree  # Any JAX pytree: (), (h, c), dict, etc.
 
 
 class PPONetwork(abc.ABC):
 
     @abc.abstractmethod
     def __call__(
-        self, network_state: ModuleState, obs, raw_action: Optional[jax.Array] = None
-    ) -> Tuple[Any, PPONetworkOutput]:
+        self,
+        network_state: ModuleState,
+        obs: PyTree,
+        raw_action: Optional[Float[Array, "batch action_dim"]] = None,
+    ) -> tuple[ModuleState, PPONetworkOutput]:
         """Apply both actor and critic networks to the environment observation `obs`.
 
         Calling the critic on rollouts might be somewhat inefficient, but by grouping
@@ -73,26 +80,20 @@ class PPONetwork(abc.ABC):
         return prev_state
 
     def update_statistics(
-        self, last_rollout: "Transition", total_steps: jax.Array
+        self, last_rollout: "Transition", total_steps: ScalarLike
     ) -> None:
-        """Called after the network is updated. In this function, it's safe to update the
-        iteself.
-
-        Args:
-        last_rollout (Transition[T, B, ...]): dataclass with the most recent rollout. Fields start
-                                               time and batch dimensions.
-        total_steps: Total number of steps taken. Note that this might be a tracer, so jax
-                     restrictions on control flow applies.
-        """
         return None
 
 
-@flax.struct.dataclass
-class StatefulModuleOutput:
+@jax.tree_util.register_pytree_node_class
+@dataclasses.dataclass(frozen=True)
+class StatefulModuleOutput(JaxDataclass):
     next_state: ModuleState
-    output: Any  # TODO: narrow this down
-    regularization_loss: jax.Array
-    metrics: Dict[str, jax.Array]
+    output: Any
+    regularization_loss: Float[Array, "*batch"]  # Scalar or batch-sized
+    metrics: dict[
+        Union[str, int], Any
+    ]  # Keys can be str or int, values are arrays or nested dicts
 
 
 class StatefulModule(abc.ABC, nnx.Module):
@@ -111,7 +112,7 @@ class StatefulModule(abc.ABC, nnx.Module):
     """
 
     @abc.abstractmethod
-    def __call__(self, module_state: ModuleState, obs) -> StatefulModuleOutput:
+    def __call__(self, module_state: ModuleState, obs: PyTree) -> StatefulModuleOutput:
         """Args:
           module_state (ModuleState):
             The current state of the module.
@@ -153,7 +154,7 @@ class StatefulModule(abc.ABC, nnx.Module):
         return prev_state
 
     def update_statistics(
-        self, last_rollout: "Transition", total_steps: jax.Array
+        self, last_rollout: "Transition", total_steps: ScalarLike
     ) -> None:
         """Called after the network is updated. In this function, it's safe to update the
         iteself.

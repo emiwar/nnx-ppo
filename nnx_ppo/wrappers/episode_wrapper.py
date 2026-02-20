@@ -1,14 +1,15 @@
 import jax
 import jax.numpy as jp
-import mujoco_playground
+
+from nnx_ppo.algorithms.types import RLEnv, EnvState
 
 
 class EpisodeWrapper:
-    def __init__(self, env: mujoco_playground.MjxEnv, max_len: int):
+    def __init__(self, env: RLEnv, max_len: int):
         self.env = env
         self.max_len = max_len
 
-    def step(self, state, action):
+    def step(self, state: EnvState, action) -> EnvState:
         next_state = self.env.step(state, action)
         next_state.info["step_counter"] = state.info["step_counter"] + 1
         truncated = jp.logical_or(
@@ -21,7 +22,7 @@ class EpisodeWrapper:
         )
         return next_state
 
-    def reset(self, rng):
+    def reset(self, rng) -> EnvState:
         base_rng, step_counter_rng = jax.random.split(rng)
         next_state = self.env.reset(base_rng)
         next_state.info["step_counter"] = jax.random.randint(

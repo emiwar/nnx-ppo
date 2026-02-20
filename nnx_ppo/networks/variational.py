@@ -1,8 +1,9 @@
-from typing import Dict
+from typing import Any
 
 import jax
 import jax.numpy as jp
 from flax import nnx
+from jaxtyping import Array, Float, Key, PRNGKeyArray
 
 from nnx_ppo.networks.types import StatefulModule, StatefulModuleOutput
 
@@ -31,7 +32,9 @@ class VariationalBottleneck(StatefulModule):
         self.kl_weight = kl_weight
         self.min_std = min_std
 
-    def __call__(self, key: jax.Array, x: jax.Array) -> StatefulModuleOutput:
+    def __call__(
+        self, key: Key[Array, "batch"], x: Float[Array, "batch {2*self.latent_size}"]
+    ) -> StatefulModuleOutput:
         """Sample from the variational distribution.
 
         Args:
@@ -73,12 +76,17 @@ class VariationalBottleneck(StatefulModule):
             },
         )
 
-    def initialize_state(self, batch_size: int) -> jax.Array:
+    def initialize_state(self, batch_size: int) -> Key[Array, "batch"]:
         return jax.random.split(self.rng(), batch_size)
 
-    def reset_state(self, prev_state: jax.Array) -> jax.Array:
+    def reset_state(self, prev_state: Key[Array, "batch"]) -> Key[Array, "batch"]:
         # It's fine to keep the chain of rng keys across env resets
         return prev_state
+
+
+# AR1VariationalBottleneck state: Dict with 'keys' (PRNGKeyArray) and 'last_z'
+# (Float[batch, latent])
+AR1State = dict[str, Any]
 
 
 class AR1VariationalBottleneck(StatefulModule):
@@ -122,18 +130,22 @@ class AR1VariationalBottleneck(StatefulModule):
         self.ar1_weight = ar1_weight
         self.backprop_through_time = backprop_through_time
 
-    def __call__(self, state: Dict, x: jax.Array) -> StatefulModuleOutput:
+    def __call__(
+        self,
+        state: AR1State,
+        x: Float[Array, "batch {2*self.latent_size}"],
+    ) -> StatefulModuleOutput:
         """Sample from the variational distribution.
 
         Args:
-            state: rng key and prev_z.
-            x: Input array of shape (..., 2*latent_size) containing concatenated
+            state: Dict with 'keys' (PRNGKeyArray) and 'last_z' (Float[batch, latent]).
+            x: Input array of shape (batch, 2*latent) containing concatenated
                mean and log_std.
 
         Returns:
             StatefulModuleOutput with:
                 - next_state: RNG keys and prev_z
-                - output: Sampled latent vector of shape (..., latent_size)
+                - output: Sampled latent vector of shape (batch, latent)
                 - regularization_loss: sum of KL loss and AR1 loss
                 - metrics: Dictionary with mu, sigma, kl_divergence, and squared diff
         """
@@ -183,13 +195,13 @@ class AR1VariationalBottleneck(StatefulModule):
             },
         )
 
-    def initialize_state(self, batch_size: int) -> Dict:
+    def initialize_state(self, batch_size: int) -> AR1State:
         return {
             "keys": jax.random.split(self.rng(), batch_size),
             "last_z": jp.full((batch_size, self.latent_size), jp.nan),
         }
 
-    def reset_state(self, prev_state: Dict) -> Dict:
+    def reset_state(self, prev_state: AR1State) -> AR1State:
         # It's fine to keep the chain of rng keys across env resets but last_z
         # should be set to NaN
         return {

@@ -1,18 +1,19 @@
-from typing import Any, Optional, Tuple, Dict, Callable, List
+from typing import Any, Optional
+from collections.abc import Callable
 import dataclasses
 
-import mujoco_playground
 import numpy as np
 
 from flax import nnx
 import jax
 import jax.numpy as jp
 from jax.experimental import checkify
+from jaxtyping import Array, Float, Bool, PRNGKeyArray, ScalarLike, Integer
 import optax
 
-from nnx_ppo.networks.types import PPONetwork
+from nnx_ppo.networks.types import PPONetwork, ModuleState
 from nnx_ppo.algorithms import rollout
-from nnx_ppo.algorithms.types import TrainingState, LoggingLevel
+from nnx_ppo.algorithms.types import TrainingState, LoggingLevel, RLEnv, EnvState
 from nnx_ppo.algorithms.config import (
     TrainConfig,
     PPOConfig,
@@ -22,8 +23,6 @@ from nnx_ppo.algorithms.config import (
     TrainResult,
 )
 from nnx_ppo.algorithms.metrics import compute_metrics, log_weight_stats
-from nnx_ppo.algorithms.callbacks import wandb_video_fn
-
 
 def default_config() -> TrainConfig:
     """Return default training configuration."""
@@ -38,15 +37,15 @@ def _should_run(steps: int, last_step: int, every_steps: int) -> bool:
 
 
 def train_ppo(
-    env: mujoco_playground.MjxEnv,
+    env: RLEnv,
     networks: PPONetwork,
     config: Optional[TrainConfig] = None,
     *,
     total_steps: Optional[int] = None,
     seed: Optional[int] = None,
-    log_fn: Optional[Callable[[Dict[str, Any], int], None]] = None,
+    log_fn: Optional[Callable[[dict[str, Any], int], None]] = None,
     video_fn: Optional[Callable[[VideoData], None]] = None,
-    eval_env: Optional[mujoco_playground.MjxEnv] = None,
+    eval_env: Optional[RLEnv] = None,
     initial_state: Optional[TrainingState] = None,
 ) -> TrainResult:
     """Train a PPO agent.
@@ -104,14 +103,14 @@ def train_ppo(
     )
 
     # Training loop state
-    eval_history: List[Dict[str, Any]] = []
+    eval_history: list[dict[str, Any]] = []
     last_eval_step = -config.eval.every_steps  # Ensure eval at step 0
     last_video_step = -config.video.every_steps  # Ensure video at step 0
-    metrics: Dict[str, Any] = {}
+    metrics: dict[str, Any] = {}
     n_iterations = 0
 
     # Helper for running eval
-    def run_eval(steps: int) -> Dict[str, Any]:
+    def run_eval(steps: int) -> dict[str, Any]:
         networks.eval()
         eval_metrics = eval_rollout_jit(
             eval_env,
@@ -210,19 +209,19 @@ def train_ppo(
 
 
 def ppo_step(
-    env: mujoco_playground.MjxEnv,
+    env: RLEnv,
     training_state: TrainingState,
     n_envs: int,
     rollout_length: int,
-    gae_lambda: float,
-    discounting_factor: float,
-    clip_range: float,
+    gae_lambda: ScalarLike,
+    discounting_factor: ScalarLike,
+    clip_range: ScalarLike,
     normalize_advantages: bool,
     n_epochs: int,
     n_minibatches: int,
     logging_level: LoggingLevel = LoggingLevel.LOSSES,
-    logging_percentiles: Optional[Tuple] = None,
-) -> Tuple[TrainingState, Dict]:
+    logging_percentiles: Optional[tuple[int, ...]] = None,
+) -> tuple[TrainingState, dict[str, Any]]:
 
     reset_key, new_key = jax.random.split(training_state.rng_key)
     next_net_state, next_env_state, rollout_data = rollout.unroll_env(
@@ -303,10 +302,15 @@ def ppo_step(
     return training_state, metrics
 
 
-def gae(rewards, values, done, truncation, lambda_: float, gamma: float):
+def gae(
+    rewards: Float[Array, "time batch"],
+    values: Float[Array, "time_plus_1 batch"],
+    done: Bool[Array, "time batch"],
+    truncation: Bool[Array, "time batch"],
+    lambda_: ScalarLike,
+    gamma: ScalarLike,
+) -> Float[Array, "time batch"]:
     assert values.shape == (rewards.shape[0] + 1, rewards.shape[1])
-    assert rewards.shape == done.shape
-    assert truncation.shape == done.shape
 
     def inner_step(next_advantage, reward, old_value, next_value, done, truncated):
         next_value = jp.where(done, 0.0, next_value)
@@ -336,15 +340,15 @@ def gae(rewards, values, done, truncation, lambda_: float, gamma: float):
 
 def ppo_loss(
     networks: PPONetwork,
-    network_state,
+    network_state: Any,
     rollout_data: rollout.Transition,
-    clip_range: float,
+    clip_range: ScalarLike,
     normalize_advantages: bool,
-    discounting_factor: float,
-    gae_lambda: float,
+    discounting_factor: ScalarLike,
+    gae_lambda: ScalarLike,
     logging_level: LoggingLevel,
-    logging_percentiles: Optional[Tuple] = None,
-):
+    logging_percentiles: Optional[tuple[int, ...]] = None,
+) -> tuple[Float[Array, ""], dict[str, Any]]:
     rollout_data = jax.lax.stop_gradient(rollout_data)
 
     @jax.vmap
@@ -369,15 +373,9 @@ def ppo_loss(
         rollout_data.network_output.raw_actions,
     )
 
-    if network_output.value_estimates.ndim == 3:
-        assert network_output.value_estimates.shape[2] == 1
-        network_output = network_output.replace(
-            value_estimates=network_output.value_estimates[:, :, 0]
-        )
     last_obs = jax.tree.map(lambda x: x[-1], rollout_data.next_obs)
     _, network_output_last = networks(next_net_state_again, last_obs)
     last_value = jax.lax.stop_gradient(network_output_last.value_estimates)
-    assert last_value.shape[0] == rollout_data.rewards.shape[1]
     last_value = last_value.reshape((1, last_value.shape[0]))
     values_excl_last = network_output.value_estimates
     values_incl_last = jp.concatenate((values_excl_last, last_value), axis=0)
@@ -389,7 +387,6 @@ def ppo_loss(
         lambda_=gae_lambda,
         gamma=discounting_factor,
     )
-    assert advantages.shape == values_excl_last.shape
     advantages = jax.lax.stop_gradient(advantages)
     target_values = jax.lax.stop_gradient(values_excl_last + advantages)
 
@@ -400,15 +397,12 @@ def ppo_loss(
     old_loglikelihoods = jax.lax.stop_gradient(
         rollout_data.network_output.loglikelihoods
     )
-    assert network_output.loglikelihoods.shape == advantages.shape
-    assert old_loglikelihoods.shape == advantages.shape
     likelihood_ratios = jp.exp(network_output.loglikelihoods - old_loglikelihoods)
     loss_cand1 = likelihood_ratios * advantages
     loss_cand2 = jp.clip(likelihood_ratios, 1 - clip_range, 1 + clip_range) * advantages
 
     # Note that it's the network's responsiblity to add entropy loss as one particular
     # instance of a regularization loss.
-    assert network_output.value_estimates.shape == target_values.shape
     actor_loss = -jp.mean(jp.minimum(loss_cand1, loss_cand2))
     critic_loss = 0.5 * jp.mean((network_output.value_estimates - target_values) ** 2)
     regularization_loss = jp.mean(network_output.regularization_loss)
@@ -470,14 +464,14 @@ def ppo_loss(
 
 
 def new_training_state(
-    env: mujoco_playground.MjxEnv,
+    env: RLEnv,
     networks: PPONetwork,
     n_envs: int,
-    seed: int,
+    seed: int | Integer[Array, ""],
     learning_rate: float = 1e-4,
     gradient_clipping: Optional[float] = None,
     weight_decay: Optional[float] = None,
-):
+) -> TrainingState:
     # Setup keys
     key = jax.random.key(seed)
     key, training_key = jax.random.split(key)

@@ -250,13 +250,13 @@ class LSTMTest(absltest.TestCase):
         networks = PPOActorCritic(actor=actor, critic=critic, action_sampler=sampler)
 
         # Initialize states
-        key = jax.random.PRNGKey(0)
+        key = jax.random.key(0)
         env_keys = jax.random.split(key, batch_size)
         env_states = jax.vmap(env.reset)(env_keys)
         network_states = networks.initialize_state(batch_size)
 
         # Run rollout
-        rollout_key = jax.random.PRNGKey(1)
+        rollout_key = jax.random.key(1)
         final_net_state, final_env_state, rollout_data = rollout.unroll_env(
             env, env_states, networks, network_states, unroll_length, rollout_key
         )

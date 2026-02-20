@@ -1,8 +1,9 @@
-from typing import Any, Tuple, Dict, List, Optional
+from typing import Any, Optional
 
 import jax
 import jax.numpy as jp
 from flax import nnx
+from jaxtyping import Array, Float, PyTree, ScalarLike
 
 from nnx_ppo.algorithms.types import Transition
 from nnx_ppo.networks.sampling_layers import ActionSampler
@@ -32,8 +33,11 @@ class PPOActorCritic(PPONetwork, nnx.Module):
         self.preprocessor = preprocessor
 
     def __call__(
-        self, network_state, obs, raw_action: Optional[jax.Array] = None
-    ) -> Tuple[Dict, PPONetworkOutput]:
+        self,
+        network_state: dict[str, ModuleState],
+        obs: PyTree[Float[Array, "..."]],
+        raw_action: Optional[Float[Array, "batch action_dim"]] = None,
+    ) -> tuple[dict[str, ModuleState], PPONetworkOutput]:
         regularization_loss = jp.array(0.0)
         if self.preprocessor is not None:
             preprocessor_output = self.preprocessor(network_state["preprocessor"], obs)
@@ -58,7 +62,7 @@ class PPOActorCritic(PPONetwork, nnx.Module):
             raw_actions=raw_action,
             loglikelihoods=loglikelihood,
             regularization_loss=regularization_loss,
-            value_estimates=critic_output.output,
+            value_estimates=jp.squeeze(critic_output.output, axis=-1),
             metrics={
                 "preprocessor": (
                     preprocessor_output.metrics if self.preprocessor is not None else {}
@@ -80,24 +84,26 @@ class PPOActorCritic(PPONetwork, nnx.Module):
             components["preprocessor"] = self.preprocessor
         return components
 
-    def initialize_state(self, batch_size: int) -> ModuleState:
+    def initialize_state(self, batch_size: int) -> dict[str, ModuleState]:
         return {k: v.initialize_state(batch_size) for k, v in self.components.items()}
 
-    def reset_state(self, prev_state: ModuleState) -> ModuleState:
+    def reset_state(self, prev_state: dict[str, ModuleState]) -> dict[str, ModuleState]:
         return {k: v.reset_state(prev_state[k]) for k, v in self.components.items()}
 
     def update_statistics(
-        self, last_rollout: Transition, total_steps: jax.Array
+        self, last_rollout: Transition, total_steps: ScalarLike
     ) -> None:
         for comp in self.components.values():
             comp.update_statistics(last_rollout, total_steps)
 
 
 class Sequential(StatefulModule):
-    def __init__(self, layers: List[StatefulModule]):
+    def __init__(self, layers: list[StatefulModule]):
         self.layers = nnx.List(layers)
 
-    def __call__(self, network_state: List, obs) -> StatefulModuleOutput:
+    def __call__(
+        self, network_state: list[ModuleState], obs: Any
+    ) -> StatefulModuleOutput:
         new_network_state = []
         x = obs
         regularization_loss = jp.array(0.0)
@@ -111,33 +117,35 @@ class Sequential(StatefulModule):
             metrics[len(metrics)] = layer_output.metrics
         return StatefulModuleOutput(new_network_state, x, regularization_loss, metrics)
 
-    def initialize_state(self, batch_size) -> List:
+    def initialize_state(self, batch_size: int) -> list[ModuleState]:
         state = []
         for layer in self.layers:
             state.append(layer.initialize_state(batch_size))
         return state
 
-    def reset_state(self, prev_state) -> List:
+    def reset_state(self, prev_state: list[ModuleState]) -> list[ModuleState]:
         new_states = []
         for layer, layer_prev_state in zip(self.layers, prev_state):
             new_states.append(layer.reset_state(layer_prev_state))
         return new_states
 
-    def __getitem__(self, ind) -> StatefulModule:
+    def __getitem__(self, ind: int) -> StatefulModule:
         return self.layers[ind]
 
     def update_statistics(
-        self, last_rollout: Transition, total_steps: jax.Array
+        self, last_rollout: Transition, total_steps: ScalarLike
     ) -> None:
         for layer in self.layers:
             layer.update_statistics(last_rollout, total_steps)
 
 
 class Concat(StatefulModule):
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: StatefulModule):
         self.components = nnx.Dict(kwargs)
 
-    def __call__(self, state, x) -> StatefulModuleOutput:
+    def __call__(
+        self, state: dict[str, ModuleState], x: dict[str, Any]
+    ) -> StatefulModuleOutput:
         new_state = {}
         regularization_loss = jp.array(0.0)
         outputs = []
@@ -152,14 +160,14 @@ class Concat(StatefulModule):
         concated = jp.concatenate(outputs, axis=-1)
         return StatefulModuleOutput(new_state, concated, regularization_loss, metrics)
 
-    def initialize_state(self, batch_size: int) -> Any:
+    def initialize_state(self, batch_size: int) -> dict[str, ModuleState]:
         return {k: c.initialize_state(batch_size) for k, c in self.components.items()}
 
-    def reset_state(self, prev_state) -> Any:
+    def reset_state(self, prev_state: dict[str, ModuleState]) -> dict[str, ModuleState]:
         return {k: c.reset_state(prev_state[k]) for k, c in self.components.items()}
 
     def update_statistics(
-        self, last_rollout: Transition, total_steps: jax.Array
+        self, last_rollout: Transition, total_steps: ScalarLike
     ) -> None:
         for component in self.components.values():
             component.update_statistics(last_rollout, total_steps)
@@ -168,7 +176,7 @@ class Concat(StatefulModule):
 class Flattener(StatefulModule):
     """Takes a PyTree as input and concatenates each leaf along the last axis."""
 
-    def __call__(self, state, x):
+    def __call__(self, state: tuple[()], x: Any) -> StatefulModuleOutput:
         flattened, _ = jax.tree.flatten(x)
         flattened = [a.reshape((a.shape[0], -1)) for a in flattened]
         concated = jp.concatenate(flattened, axis=-1)

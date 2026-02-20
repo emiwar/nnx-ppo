@@ -1,6 +1,9 @@
+from typing import Any
+
 import jax
 import jax.numpy as jp
 from flax import nnx
+from jaxtyping import Array, Float, ScalarLike
 
 from nnx_ppo.algorithms.types import Transition
 from nnx_ppo.networks.types import StatefulModule, StatefulModuleOutput
@@ -22,7 +25,7 @@ class Normalizer(StatefulModule):
         self.counter = NormalizerStatistics(jp.array(0.0))
         self.epsilon = 1e-6
 
-    def __call__(self, state, x):
+    def __call__(self, state: tuple[()], x: Any) -> StatefulModuleOutput:
         # Compute variance from M2
         std = jax.lax.cond(
             self.counter[...] > 0,
@@ -41,7 +44,7 @@ class Normalizer(StatefulModule):
         )
 
     def update_statistics(
-        self, last_rollout: Transition, total_steps: jax.Array
+        self, last_rollout: Transition, total_steps: ScalarLike
     ) -> None:
         obs = last_rollout.obs
         batch_count = last_rollout.done.size

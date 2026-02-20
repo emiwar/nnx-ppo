@@ -1,4 +1,4 @@
-from typing import Tuple, Any, Dict
+from typing import Any
 import jax
 import jax.numpy as jp
 from flax import nnx
@@ -17,7 +17,7 @@ class RepeatAndCountNet(types.PPONetwork, nnx.Module):
     def __init__(self):
         self.n_calls = Count(0)
 
-    def __call__(self, state, obs) -> Tuple[Any, types.PPONetworkOutput]:
+    def __call__(self, state, obs) -> tuple[Any, types.PPONetworkOutput]:
         batch_size = obs.shape[0]
         self.n_calls[...] += batch_size
         return (), types.PPONetworkOutput(
@@ -29,5 +29,5 @@ class RepeatAndCountNet(types.PPONetwork, nnx.Module):
             metrics={},
         )
 
-    def initialize_state(self, batch_size: int) -> Tuple:
+    def initialize_state(self, batch_size: int) -> tuple:
         return ()

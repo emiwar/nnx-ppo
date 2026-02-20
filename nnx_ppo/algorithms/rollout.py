@@ -1,20 +1,21 @@
-from typing import Union, Dict, Tuple, Any, Optional
+from typing import Any, Optional
 import functools
 
-from flax import struct, nnx
+from flax import nnx
 import jax
 import jax.numpy as jp
-from mujoco_playground._src import mjx_env
+from jaxtyping import Array, Float, Key, Shaped, PRNGKeyArray
 import nnx_ppo.networks.types
-from nnx_ppo.algorithms.types import Transition
+from nnx_ppo.networks.types import PPONetwork, ModuleState
+from nnx_ppo.algorithms.types import Transition, RLEnv, EnvState
 
 
 def single_transition(
-    env: mjx_env.MjxEnv,
-    networks: nnx_ppo.networks.types.PPONetwork,
-    carry: Tuple[Dict, mjx_env.State],
-    rng_keys_for_env_reset: jax.Array,
-) -> Tuple[Tuple, Transition]:
+    env: RLEnv,
+    networks: PPONetwork,
+    carry: tuple[ModuleState, EnvState],
+    rng_keys_for_env_reset: Key[Array, "batch"],
+) -> tuple[tuple[ModuleState, EnvState], Transition]:
     network_state, env_state = carry
     next_network_state, network_output = networks(network_state, env_state.obs)
     next_env_state = jax.vmap(env.step)(env_state, network_output.actions)
@@ -22,10 +23,10 @@ def single_transition(
         obs=env_state.obs,
         network_output=network_output,
         rewards=next_env_state.reward,
-        done=next_env_state.done,
+        done=next_env_state.done.astype(bool),
         truncated=next_env_state.info.get(
-            "truncated", jp.zeros(next_env_state.done.shape, jp.bool)
-        ),
+            "truncated", jp.zeros(next_env_state.done.shape, bool)
+        ).astype(bool),
         next_obs=next_env_state.obs,
         metrics={
             "env": next_env_state.metrics,
@@ -44,13 +45,13 @@ def single_transition(
 
 
 def unroll_env(
-    env: mjx_env.MjxEnv,
-    env_state: mjx_env.State,
-    networks: nnx_ppo.networks.types.PPONetwork,
-    network_state: Any,
+    env: RLEnv,
+    env_state: EnvState,
+    networks: PPONetwork,
+    network_state: ModuleState,
     unroll_length: int,
-    rng_key_for_env_reset: jax.Array,
-):
+    rng_key_for_env_reset: PRNGKeyArray,
+) -> tuple[ModuleState, EnvState, Transition]:
     batch_size = env_state.done.shape[0]
     rng_keys_for_env_reset = jax.random.split(
         rng_key_for_env_reset, (unroll_length, batch_size)
@@ -62,25 +63,18 @@ def unroll_env(
         out_axes=(nnx.Carry, 0),
         length=unroll_length,
     )(networks, (network_state, env_state), rng_keys_for_env_reset)
-    if rollout.network_output.value_estimates.ndim == 3:
-        assert rollout.network_output.value_estimates.shape[-1] == 1
-        rollout = rollout.replace(
-            network_output=rollout.network_output.replace(
-                value_estimates=rollout.network_output.value_estimates[..., 0]
-            )
-        )
     assert rollout.network_output.value_estimates.shape == rollout.rewards.shape
     return final_network_state, final_env_state, rollout
 
 
 def eval_rollout(
-    env: mjx_env.MjxEnv,
-    networks: nnx_ppo.networks.types.PPONetwork,
+    env: RLEnv,
+    networks: PPONetwork,
     n_envs: int,
     max_episode_length: int,
-    key: jax.Array,
-    logging_percentiles: Optional[jax.Array] = None,
-):
+    key: PRNGKeyArray,
+    logging_percentiles: Optional[Float[Array, "num_percentiles"]] = None,
+) -> dict[str, Float[Array, ""]]:
     env_keys = jax.random.split(key, n_envs)
     env_states = jax.vmap(env.reset)(env_keys)
     net_states = networks.initialize_state(n_envs)
@@ -94,7 +88,7 @@ def eval_rollout(
         )
         # Only accumulate reward if env was not already done before this step
         cuml_reward += jp.where(env_state.done, 0.0, next_env_state.reward)
-        lifespan += jp.logical_not(next_env_state.done).astype(float)
+        lifespan += jp.where(next_env_state.done, 0.0, 1.0)
         return next_env_state, next_network_state, cuml_reward, lifespan
 
     step_partial = functools.partial(step, env)
@@ -122,11 +116,11 @@ def eval_rollout(
 
 
 def eval_rollout_for_render_scan(
-    env: mjx_env.MjxEnv,
-    networks: nnx_ppo.networks.types.PPONetwork,
+    env: RLEnv,
+    networks: PPONetwork,
     max_episode_length: int,
-    key: jax.Array,
-):
+    key: PRNGKeyArray,
+) -> tuple[EnvState, EnvState, Float[Array, ""]]:
     """JIT-compatible scan-based rollout that returns stacked states.
 
     Returns:
@@ -197,7 +191,7 @@ def unstack_trajectory(stacked_states, final_state, max_episode_length: int):
     return trajectory
 
 
-def tree_where(cond, on_true, on_false):
+def tree_where(cond: Shaped[Array, "batch"], on_true: Any, on_false: Any) -> Any:
     def broadcast_where(x, y):
         if (
             x.shape[0] != cond.shape[0]

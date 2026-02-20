@@ -1,12 +1,16 @@
 """Mock environment for testing stateful networks with rollouts."""
 
+import dataclasses
+
 import jax
 import jax.numpy as jp
-from flax import struct
+
+from nnx_ppo.jax_dataclass import JaxDataclass
 
 
-@struct.dataclass
-class MockEnvState:
+@jax.tree_util.register_pytree_node_class
+@dataclasses.dataclass(frozen=True)
+class MockEnvState(JaxDataclass):
     """Simple mock environment state."""
 
     obs: jax.Array
@@ -14,10 +18,7 @@ class MockEnvState:
     done: jax.Array
     step_count: jax.Array
     info: dict
-    metrics: dict = struct.field(default_factory=dict)
-
-    def info_get(self, key, default):
-        return default
+    metrics: dict = dataclasses.field(default_factory=dict)
 
 
 class MockEnv:

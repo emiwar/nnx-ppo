@@ -1,10 +1,11 @@
 """Feedforward network layers."""
 
-from typing import Tuple, Callable, Optional
-
+from typing import Optional
+from collections.abc import Callable
 import jax
 import jax.numpy as jp
 from flax import nnx
+from jaxtyping import Array, Float
 
 from nnx_ppo.networks.types import StatefulModule, StatefulModuleOutput
 
@@ -27,7 +28,7 @@ class Dense(StatefulModule):
         """Initialize the dense layer.
 
         Args:
-            in_features: Number of input features.
+            in_features: Number of isnput features.
             out_features: Number of output features.
             rngs: NNX random number generators.
             activation: Optional activation function applied after the linear transform.
@@ -38,7 +39,9 @@ class Dense(StatefulModule):
         self.linear = nnx.Linear(in_features, out_features, rngs=rngs, **linear_kwargs)
         self.activation = activation
 
-    def __call__(self, state: Tuple, x: jax.Array) -> StatefulModuleOutput:
+    def __call__(
+        self, state: tuple[()], x: Float[Array, "batch {self.in_features}"]
+    ) -> StatefulModuleOutput:
         y = self.linear(x)
         if self.activation is not None:
             y = self.activation(y)

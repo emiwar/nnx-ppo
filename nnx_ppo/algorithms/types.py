@@ -1,37 +1,69 @@
 """Runtime types for the PPO algorithm."""
 
-from typing import Any, Dict, Union
+import dataclasses
+from typing import Any, Protocol, runtime_checkable
 import enum
-import mujoco_playground
 
-import flax.struct
-from flax import nnx
 import jax
+from jaxtyping import Array, Float, Bool, PRNGKeyArray, PyTree, Shaped
 
-from nnx_ppo.networks.types import PPONetwork, PPONetworkOutput
-
-
-@flax.struct.dataclass
-class TrainingState:
-    networks: PPONetwork
-    network_states: Any
-    env_states: mujoco_playground.State
-    optimizer: nnx.Optimizer
-    rng_key: jax.Array
-    steps_taken: jax.Array
+from nnx_ppo.networks.types import PPONetworkOutput, ModuleState
+from nnx_ppo.jax_dataclass import JaxDataclass
 
 
-@flax.struct.dataclass
-class Transition:
-    """Environment state for training and inference."""
+@runtime_checkable
+class EnvState(Protocol):
+    """Minimal environment state interface.
 
+    Satisfied by mujoco_playground.State and any compatible environment state.
+    """
     obs: Any
+    done: Shaped[Array, "..."]  # bool or float depending on env
+    reward: Any
+    info: dict[str, Any]
+    metrics: dict[str, Any]
+
+    def replace(self, **kwargs) -> "EnvState": ...
+
+
+@runtime_checkable
+class RLEnv(Protocol):
+    """Minimal RL environment interface.
+
+    Satisfied by mujoco_playground.MjxEnv and any compatible environment.
+    """
+
+    def reset(self, rng: PRNGKeyArray) -> EnvState: ...
+    def step(self, state: EnvState, action: Any) -> EnvState: ...
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclasses.dataclass(frozen=True)
+class TrainingState(JaxDataclass):
+    networks: Any  # PPONetwork, but Any because flax.nnx transforms it during JIT
+    network_states: Any
+    env_states: Any  # EnvState, but Any because the concrete type is mujoco_playground.State
+    optimizer: Any  # nnx.Optimizer, but Any because flax.nnx transforms it during JIT
+    rng_key: PRNGKeyArray
+    steps_taken: Float[Array, ""]
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclasses.dataclass(frozen=True)
+class Transition(JaxDataclass):
+    """Environment state for training and inference.
+
+    Note: rewards, done, truncated use *time to allow both [batch] (single timestep)
+    and [time, batch] (full rollout) shapes.
+    """
+
+    obs: PyTree[Float[Array, "..."]]
     network_output: PPONetworkOutput
-    rewards: Union[Dict, jax.Array]
-    done: jax.Array
-    truncated: jax.Array
-    next_obs: Any
-    metrics: Dict[str, Any]
+    rewards: Float[Array, "*time batch"]
+    done: Bool[Array, "*time batch"]
+    truncated: Bool[Array, "*time batch"]
+    next_obs: PyTree[Float[Array, "..."]]  # Same pytree structure as obs
+    metrics: dict[str, Any]
 
 
 class LoggingLevel(enum.Flag):

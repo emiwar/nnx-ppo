@@ -1,10 +1,12 @@
 """Metrics computation and logging utilities for PPO training."""
 
-from typing import Any, Dict, Optional, Tuple, Union, Mapping
+from typing import Any, Optional, Union
+from collections.abc import Mapping
 
 import jax
 import jax.numpy as jp
 from flax import nnx
+from jaxtyping import Array, Float
 
 from nnx_ppo.networks.types import PPONetwork
 from nnx_ppo.algorithms.types import LoggingLevel
@@ -12,11 +14,11 @@ from nnx_ppo.algorithms.rollout import Transition
 
 
 def compute_metrics(
-    loss_metrics: Dict[str, jax.Array],
+    loss_metrics: dict[str, Float[Array, "..."]],
     rollout_data: Transition,
     logging_level: LoggingLevel,
-    percentile_levels: Optional[Tuple] = None,
-) -> Dict[str, Any]:
+    percentile_levels: Optional[tuple[int, ...]] = None,
+) -> dict[str, Any]:
     """Compute training metrics from loss metrics and rollout data.
 
     Args:
@@ -72,10 +74,10 @@ def compute_metrics(
 
 
 def _log_metric(
-    metrics: Dict[str, jax.Array],
+    metrics: dict[str, Any],
     name: str,
-    x: Union[Mapping, jax.Array],
-    percentile_levels: Optional[Tuple] = None,
+    x: Union[Mapping[Union[str, int], Any], Float[Array, "..."]],
+    percentile_levels: Optional[tuple[int, ...]] = None,
 ) -> None:
     """Log a metric with either percentiles or mean/std.
 
@@ -89,9 +91,9 @@ def _log_metric(
         for k, v in x.items():
             _log_metric(metrics, f"{name}/{k}", v, percentile_levels)
         return
-    
-    # env/termination/* are boolean, but were casted to float earlier
-    if name.startswith("env/termination"):
+
+    # Boolean arrays (e.g. termination flags): log fraction-true, not mean/std/percentiles
+    if hasattr(x, "dtype") and jp.issubdtype(x.dtype, jp.bool_):
         metrics[name] = jp.mean(x)
     elif percentile_levels is None or len(percentile_levels) == 0:
         metrics[f"{name}/mean"] = jp.mean(x)
@@ -103,9 +105,9 @@ def _log_metric(
 
 
 def log_weight_stats(
-    metrics: Dict[str, jax.Array],
+    metrics: dict[str, Any],
     networks: PPONetwork,
-    percentile_levels: Optional[Tuple] = None,
+    percentile_levels: Optional[tuple[int, ...]] = None,
 ) -> None:
     """Log weight statistics for actor and critic networks separately.
 

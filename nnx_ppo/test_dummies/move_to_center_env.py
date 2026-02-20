@@ -1,4 +1,4 @@
-from typing import Tuple, Any, Dict, Sequence
+from typing import Any, Sequence
 import jax
 import jax.numpy as jp
 import mujoco_playground

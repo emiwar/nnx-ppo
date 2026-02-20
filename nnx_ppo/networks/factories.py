@@ -1,6 +1,8 @@
-from typing import List, Callable, Union
+from typing import Union
+from collections.abc import Callable
 
 from flax import nnx
+from jaxtyping import Array
 
 from nnx_ppo.networks.containers import PPOActorCritic, Sequential
 from nnx_ppo.networks.feedforward import Dense
@@ -9,12 +11,12 @@ from nnx_ppo.networks.normalizer import Normalizer
 
 
 def make_mlp_layers(
-    sizes: List[int],
+    sizes: list[int],
     rngs: nnx.Rngs,
     activation: Callable = nnx.relu,
     activation_last_layer: bool = True,
     **linear_kwargs
-) -> List[Dense]:
+) -> list[Dense]:
     """Create a list of Dense layers for an MLP.
 
     Use this when embedding MLP layers within another Sequential:
@@ -43,7 +45,7 @@ def make_mlp_layers(
 
 
 def make_mlp(
-    sizes: List[int],
+    sizes: list[int],
     rngs: nnx.Rngs,
     activation: Callable = nnx.relu,
     activation_last_layer: bool = True,
@@ -69,8 +71,8 @@ def make_mlp(
 def make_mlp_actor_critic(
     obs_size: int,
     action_size: int,
-    actor_hidden_sizes: List[int],
-    critic_hidden_sizes: List[int],
+    actor_hidden_sizes: list[int],
+    critic_hidden_sizes: list[int],
     rngs: nnx.Rngs,
     activation: Union[Callable, str] = nnx.relu,
     normalize_obs: bool = True,
