@@ -15,7 +15,9 @@ class VariationalBottleneck(StatefulModule):
     and adds KL divergence against a standard normal prior to the regularization loss.
     """
 
-    def __init__(self, latent_size: int, rng, kl_weight: float = 1.0, min_std: float = 1e-6):
+    def __init__(
+        self, latent_size: int, rng, kl_weight: float = 1.0, min_std: float = 1e-6
+    ):
         """Initialize the variational bottleneck.
 
         Args:
@@ -73,10 +75,11 @@ class VariationalBottleneck(StatefulModule):
 
     def initialize_state(self, batch_size: int) -> jax.Array:
         return jax.random.split(self.rng(), batch_size)
-    
+
     def reset_state(self, prev_state: jax.Array) -> jax.Array:
         # It's fine to keep the chain of rng keys across env resets
         return prev_state
+
 
 class AR1VariationalBottleneck(StatefulModule):
     """Variational bottleneck with KL and auto-regressive regularization.
@@ -88,8 +91,15 @@ class AR1VariationalBottleneck(StatefulModule):
     smoother trajectories in the latent space.
     """
 
-    def __init__(self, latent_size: int, rng, kl_weight: float = 1.0, min_std: float = 1e-6,
-                 ar1_weight: float = 1.0, backprop_through_time: bool = True):
+    def __init__(
+        self,
+        latent_size: int,
+        rng,
+        kl_weight: float = 1.0,
+        min_std: float = 1e-6,
+        ar1_weight: float = 1.0,
+        backprop_through_time: bool = True,
+    ):
         """Initialize the variational bottleneck.
 
         Args:
@@ -178,7 +188,7 @@ class AR1VariationalBottleneck(StatefulModule):
             "keys": jax.random.split(self.rng(), batch_size),
             "last_z": jp.full((batch_size, self.latent_size), jp.nan),
         }
-    
+
     def reset_state(self, prev_state: Dict) -> Dict:
         # It's fine to keep the chain of rng keys across env resets but last_z
         # should be set to NaN

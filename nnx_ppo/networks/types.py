@@ -4,93 +4,102 @@ import jax
 import flax.struct
 from flax import nnx
 
+
 @flax.struct.dataclass
 class PPONetworkOutput:
-  actions: jax.Array
-  raw_actions: jax.Array
-  loglikelihoods: jax.Array
-  regularization_loss: jax.Array
-  value_estimates: jax.Array
-  metrics: Dict[str, Any]
+    actions: jax.Array
+    raw_actions: jax.Array
+    loglikelihoods: jax.Array
+    regularization_loss: jax.Array
+    value_estimates: jax.Array
+    metrics: Dict[str, Any]
 
-ModuleState = Any #TODO: make into a proper type alias
+
+ModuleState = Any  # TODO: make into a proper type alias
+
+
 class PPONetwork(abc.ABC):
-  
-  @abc.abstractmethod
-  def __call__(self, network_state: ModuleState, obs,
-               raw_action: Optional[jax.Array] = None) -> Tuple[Any, PPONetworkOutput]:
-    '''Apply both actor and critic networks to the environment observation `obs`.
-    
-    Calling the critic on rollouts might be somewhat inefficient, but by grouping
-    them into the same method, the interface is well-defined even if the actor and
-    critic share stateful layers.
 
-    Args:
-      network_state (ModuleState): The activation state of the network plus any RNG keys
-                                   used for stochastic layers.
-      obs (PyTree): Observation of an environment state. It is a PyTree with the same
-                    structure as env.step(...).obs
-      raw_action (jax.Array): If specified, compute likelihoods using these actions
-                              than sampling a new action. `raw_action` referes to
-                              the sampled action before clamping (e.g., by tanh). 
+    @abc.abstractmethod
+    def __call__(
+        self, network_state: ModuleState, obs, raw_action: Optional[jax.Array] = None
+    ) -> Tuple[Any, PPONetworkOutput]:
+        """Apply both actor and critic networks to the environment observation `obs`.
 
-    Returns: (new_state, network_output)
-      new_state (PyTree): An updated network state, including split RNG keys.
-      network_output (PPONetworkOutput):
-        actions (PyTree): The actions to be sent back to the env
-        raw_actions (PyTree): The raw output of the sampler before applying clamping
-        loglikelihood (float): The log-likelihood for taking the action
-        regularization_loss (float): Sum of all other regularizer terms. This will be added
-                             to the RL loss target during training.
-        value_estimates (float): The estimated value of `obs` by the critic network.
-        metrics (dict): A dictionary with any intermediate values to log
-    
-    Note: for multi-agent / modular networks, the returned action, log likelihood, and
-          and value estimate may be arbitrary PyTrees instead of floats.
-  '''
-    
-  @abc.abstractmethod
-  def initialize_state(self, batch_size: int) -> ModuleState:
-    '''Create an initial state for the network, including RNG keys for any
-    stochastic layers.
+        Calling the critic on rollouts might be somewhat inefficient, but by grouping
+        them into the same method, the interface is well-defined even if the actor and
+        critic share stateful layers.
 
-    Args:
-      batch_size (int): The batch size of the returned state.
-    '''
-  
-  def reset_state(self, prev_state: ModuleState) -> ModuleState:
-    '''Specifies how the network should be transformed when the corresponding
-    environment is reset.
+        Args:
+          network_state (ModuleState): The activation state of the network plus any RNG keys
+                                       used for stochastic layers.
+          obs (PyTree): Observation of an environment state. It is a PyTree with the same
+                        structure as env.step(...).obs
+          raw_action (jax.Array): If specified, compute likelihoods using these actions
+                                  than sampling a new action. `raw_action` referes to
+                                  the sampled action before clamping (e.g., by tanh).
 
-    Args:
-      prev_state: The state of the network before the environment was reset 
-    '''
-    return prev_state
+        Returns: (new_state, network_output)
+          new_state (PyTree): An updated network state, including split RNG keys.
+          network_output (PPONetworkOutput):
+            actions (PyTree): The actions to be sent back to the env
+            raw_actions (PyTree): The raw output of the sampler before applying clamping
+            loglikelihood (float): The log-likelihood for taking the action
+            regularization_loss (float): Sum of all other regularizer terms. This will be added
+                                 to the RL loss target during training.
+            value_estimates (float): The estimated value of `obs` by the critic network.
+            metrics (dict): A dictionary with any intermediate values to log
 
-  def update_statistics(self, last_rollout: "Transition", total_steps: jax.Array) -> None:
-    '''Called after the network is updated. In this function, it's safe to update the
-    iteself.
-     
-    Args:
-    last_rollout (Transition[T, B, ...]): dataclass with the most recent rollout. Fields start
-                                           time and batch dimensions.
-    total_steps: Total number of steps taken. Note that this might be a tracer, so jax
-                 restrictions on control flow applies. 
-    '''
-    return None
+        Note: for multi-agent / modular networks, the returned action, log likelihood, and
+              and value estimate may be arbitrary PyTrees instead of floats.
+        """
+
+    @abc.abstractmethod
+    def initialize_state(self, batch_size: int) -> ModuleState:
+        """Create an initial state for the network, including RNG keys for any
+        stochastic layers.
+
+        Args:
+          batch_size (int): The batch size of the returned state.
+        """
+
+    def reset_state(self, prev_state: ModuleState) -> ModuleState:
+        """Specifies how the network should be transformed when the corresponding
+        environment is reset.
+
+        Args:
+          prev_state: The state of the network before the environment was reset
+        """
+        return prev_state
+
+    def update_statistics(
+        self, last_rollout: "Transition", total_steps: jax.Array
+    ) -> None:
+        """Called after the network is updated. In this function, it's safe to update the
+        iteself.
+
+        Args:
+        last_rollout (Transition[T, B, ...]): dataclass with the most recent rollout. Fields start
+                                               time and batch dimensions.
+        total_steps: Total number of steps taken. Note that this might be a tracer, so jax
+                     restrictions on control flow applies.
+        """
+        return None
+
 
 @flax.struct.dataclass
 class StatefulModuleOutput:
-  next_state: ModuleState
-  output: Any #TODO: narrow this down
-  regularization_loss: jax.Array
-  metrics: Dict[str, jax.Array]
+    next_state: ModuleState
+    output: Any  # TODO: narrow this down
+    regularization_loss: jax.Array
+    metrics: Dict[str, jax.Array]
+
 
 class StatefulModule(abc.ABC, nnx.Module):
-    '''Abstract base class for network modules and layers, specifying the interface 
+    """Abstract base class for network modules and layers, specifying the interface
     with the RL algorithm. Each module treated as stateful, with non-stateful modules
     having empty states.
-    
+
     There are two types of module state. First, there is the state of the `nnx.Module`
     which follows the common NNX patterns. This state stores trainable parameters
     (of type `nnx.Param`) as well as any `RNGStreams` and other variables. This state
@@ -99,11 +108,11 @@ class StatefulModule(abc.ABC, nnx.Module):
     Second, there is an explicit carry state that is intended for stateful network
     layers, e.g. the hidden activations of RNNs. This state _is_ reset when the RL
     environment is reset.
-    '''
-    
+    """
+
     @abc.abstractmethod
     def __call__(self, module_state: ModuleState, obs) -> StatefulModuleOutput:
-        '''Args:
+        """Args:
           module_state (ModuleState):
             The current state of the module.
           obs (PyTree):
@@ -119,10 +128,10 @@ class StatefulModule(abc.ABC, nnx.Module):
             adding regularization or co-objectives to the networks.
           metrics (Dict[str, jax.Array]):
             Any logging metrics.
-        '''
+        """
 
     def initialize_state(self, batch_size: int) -> ModuleState:
-        '''Create a new state for this module.
+        """Create a new state for this module.
 
         Args:
         batch_size (int): The batch size
@@ -133,24 +142,26 @@ class StatefulModule(abc.ABC, nnx.Module):
         stateless module.
 
         Notes:
-        As JAX does not allow parallellized conditional evaluation, this 
+        As JAX does not allow parallellized conditional evaluation, this
         method will be called on every step. For environments where `done=True`,
         the corresponding network state will be replaced with the return value of
         this method.
-        '''
+        """
         return ()
-    
+
     def reset_state(self, prev_state: ModuleState) -> ModuleState:
         return prev_state
-    
-    def update_statistics(self, last_rollout: "Transition", total_steps: jax.Array) -> None:
-      '''Called after the network is updated. In this function, it's safe to update the
-      iteself.
-      
-      Args:
-      last_rollout (Transition[T, B, ...]): dataclass with the most recent rollout. Fields start
-                                            time and batch dimensions.
-      total_steps: Total number of steps taken. Note that this might be a tracer, so jax
-                  restrictions on control flow applies. 
-      '''
-      return None
+
+    def update_statistics(
+        self, last_rollout: "Transition", total_steps: jax.Array
+    ) -> None:
+        """Called after the network is updated. In this function, it's safe to update the
+        iteself.
+
+        Args:
+        last_rollout (Transition[T, B, ...]): dataclass with the most recent rollout. Fields start
+                                              time and batch dimensions.
+        total_steps: Total number of steps taken. Note that this might be a tracer, so jax
+                    restrictions on control flow applies.
+        """
+        return None

@@ -26,7 +26,9 @@ class LSTMTest(absltest.TestCase):
         in_features = 16
         hidden_features = 32
         batch_size = 4
-        lstm = LSTM(in_features=in_features, hidden_features=hidden_features, rngs=nnx.Rngs(42))
+        lstm = LSTM(
+            in_features=in_features, hidden_features=hidden_features, rngs=nnx.Rngs(42)
+        )
         state = lstm.initialize_state(batch_size)
         x = jp.ones((batch_size, in_features))
         output = lstm(state, x)
@@ -82,13 +84,15 @@ class LSTMTest(absltest.TestCase):
     def test_trainable_initial_state(self):
         """Trainable initial state should be learnable parameters."""
         lstm = LSTM(
-            in_features=16, hidden_features=32, rngs=nnx.Rngs(42),
-            trainable_initial_state=True
+            in_features=16,
+            hidden_features=32,
+            rngs=nnx.Rngs(42),
+            trainable_initial_state=True,
         )
         self.assertTrue(lstm.trainable_initial_state)
         # Check parameters exist
-        self.assertTrue(hasattr(lstm, 'initial_h'))
-        self.assertTrue(hasattr(lstm, 'initial_c'))
+        self.assertTrue(hasattr(lstm, "initial_h"))
+        self.assertTrue(hasattr(lstm, "initial_c"))
         self.assertIsInstance(lstm.initial_h, nnx.Param)
         self.assertIsInstance(lstm.initial_c, nnx.Param)
         # Check shapes
@@ -98,8 +102,10 @@ class LSTMTest(absltest.TestCase):
     def test_trainable_initial_state_broadcasts(self):
         """Trainable initial state should broadcast to batch size."""
         lstm = LSTM(
-            in_features=16, hidden_features=32, rngs=nnx.Rngs(42),
-            trainable_initial_state=True
+            in_features=16,
+            hidden_features=32,
+            rngs=nnx.Rngs(42),
+            trainable_initial_state=True,
         )
         # Modify the initial state to non-zero values
         lstm.initial_h[...] = jp.ones(32) * 0.5
@@ -115,8 +121,10 @@ class LSTMTest(absltest.TestCase):
     def test_trainable_initial_state_reset(self):
         """reset_state with trainable initial state should return learned values."""
         lstm = LSTM(
-            in_features=16, hidden_features=32, rngs=nnx.Rngs(42),
-            trainable_initial_state=True
+            in_features=16,
+            hidden_features=32,
+            rngs=nnx.Rngs(42),
+            trainable_initial_state=True,
         )
         lstm.initial_h[...] = jp.ones(32) * 0.5
         lstm.initial_c[...] = jp.ones(32) * 0.3
@@ -150,11 +158,13 @@ class LSTMTest(absltest.TestCase):
         hidden_features = 32
         output_features = 8
         batch_size = 4
-        seq = Sequential([
-            make_mlp([in_features, 24], rngs),
-            LSTM(in_features=24, hidden_features=hidden_features, rngs=rngs),
-            make_mlp([hidden_features, output_features], rngs),
-        ])
+        seq = Sequential(
+            [
+                make_mlp([in_features, 24], rngs),
+                LSTM(in_features=24, hidden_features=hidden_features, rngs=rngs),
+                make_mlp([hidden_features, output_features], rngs),
+            ]
+        )
         state = seq.initialize_state(batch_size)
         x = jp.ones((batch_size, in_features))
         output = seq(state, x)
@@ -191,8 +201,12 @@ class LSTMTest(absltest.TestCase):
 
     def test_use_optimized_flag(self):
         """use_optimized=False should use standard LSTMCell."""
-        lstm_opt = LSTM(in_features=16, hidden_features=32, rngs=nnx.Rngs(42), use_optimized=True)
-        lstm_std = LSTM(in_features=16, hidden_features=32, rngs=nnx.Rngs(42), use_optimized=False)
+        lstm_opt = LSTM(
+            in_features=16, hidden_features=32, rngs=nnx.Rngs(42), use_optimized=True
+        )
+        lstm_std = LSTM(
+            in_features=16, hidden_features=32, rngs=nnx.Rngs(42), use_optimized=False
+        )
         self.assertIsInstance(lstm_opt.cell, nnx.OptimizedLSTMCell)
         self.assertIsInstance(lstm_std.cell, nnx.LSTMCell)
 
@@ -217,16 +231,20 @@ class LSTMTest(absltest.TestCase):
         env = MockEnv(obs_size, action_size, max_steps=max_steps)
 
         # Create network with LSTM in actor
-        actor = Sequential([
-            Dense(obs_size, hidden_size, rngs, activation=nnx.relu),
-            LSTM(in_features=hidden_size, hidden_features=hidden_size, rngs=rngs),
-            Dense(hidden_size, action_size * 2, rngs, activation=None),
-        ])
+        actor = Sequential(
+            [
+                Dense(obs_size, hidden_size, rngs, activation=nnx.relu),
+                LSTM(in_features=hidden_size, hidden_features=hidden_size, rngs=rngs),
+                Dense(hidden_size, action_size * 2, rngs, activation=None),
+            ]
+        )
 
-        critic = Sequential([
-            Dense(obs_size, hidden_size, rngs, activation=nnx.relu),
-            Dense(hidden_size, 1, rngs, activation=None),
-        ])
+        critic = Sequential(
+            [
+                Dense(obs_size, hidden_size, rngs, activation=nnx.relu),
+                Dense(hidden_size, 1, rngs, activation=None),
+            ]
+        )
 
         sampler = NormalTanhSampler(rngs, entropy_weight=1e-3)
         networks = PPOActorCritic(actor=actor, critic=critic, action_sampler=sampler)
@@ -245,7 +263,9 @@ class LSTMTest(absltest.TestCase):
 
         # Check that multiple resets occurred
         total_dones = jp.sum(rollout_data.done)
-        self.assertGreater(float(total_dones), 0, "Expected at least one reset to occur")
+        self.assertGreater(
+            float(total_dones), 0, "Expected at least one reset to occur"
+        )
 
         # Check no NaNs in network outputs
         self.assertFalse(jp.any(jp.isnan(rollout_data.network_output.actions)))
@@ -264,27 +284,31 @@ class LSTMTest(absltest.TestCase):
 
         env = MockEnv(obs_size, action_size, max_steps=max_steps)
 
-        actor = Sequential([
-            Dense(obs_size, hidden_size, rngs, activation=nnx.relu),
-            LSTM(in_features=hidden_size, hidden_features=hidden_size, rngs=rngs),
-            Dense(hidden_size, action_size * 2, rngs, activation=None),
-        ])
+        actor = Sequential(
+            [
+                Dense(obs_size, hidden_size, rngs, activation=nnx.relu),
+                LSTM(in_features=hidden_size, hidden_features=hidden_size, rngs=rngs),
+                Dense(hidden_size, action_size * 2, rngs, activation=None),
+            ]
+        )
 
-        critic = Sequential([
-            Dense(obs_size, hidden_size, rngs, activation=nnx.relu),
-            Dense(hidden_size, 1, rngs, activation=None),
-        ])
+        critic = Sequential(
+            [
+                Dense(obs_size, hidden_size, rngs, activation=nnx.relu),
+                Dense(hidden_size, 1, rngs, activation=None),
+            ]
+        )
 
         sampler = NormalTanhSampler(rngs, entropy_weight=1e-3)
         networks = PPOActorCritic(actor=actor, critic=critic, action_sampler=sampler)
 
         training_state = new_training_state(
-            env, networks, n_envs, seed=42,
-            learning_rate=1e-4, gradient_clipping=1.0
+            env, networks, n_envs, seed=42, learning_rate=1e-4, gradient_clipping=1.0
         )
 
         new_state, metrics = ppo_step(
-            env, training_state,
+            env,
+            training_state,
             n_envs=n_envs,
             rollout_length=rollout_length,
             gae_lambda=0.95,
@@ -307,5 +331,5 @@ class LSTMTest(absltest.TestCase):
             self.assertFalse(jp.any(jp.isnan(leaf)))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     absltest.main()

@@ -1,5 +1,7 @@
 """Rodent imitation learning with encoder-decoder architecture and variational bottleneck."""
+
 import os
+
 os.environ["MUJOCO_GL"] = "egl"
 os.environ["PYOPENGL_PLATFORM"] = "egl"
 
@@ -21,11 +23,8 @@ from nnx_ppo.networks.variational import AR1VariationalBottleneck
 from nnx_ppo.networks.normalizer import Normalizer
 from nnx_ppo.algorithms import ppo
 from nnx_ppo.algorithms.types import LoggingLevel
-from nnx_ppo.algorithms.config import (
-    TrainConfig, PPOConfig, EvalConfig, VideoConfig
-)
+from nnx_ppo.algorithms.config import TrainConfig, PPOConfig, EvalConfig, VideoConfig
 from nnx_ppo.algorithms.callbacks import wandb_video_fn
-
 
 SEED = 40
 env_config = default_config()
@@ -94,34 +93,55 @@ obs_size = train_env.non_flattened_observation_size
 
 # Build encoder-decoder network
 rngs = nnx.Rngs(SEED)
-activation = {"swish": nnx.swish, "tanh": nnx.tanh, "relu": nnx.relu}[net_config.activation]
+activation = {"swish": nnx.swish, "tanh": nnx.tanh, "relu": nnx.relu}[
+    net_config.activation
+]
 reference_size = int(sum(jax.tree.flatten(obs_size["imitation_target"])[0]))
 proprio_size = int(sum(jax.tree.flatten(obs_size["proprioception"])[0]))
-enc_sizes = [reference_size] + net_config.enc_hidden_sizes + [net_config.latent_size * 2]
-dec_sizes = [net_config.latent_size + proprio_size] + net_config.dec_hidden_sizes + [train_env.action_size * 2]
+enc_sizes = (
+    [reference_size] + net_config.enc_hidden_sizes + [net_config.latent_size * 2]
+)
+dec_sizes = (
+    [net_config.latent_size + proprio_size]
+    + net_config.dec_hidden_sizes
+    + [train_env.action_size * 2]
+)
 
-actor = Sequential([
-    Concat(
-        imitation_target=Sequential([
-            Flattener(),
-            *make_mlp_layers(enc_sizes, rngs, activation, activation_last_layer=False),
-            AR1VariationalBottleneck(net_config.latent_size, rngs, net_config.kl_weight,
-                                     net_config.latent_min_std, net_config.latent_ar1_weight),
-        ]),
-        proprioception=Flattener(),
-    ),
-    make_mlp(dec_sizes, rngs, activation, activation_last_layer=False)
-])
+actor = Sequential(
+    [
+        Concat(
+            imitation_target=Sequential(
+                [
+                    Flattener(),
+                    *make_mlp_layers(
+                        enc_sizes, rngs, activation, activation_last_layer=False
+                    ),
+                    AR1VariationalBottleneck(
+                        net_config.latent_size,
+                        rngs,
+                        net_config.kl_weight,
+                        net_config.latent_min_std,
+                        net_config.latent_ar1_weight,
+                    ),
+                ]
+            ),
+            proprioception=Flattener(),
+        ),
+        make_mlp(dec_sizes, rngs, activation, activation_last_layer=False),
+    ]
+)
 critic_sizes = [reference_size + proprio_size] + net_config.critic_hidden_sizes + [1]
-critic = Sequential([
-    Flattener(),
-    *make_mlp_layers(critic_sizes, rngs, activation, activation_last_layer=False),
-])
+critic = Sequential(
+    [
+        Flattener(),
+        *make_mlp_layers(critic_sizes, rngs, activation, activation_last_layer=False),
+    ]
+)
 sampler = NormalTanhSampler(
     rngs,
     entropy_weight=net_config.entropy_weight,
     min_std=net_config.min_std,
-    std_scale=net_config.std_scale
+    std_scale=net_config.std_scale,
 )
 nets = PPOActorCritic(
     preprocessor=Normalizer(obs_size),
@@ -129,7 +149,6 @@ nets = PPOActorCritic(
     critic=critic,
     action_sampler=sampler,
 )
-
 
 
 # Initialize wandb
@@ -160,6 +179,10 @@ result = ppo.train_ppo(
     eval_env=eval_env,
 )
 
-print(f"Training complete: {result.total_steps} steps, {result.total_iterations} iterations")
+print(
+    f"Training complete: {result.total_steps} steps, {result.total_iterations} iterations"
+)
 if result.eval_history:
-    print(f"Final eval reward: {result.eval_history[-1].get('episode_reward_mean', 'N/A')}")
+    print(
+        f"Final eval reward: {result.eval_history[-1].get('episode_reward_mean', 'N/A')}"
+    )

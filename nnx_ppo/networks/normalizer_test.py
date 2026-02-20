@@ -49,11 +49,11 @@ class NormalizerTest(absltest.TestCase):
             loglikelihoods=jp.zeros((BATCH_SIZE,)),
             regularization_loss=jp.array(0.0),
             value_estimates=jp.zeros((BATCH_SIZE, 1)),
-            metrics={}
+            metrics={},
         )
 
         for i in range(N_STEPS):
-            obs_batch = data[i:i+1]  # Shape: (1, BATCH_SIZE, OBS_SIZE)
+            obs_batch = data[i : i + 1]  # Shape: (1, BATCH_SIZE, OBS_SIZE)
             dummy_transition = Transition(
                 obs=obs_batch,
                 network_output=dummy_network_output,
@@ -61,10 +61,10 @@ class NormalizerTest(absltest.TestCase):
                 done=jp.zeros((1, BATCH_SIZE), jp.bool),
                 truncated=jp.zeros((1, BATCH_SIZE), jp.bool),
                 next_obs=jp.zeros_like(obs_batch),
-                metrics={}
+                metrics={},
             )
-            normalizer.update_statistics(dummy_transition, (i+1) * BATCH_SIZE)
-            self.assertEqual(normalizer.counter[...], (i+1) * BATCH_SIZE)
+            normalizer.update_statistics(dummy_transition, (i + 1) * BATCH_SIZE)
+            self.assertEqual(normalizer.counter[...], (i + 1) * BATCH_SIZE)
 
         # After all updates, check statistics accuracy
         true_data_mean = jp.mean(data, axis=(0, 1))
@@ -89,7 +89,9 @@ class NormalizerTest(absltest.TestCase):
         # Generate training data with non-trivial mean and variance
         true_mean = jp.array([1.0, -2.0, 3.0, -4.0, 5.0, -6.0])
         true_std = jp.array([0.5, 1.0, 2.0, 0.1, 3.0, 0.8])
-        data = true_mean + true_std * jax.random.normal(data_key, (N_STEPS, BATCH_SIZE, OBS_SIZE))
+        data = true_mean + true_std * jax.random.normal(
+            data_key, (N_STEPS, BATCH_SIZE, OBS_SIZE)
+        )
 
         dummy_network_output = PPONetworkOutput(
             actions=jp.zeros((BATCH_SIZE, 1)),
@@ -97,12 +99,12 @@ class NormalizerTest(absltest.TestCase):
             loglikelihoods=jp.zeros((BATCH_SIZE,)),
             regularization_loss=jp.array(0.0),
             value_estimates=jp.zeros((BATCH_SIZE, 1)),
-            metrics={}
+            metrics={},
         )
 
         # Update statistics
         for i in range(N_STEPS):
-            obs_batch = data[i:i+1]
+            obs_batch = data[i : i + 1]
             dummy_transition = Transition(
                 obs=obs_batch,
                 network_output=dummy_network_output,
@@ -110,9 +112,9 @@ class NormalizerTest(absltest.TestCase):
                 done=jp.zeros((1, BATCH_SIZE), jp.bool),
                 truncated=jp.zeros((1, BATCH_SIZE), jp.bool),
                 next_obs=jp.zeros_like(obs_batch),
-                metrics={}
+                metrics={},
             )
-            normalizer.update_statistics(dummy_transition, (i+1) * BATCH_SIZE)
+            normalizer.update_statistics(dummy_transition, (i + 1) * BATCH_SIZE)
 
         # Generate test data from same distribution
         test_data = true_mean + true_std * jax.random.normal(test_key, (100, OBS_SIZE))
@@ -127,5 +129,5 @@ class NormalizerTest(absltest.TestCase):
         self.assertTrue(jp.all(jp.abs(normalized_std - 1.0) < 0.3))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     absltest.main()

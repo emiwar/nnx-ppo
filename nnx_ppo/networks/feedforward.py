@@ -1,4 +1,5 @@
 """Feedforward network layers."""
+
 from typing import Tuple, Callable, Optional
 
 import jax

@@ -16,11 +16,7 @@ class MakeMLPActorCriticTest(absltest.TestCase):
         self.hidden_sizes = [17, 39]
         rngs = nnx.Rngs(SEED)
         self.mlp_net = factories.make_mlp_actor_critic(
-            self.obs_size,
-            self.action_size,
-            self.hidden_sizes,
-            self.hidden_sizes,
-            rngs
+            self.obs_size, self.action_size, self.hidden_sizes, self.hidden_sizes, rngs
         )
 
     def test_actor_critic_independently_initialized(self):
@@ -29,8 +25,11 @@ class MakeMLPActorCriticTest(absltest.TestCase):
         # Test actor and critic were independently initialized
         # Actor and critic are Sequential of Dense layers
         for actor_dense, critic_dense in zip(net.actor.layers, net.critic.layers):
-            self.assertFalse(jp.allclose(actor_dense.linear.kernel[...],
-                                         critic_dense.linear.kernel[...]))
+            self.assertFalse(
+                jp.allclose(
+                    actor_dense.linear.kernel[...], critic_dense.linear.kernel[...]
+                )
+            )
 
     def test_actor_layers_independently_initialized(self):
         SEED = 123
@@ -39,18 +38,17 @@ class MakeMLPActorCriticTest(absltest.TestCase):
         hidden_sizes = [64, 64]
         rngs = nnx.Rngs(SEED)
         net = factories.make_mlp_actor_critic(
-            obs_size,
-            action_size,
-            hidden_sizes,
-            hidden_sizes,
-            rngs
+            obs_size, action_size, hidden_sizes, hidden_sizes, rngs
         )
 
         # Test actor layers were independently initialized
         first_actor_dense = net.actor.layers[0]
         for actor_dense in net.actor.layers[1:]:
-            self.assertFalse(jp.allclose(first_actor_dense.linear.kernel[...],
-                                         actor_dense.linear.kernel[...]))
+            self.assertFalse(
+                jp.allclose(
+                    first_actor_dense.linear.kernel[...], actor_dense.linear.kernel[...]
+                )
+            )
 
     def test_init_state(self):
         net = self.mlp_net
@@ -112,10 +110,14 @@ class MakeMLPActorCriticTest(absltest.TestCase):
         self.assertIsInstance(second_output, types.PPONetworkOutput)
         self.assertIn("actor", next_state)
         self.assertIn("critic", next_state)
-        self.assertFalse(jp.allclose(first_output.actions, second_output.actions),
-                         "Stochasticity in actions.")
-        self.assertTrue(jp.allclose(first_output.value_estimates, second_output.value_estimates),
-                        "No stochasticity in critic.")
+        self.assertFalse(
+            jp.allclose(first_output.actions, second_output.actions),
+            "Stochasticity in actions.",
+        )
+        self.assertTrue(
+            jp.allclose(first_output.value_estimates, second_output.value_estimates),
+            "No stochasticity in critic.",
+        )
 
     def test_action_sampler_train_and_eval_mode(self):
         net = self.mlp_net
@@ -132,32 +134,37 @@ class MakeMLPActorCriticTest(absltest.TestCase):
         BATCH_SIZE = 32
         N_STEPS = 10
         nets = factories.make_mlp_actor_critic(
-            OBS_SIZE, ACTION_SIZE,
+            OBS_SIZE,
+            ACTION_SIZE,
             actor_hidden_sizes=[64, 64],
             critic_hidden_sizes=[64, 64],
             rngs=nnx.Rngs(SEED, action_sampling=SEED),
-            normalize_obs=True
+            normalize_obs=True,
         )
         key = jax.random.key(SEED)
         mean_key, var_key = jax.random.split(key)
-        data = jax.random.normal(mean_key, (OBS_SIZE,)) + jax.random.normal(var_key, (N_STEPS+1, BATCH_SIZE, OBS_SIZE))
+        data = jax.random.normal(mean_key, (OBS_SIZE,)) + jax.random.normal(
+            var_key, (N_STEPS + 1, BATCH_SIZE, OBS_SIZE)
+        )
         state = nets.initialize_state(BATCH_SIZE)
         for i in range(N_STEPS):
             state, network_output = nets(state, data[i])
-            dummy_transition = Transition(obs=data[i:i+1],
-                                          network_output=network_output,
-                                          rewards=jp.zeros((1, BATCH_SIZE)),
-                                          done=jp.zeros((1, BATCH_SIZE), jp.bool),
-                                          truncated=jp.zeros((1, BATCH_SIZE), jp.bool),
-                                          next_obs=jp.zeros_like(data[i:i+1]),
-                                          metrics={})
-            nets.update_statistics(dummy_transition, (i+1) * BATCH_SIZE)
-            self.assertEqual(nets.preprocessor.counter[...], (i+1) * BATCH_SIZE)
+            dummy_transition = Transition(
+                obs=data[i : i + 1],
+                network_output=network_output,
+                rewards=jp.zeros((1, BATCH_SIZE)),
+                done=jp.zeros((1, BATCH_SIZE), jp.bool),
+                truncated=jp.zeros((1, BATCH_SIZE), jp.bool),
+                next_obs=jp.zeros_like(data[i : i + 1]),
+                metrics={},
+            )
+            nets.update_statistics(dummy_transition, (i + 1) * BATCH_SIZE)
+            self.assertEqual(nets.preprocessor.counter[...], (i + 1) * BATCH_SIZE)
             self.assertEqual(nets.preprocessor.mean[...].shape, (OBS_SIZE,))
             self.assertEqual(nets.preprocessor.M2[...].shape, (OBS_SIZE,))
 
-            true_mean = jp.mean(data[:i+1], axis=(0, 1))
-            true_std = jp.std(data[:i+1], axis=(0, 1))
+            true_mean = jp.mean(data[: i + 1], axis=(0, 1))
+            true_std = jp.std(data[: i + 1], axis=(0, 1))
             est_mean = nets.preprocessor.mean
             est_var = nets.preprocessor.M2 / nets.preprocessor.counter
             est_std = jp.sqrt(est_var)
@@ -165,5 +172,5 @@ class MakeMLPActorCriticTest(absltest.TestCase):
             self.assertLess(jp.max(jp.abs(est_std - true_std)), 1e-6)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     absltest.main()

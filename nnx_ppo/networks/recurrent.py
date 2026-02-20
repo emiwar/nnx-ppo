@@ -1,4 +1,5 @@
 """Recurrent network modules for PPO."""
+
 from typing import Tuple, Optional, Callable
 
 import jax
@@ -6,7 +7,6 @@ import jax.numpy as jp
 from flax import nnx
 
 from nnx_ppo.networks.types import StatefulModule, StatefulModuleOutput
-
 
 # LSTM carry type: tuple of (hidden_state, cell_state)
 LSTMCarry = Tuple[jax.Array, jax.Array]

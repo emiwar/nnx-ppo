@@ -1,4 +1,5 @@
 """Mock environment for testing stateful networks with rollouts."""
+
 import jax
 import jax.numpy as jp
 from flax import struct
@@ -7,6 +8,7 @@ from flax import struct
 @struct.dataclass
 class MockEnvState:
     """Simple mock environment state."""
+
     obs: jax.Array
     reward: jax.Array
     done: jax.Array
@@ -34,7 +36,7 @@ class MockEnv:
         self.observation_size = obs_size
 
     def reset(self, key: jax.Array) -> MockEnvState:
-        obs_key, = jax.random.split(key, 1)
+        (obs_key,) = jax.random.split(key, 1)
         return MockEnvState(
             obs=jax.random.normal(obs_key, (self.obs_size,)),
             reward=jp.array(0.0),

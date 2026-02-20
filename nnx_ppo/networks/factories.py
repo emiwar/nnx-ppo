@@ -36,7 +36,7 @@ def make_mlp_layers(
     """
     layers = []
     for i, (din, dout) in enumerate(zip(sizes[:-1], sizes[1:])):
-        is_last = (i == len(sizes) - 2)
+        is_last = i == len(sizes) - 2
         act = activation if (not is_last or activation_last_layer) else None
         layers.append(Dense(din, dout, rngs, activation=act, **linear_kwargs))
     return layers
@@ -61,7 +61,9 @@ def make_mlp(
     Returns:
         A Sequential container of Dense layers.
     """
-    return Sequential(make_mlp_layers(sizes, rngs, activation, activation_last_layer, **linear_kwargs))
+    return Sequential(
+        make_mlp_layers(sizes, rngs, activation, activation_last_layer, **linear_kwargs)
+    )
 
 
 def make_mlp_actor_critic(
@@ -97,17 +99,31 @@ def make_mlp_actor_critic(
         A PPOActorCritic network.
     """
     if isinstance(activation, str):
-        activation = {"swish": nnx.swish, "tanh": nnx.tanh, "relu": nnx.relu}[activation]
+        activation = {"swish": nnx.swish, "tanh": nnx.tanh, "relu": nnx.relu}[
+            activation
+        ]
 
-    kernel_init = nnx.initializers.variance_scaling(initializer_scale, "fan_in", "uniform")
+    kernel_init = nnx.initializers.variance_scaling(
+        initializer_scale, "fan_in", "uniform"
+    )
 
     actor_sizes = [obs_size] + actor_hidden_sizes + [action_size * 2]
-    actor = make_mlp(actor_sizes, rngs, activation, activation_last_layer=False,
-                     kernel_init=kernel_init)
+    actor = make_mlp(
+        actor_sizes,
+        rngs,
+        activation,
+        activation_last_layer=False,
+        kernel_init=kernel_init,
+    )
 
     critic_sizes = [obs_size] + critic_hidden_sizes + [1]
-    critic = make_mlp(critic_sizes, rngs, activation, activation_last_layer=False,
-                      kernel_init=kernel_init)
+    critic = make_mlp(
+        critic_sizes,
+        rngs,
+        activation,
+        activation_last_layer=False,
+        kernel_init=kernel_init,
+    )
 
     action_sampler = NormalTanhSampler(
         rngs,

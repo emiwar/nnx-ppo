@@ -12,17 +12,22 @@ from nnx_ppo.networks import factories
 from nnx_ppo.algorithms.rollout import unroll_env
 from nnx_ppo.test_dummies import dummy_counter
 from nnx_ppo.test_dummies import stateful_nets, parrot_env, move_to_center_env
+
+
 class RolloutTest(absltest.TestCase):
 
     def setUp(self):
         SEED = 17
 
         self.env = mujoco_playground.registry.load("CartpoleSwingup")
-        self.nets = factories.make_mlp_actor_critic(self.env.observation_size, self.env.action_size,
-                                           actor_hidden_sizes=[16, 16],
-                                           critic_hidden_sizes=[16, 16],
-                                           rngs = nnx.Rngs(SEED, action_sampling=SEED))
-        
+        self.nets = factories.make_mlp_actor_critic(
+            self.env.observation_size,
+            self.env.action_size,
+            actor_hidden_sizes=[16, 16],
+            critic_hidden_sizes=[16, 16],
+            rngs=nnx.Rngs(SEED, action_sampling=SEED),
+        )
+
     def test_single_env_rollout(self):
         N_STEPS = 24
         key = jax.random.key(seed=18)
@@ -31,12 +36,20 @@ class RolloutTest(absltest.TestCase):
         env_state = jax.vmap(self.env.reset)(jax.random.split(env_key, 1))
 
         next_net_state, next_env_state, rollout_data = unroll_env(
-            self.env, env_state, self.nets, net_state, N_STEPS, reset_key)
-        self.assertEqual(rollout_data.done.shape, (N_STEPS,1))
-        self.assertEqual(rollout_data.rewards.shape, (N_STEPS,1))
-        self.assertEqual(rollout_data.obs.shape, (N_STEPS, 1, self.env.observation_size))
-        self.assertEqual(rollout_data.next_obs.shape, (N_STEPS, 1, self.env.observation_size))
-        self.assertEqual(rollout_data.network_output.actions.shape, (N_STEPS, 1, self.env.action_size))
+            self.env, env_state, self.nets, net_state, N_STEPS, reset_key
+        )
+        self.assertEqual(rollout_data.done.shape, (N_STEPS, 1))
+        self.assertEqual(rollout_data.rewards.shape, (N_STEPS, 1))
+        self.assertEqual(
+            rollout_data.obs.shape, (N_STEPS, 1, self.env.observation_size)
+        )
+        self.assertEqual(
+            rollout_data.next_obs.shape, (N_STEPS, 1, self.env.observation_size)
+        )
+        self.assertEqual(
+            rollout_data.network_output.actions.shape,
+            (N_STEPS, 1, self.env.action_size),
+        )
         self.assertEqual(rollout_data.network_output.loglikelihoods.shape, (N_STEPS, 1))
 
     def test_single_env_rollout_jit(self):
@@ -46,17 +59,27 @@ class RolloutTest(absltest.TestCase):
         net_state = self.nets.initialize_state(batch_size=1)
         env_state = jax.vmap(self.env.reset)(jax.random.split(env_key, 1))
 
-        unroll_env_jit = nnx.jit(functools.partial(unroll_env, self.env), static_argnames=("unroll_length"))
+        unroll_env_jit = nnx.jit(
+            functools.partial(unroll_env, self.env), static_argnames=("unroll_length")
+        )
         next_net_state, next_env_state, rollout_data = unroll_env_jit(
-            env_state, self.nets, net_state, N_STEPS, reset_key)
-        self.assertEqual(rollout_data.done.shape, (N_STEPS,1))
-        self.assertEqual(rollout_data.rewards.shape, (N_STEPS,1))
-        self.assertEqual(rollout_data.obs.shape, (N_STEPS, 1, self.env.observation_size))
-        self.assertEqual(rollout_data.next_obs.shape, (N_STEPS, 1, self.env.observation_size))
-        self.assertEqual(rollout_data.network_output.actions.shape, (N_STEPS, 1, self.env.action_size))
+            env_state, self.nets, net_state, N_STEPS, reset_key
+        )
+        self.assertEqual(rollout_data.done.shape, (N_STEPS, 1))
+        self.assertEqual(rollout_data.rewards.shape, (N_STEPS, 1))
+        self.assertEqual(
+            rollout_data.obs.shape, (N_STEPS, 1, self.env.observation_size)
+        )
+        self.assertEqual(
+            rollout_data.next_obs.shape, (N_STEPS, 1, self.env.observation_size)
+        )
+        self.assertEqual(
+            rollout_data.network_output.actions.shape,
+            (N_STEPS, 1, self.env.action_size),
+        )
         self.assertEqual(rollout_data.network_output.loglikelihoods.shape, (N_STEPS, 1))
 
-        #Do another rollout just to be sure there're no stray tracers
+        # Do another rollout just to be sure there're no stray tracers
         unroll_env_jit(next_env_state, self.nets, next_net_state, N_STEPS, reset_key)
 
     def test_batch_env_rollout(self):
@@ -68,16 +91,32 @@ class RolloutTest(absltest.TestCase):
         env_states = jax.vmap(self.env.reset)(jax.random.split(env_key, N_ENVS))
 
         next_net_state, next_env_state, rollout_data = unroll_env(
-            self.env, env_states, self.nets, net_states, N_STEPS, reset_key)
+            self.env, env_states, self.nets, net_states, N_STEPS, reset_key
+        )
         self.assertEqual(rollout_data.done.shape, (N_STEPS, N_ENVS))
         self.assertEqual(rollout_data.rewards.shape, (N_STEPS, N_ENVS))
-        self.assertEqual(rollout_data.obs.shape, (N_STEPS, N_ENVS, self.env.observation_size))
-        self.assertEqual(rollout_data.next_obs.shape, (N_STEPS, N_ENVS, self.env.observation_size))
-        self.assertEqual(rollout_data.network_output.actions.shape, (N_STEPS, N_ENVS, self.env.action_size))
-        self.assertEqual(rollout_data.network_output.loglikelihoods.shape, (N_STEPS, N_ENVS))
-        jax.tree.map(lambda a, b: self.assertEqual(a.shape, b.shape), net_states, next_net_state)
-        jax.tree.map(lambda a, b: self.assertEqual(a.shape, b.shape), env_states, next_env_state)
-        unroll_env(self.env, next_env_state, self.nets, next_net_state, N_STEPS, reset_key)
+        self.assertEqual(
+            rollout_data.obs.shape, (N_STEPS, N_ENVS, self.env.observation_size)
+        )
+        self.assertEqual(
+            rollout_data.next_obs.shape, (N_STEPS, N_ENVS, self.env.observation_size)
+        )
+        self.assertEqual(
+            rollout_data.network_output.actions.shape,
+            (N_STEPS, N_ENVS, self.env.action_size),
+        )
+        self.assertEqual(
+            rollout_data.network_output.loglikelihoods.shape, (N_STEPS, N_ENVS)
+        )
+        jax.tree.map(
+            lambda a, b: self.assertEqual(a.shape, b.shape), net_states, next_net_state
+        )
+        jax.tree.map(
+            lambda a, b: self.assertEqual(a.shape, b.shape), env_states, next_env_state
+        )
+        unroll_env(
+            self.env, next_env_state, self.nets, next_net_state, N_STEPS, reset_key
+        )
 
     def test_dummy_env_rollout(self):
         N_ENVS = 1
@@ -90,7 +129,8 @@ class RolloutTest(absltest.TestCase):
         env_states = jax.vmap(dummy_env.reset)(jax.random.split(env_key, N_ENVS))
 
         next_net_state, next_env_state, rollout_data = unroll_env(
-            dummy_env, env_states, dummy_nets, net_state, N_STEPS, reset_key)
+            dummy_env, env_states, dummy_nets, net_state, N_STEPS, reset_key
+        )
         self.assertEqual(rollout_data.done.shape, (N_STEPS, 1))
         self.assertEqual(rollout_data.rewards.shape, (N_STEPS, 1))
         self.assertEqual(rollout_data.network_output.loglikelihoods.shape, (N_STEPS, 1))
@@ -111,7 +151,8 @@ class RolloutTest(absltest.TestCase):
 
         unroll_env_jit = nnx.jit(unroll_env, static_argnames=("env", "unroll_length"))
         next_net_state, next_env_state, rollout_data = unroll_env_jit(
-            dummy_env, env_state, dummy_nets, net_state, N_STEPS, reset_key)
+            dummy_env, env_state, dummy_nets, net_state, N_STEPS, reset_key
+        )
         self.assertEqual(rollout_data.done.shape, (N_STEPS, 1))
         self.assertEqual(rollout_data.rewards.shape, (N_STEPS, 1))
         self.assertEqual(rollout_data.network_output.loglikelihoods.shape, (N_STEPS, 1))
@@ -132,16 +173,23 @@ class RolloutTest(absltest.TestCase):
 
         unroll_env_jit = nnx.jit(unroll_env, static_argnames=("env", "unroll_length"))
         next_net_state, next_env_state, rollout_data = unroll_env_jit(
-            dummy_env, env_states, dummy_nets, net_states, N_STEPS, reset_key)
+            dummy_env, env_states, dummy_nets, net_states, N_STEPS, reset_key
+        )
         self.assertEqual(rollout_data.done.shape, (N_STEPS, N_ENVS))
         self.assertEqual(rollout_data.rewards.shape, (N_STEPS, N_ENVS))
-        self.assertEqual(rollout_data.network_output.loglikelihoods.shape, (N_STEPS, N_ENVS))
+        self.assertEqual(
+            rollout_data.network_output.loglikelihoods.shape, (N_STEPS, N_ENVS)
+        )
 
-        self.assertGreaterEqual(jp.sum(rollout_data.done), 2*N_ENVS)
-        self.assertLess(jp.sum(rollout_data.done), 10*N_ENVS)
-        self.assertEqual(jp.sum(rollout_data.rewards), N_STEPS*N_ENVS)
-        jax.tree.map(lambda a, b: self.assertEqual(a.shape, b.shape), net_states, next_net_state)
-        jax.tree.map(lambda a, b: self.assertEqual(a.shape, b.shape), env_states, next_env_state)
+        self.assertGreaterEqual(jp.sum(rollout_data.done), 2 * N_ENVS)
+        self.assertLess(jp.sum(rollout_data.done), 10 * N_ENVS)
+        self.assertEqual(jp.sum(rollout_data.rewards), N_STEPS * N_ENVS)
+        jax.tree.map(
+            lambda a, b: self.assertEqual(a.shape, b.shape), net_states, next_net_state
+        )
+        jax.tree.map(
+            lambda a, b: self.assertEqual(a.shape, b.shape), env_states, next_env_state
+        )
 
     def test_basic_stateful_net(self):
         N_ENVS = 1
@@ -154,7 +202,8 @@ class RolloutTest(absltest.TestCase):
         env_state = jax.vmap(env.reset)(jax.random.split(env_key, N_ENVS))
 
         next_net_state, next_env_state, rollout_data = unroll_env(
-            env, env_state, net, net_state, N_STEPS, reset_key)
+            env, env_state, net, net_state, N_STEPS, reset_key
+        )
         self.assertEqual(net.n_calls[...], N_STEPS * N_ENVS)
 
     def test_stateful_net_batch(self):
@@ -168,5 +217,6 @@ class RolloutTest(absltest.TestCase):
         env_state = jax.vmap(env.reset)(jax.random.split(env_key, N_ENVS))
 
         next_net_state, next_env_state, rollout_data = unroll_env(
-            env, env_state, net, net_state, N_STEPS, reset_key)
+            env, env_state, net, net_state, N_STEPS, reset_key
+        )
         self.assertEqual(net.n_calls[...], N_STEPS * N_ENVS)

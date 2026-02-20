@@ -1,4 +1,5 @@
 """Example of using the new train_ppo API with wandb logging."""
+
 from datetime import datetime
 import dataclasses
 
@@ -9,9 +10,7 @@ import wandb
 from nnx_ppo.networks.factories import make_mlp_actor_critic
 from nnx_ppo.algorithms import ppo
 from nnx_ppo.algorithms.types import LoggingLevel
-from nnx_ppo.algorithms.config import (
-    TrainConfig, PPOConfig, EvalConfig, VideoConfig
-)
+from nnx_ppo.algorithms.config import TrainConfig, PPOConfig, EvalConfig, VideoConfig
 from nnx_ppo.algorithms.callbacks import wandb_video_fn
 
 from nnx_ppo.wrappers import episode_wrapper
@@ -30,7 +29,9 @@ elif env_name == "MoveToCenterEnv":
         reward_falloff=1.0, border_radius=10.0
     )
 elif env_name == "MoveFromCenterEnv":
-    env = nnx_ppo.test_dummies.move_from_center_env.MoveFromCenterEnv(border_radius=10.0)
+    env = nnx_ppo.test_dummies.move_from_center_env.MoveFromCenterEnv(
+        border_radius=10.0
+    )
 else:
     env = mujoco_playground.registry.load(env_name)
 
@@ -107,5 +108,7 @@ result = ppo.train_ppo(
     eval_env=eval_env,
 )
 
-print(f"Training complete: {result.total_steps} steps, {result.total_iterations} iterations")
+print(
+    f"Training complete: {result.total_steps} steps, {result.total_iterations} iterations"
+)
 print(f"Final eval reward: {result.eval_history[-1].get('episode_reward_mean', 'N/A')}")

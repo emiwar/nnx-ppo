@@ -1,4 +1,5 @@
 """Tests for AR1VariationalBottleneck with environment rollouts and resets."""
+
 from absl.testing import absltest
 import jax
 import jax.numpy as jp
@@ -31,18 +32,24 @@ class AR1RolloutTest(absltest.TestCase):
 
         # Create network with AR1VariationalBottleneck
         # Actor: obs -> hidden -> 2*latent (mean, log_std) -> AR1 -> output -> 2*action
-        actor = Sequential([
-            Dense(obs_size, 32, rngs, activation=nnx.relu),
-            Dense(32, latent_size * 2, rngs, activation=None),
-            AR1VariationalBottleneck(latent_size, rngs, kl_weight=0.01, ar1_weight=0.1),
-            Dense(latent_size, action_size * 2, rngs, activation=None),
-        ])
+        actor = Sequential(
+            [
+                Dense(obs_size, 32, rngs, activation=nnx.relu),
+                Dense(32, latent_size * 2, rngs, activation=None),
+                AR1VariationalBottleneck(
+                    latent_size, rngs, kl_weight=0.01, ar1_weight=0.1
+                ),
+                Dense(latent_size, action_size * 2, rngs, activation=None),
+            ]
+        )
 
         # Critic: simple MLP
-        critic = Sequential([
-            Dense(obs_size, 32, rngs, activation=nnx.relu),
-            Dense(32, 1, rngs, activation=None),
-        ])
+        critic = Sequential(
+            [
+                Dense(obs_size, 32, rngs, activation=nnx.relu),
+                Dense(32, 1, rngs, activation=None),
+            ]
+        )
 
         sampler = NormalTanhSampler(rngs, entropy_weight=1e-3)
         networks = PPOActorCritic(actor=actor, critic=critic, action_sampler=sampler)
@@ -61,28 +68,30 @@ class AR1RolloutTest(absltest.TestCase):
 
         # Check that multiple resets occurred
         total_dones = jp.sum(rollout_data.done)
-        self.assertGreater(float(total_dones), 0, "Expected at least one reset to occur")
+        self.assertGreater(
+            float(total_dones), 0, "Expected at least one reset to occur"
+        )
 
         # Check no NaNs in network outputs
         self.assertFalse(
             jp.any(jp.isnan(rollout_data.network_output.actions)),
-            "NaN found in actions"
+            "NaN found in actions",
         )
         self.assertFalse(
             jp.any(jp.isnan(rollout_data.network_output.raw_actions)),
-            "NaN found in raw_actions"
+            "NaN found in raw_actions",
         )
         self.assertFalse(
             jp.any(jp.isnan(rollout_data.network_output.loglikelihoods)),
-            "NaN found in loglikelihoods"
+            "NaN found in loglikelihoods",
         )
         self.assertFalse(
             jp.any(jp.isnan(rollout_data.network_output.value_estimates)),
-            "NaN found in value_estimates"
+            "NaN found in value_estimates",
         )
         self.assertFalse(
             jp.any(jp.isnan(rollout_data.network_output.regularization_loss)),
-            "NaN found in regularization_loss"
+            "NaN found in regularization_loss",
         )
 
         # Note: The internal state (last_z) CAN contain NaN for envs that just reset.
@@ -94,7 +103,9 @@ class AR1RolloutTest(absltest.TestCase):
         latent_size = 8
         batch_size = 4
 
-        ar1 = AR1VariationalBottleneck(latent_size, rngs, kl_weight=0.01, ar1_weight=1.0)
+        ar1 = AR1VariationalBottleneck(
+            latent_size, rngs, kl_weight=0.01, ar1_weight=1.0
+        )
 
         # Initialize state (has NaN in last_z)
         state = ar1.initialize_state(batch_size)
@@ -120,7 +131,9 @@ class AR1RolloutTest(absltest.TestCase):
         latent_size = 8
         batch_size = 4
 
-        ar1 = AR1VariationalBottleneck(latent_size, rngs, kl_weight=0.01, ar1_weight=1.0)
+        ar1 = AR1VariationalBottleneck(
+            latent_size, rngs, kl_weight=0.01, ar1_weight=1.0
+        )
 
         # Initialize and run a few steps to get valid prev_z
         state = ar1.initialize_state(batch_size)
@@ -141,7 +154,9 @@ class AR1RolloutTest(absltest.TestCase):
 
         # Next forward pass should have zero l2_diff
         output_after_reset = ar1(reset_state, x)
-        self.assertTrue(jp.allclose(output_after_reset.metrics["l2_diff"], jp.zeros(batch_size)))
+        self.assertTrue(
+            jp.allclose(output_after_reset.metrics["l2_diff"], jp.zeros(batch_size))
+        )
 
     def test_partial_batch_reset(self):
         """Test that partial batch resets work correctly (some envs reset, others don't)."""
@@ -149,7 +164,9 @@ class AR1RolloutTest(absltest.TestCase):
         latent_size = 8
         batch_size = 4
 
-        ar1 = AR1VariationalBottleneck(latent_size, rngs, kl_weight=0.01, ar1_weight=1.0)
+        ar1 = AR1VariationalBottleneck(
+            latent_size, rngs, kl_weight=0.01, ar1_weight=1.0
+        )
 
         # Initialize and run a few steps
         state = ar1.initialize_state(batch_size)
@@ -198,30 +215,36 @@ class AR1RolloutTest(absltest.TestCase):
         env = MockEnv(obs_size, action_size, max_steps=max_steps)
 
         # Create network with AR1VariationalBottleneck
-        actor = Sequential([
-            Dense(obs_size, 32, rngs, activation=nnx.relu),
-            Dense(32, latent_size * 2, rngs, activation=None),
-            AR1VariationalBottleneck(latent_size, rngs, kl_weight=0.01, ar1_weight=0.1),
-            Dense(latent_size, action_size * 2, rngs, activation=None),
-        ])
+        actor = Sequential(
+            [
+                Dense(obs_size, 32, rngs, activation=nnx.relu),
+                Dense(32, latent_size * 2, rngs, activation=None),
+                AR1VariationalBottleneck(
+                    latent_size, rngs, kl_weight=0.01, ar1_weight=0.1
+                ),
+                Dense(latent_size, action_size * 2, rngs, activation=None),
+            ]
+        )
 
-        critic = Sequential([
-            Dense(obs_size, 32, rngs, activation=nnx.relu),
-            Dense(32, 1, rngs, activation=None),
-        ])
+        critic = Sequential(
+            [
+                Dense(obs_size, 32, rngs, activation=nnx.relu),
+                Dense(32, 1, rngs, activation=None),
+            ]
+        )
 
         sampler = NormalTanhSampler(rngs, entropy_weight=1e-3)
         networks = PPOActorCritic(actor=actor, critic=critic, action_sampler=sampler)
 
         # Create training state
         training_state = new_training_state(
-            env, networks, n_envs, seed=42,
-            learning_rate=1e-4, gradient_clipping=1.0
+            env, networks, n_envs, seed=42, learning_rate=1e-4, gradient_clipping=1.0
         )
 
         # Run ppo_step
         new_state, metrics = ppo_step(
-            env, training_state,
+            env,
+            training_state,
             n_envs=n_envs,
             rollout_length=rollout_length,
             gae_lambda=0.95,
@@ -236,25 +259,22 @@ class AR1RolloutTest(absltest.TestCase):
         # Check no NaNs in losses (metrics have /mean suffix from _log_metric)
         self.assertFalse(
             jp.any(jp.isnan(metrics["losses/actor/mean"])),
-            f"NaN found in actor loss: {metrics['losses/actor/mean']}"
+            f"NaN found in actor loss: {metrics['losses/actor/mean']}",
         )
         self.assertFalse(
             jp.any(jp.isnan(metrics["losses/critic/mean"])),
-            f"NaN found in critic loss: {metrics['losses/critic/mean']}"
+            f"NaN found in critic loss: {metrics['losses/critic/mean']}",
         )
         self.assertFalse(
             jp.any(jp.isnan(metrics["losses/regularization/mean"])),
-            f"NaN found in regularization loss: {metrics['losses/regularization/mean']}"
+            f"NaN found in regularization loss: {metrics['losses/regularization/mean']}",
         )
 
         # Check no NaNs in network parameters after update
         params = nnx.state(new_state.networks, nnx.Param)
         for leaf in jax.tree.leaves(params):
-            self.assertFalse(
-                jp.any(jp.isnan(leaf)),
-                f"NaN found in network parameters"
-            )
+            self.assertFalse(jp.any(jp.isnan(leaf)), f"NaN found in network parameters")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     absltest.main()

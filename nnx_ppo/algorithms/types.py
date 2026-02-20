@@ -1,4 +1,5 @@
 """Runtime types for the PPO algorithm."""
+
 from typing import Any, Dict, Union
 import enum
 import mujoco_playground
@@ -23,6 +24,7 @@ class TrainingState:
 @flax.struct.dataclass
 class Transition:
     """Environment state for training and inference."""
+
     obs: Any
     network_output: PPONetworkOutput
     rewards: Union[Dict, jax.Array]
@@ -42,5 +44,14 @@ class LoggingLevel(enum.Flag):
     GRAD_NORM = enum.auto()
     WEIGHTS = enum.auto()
     BASIC = LOSSES
-    ALL = LOSSES | ACTOR_EXTRA | CRITIC_EXTRA | TRAIN_ROLLOUT_STATS | TRAINING_ENV_METRICS | GRAD_NORM | WEIGHTS | ROLLOUT_OBS
+    ALL = (
+        LOSSES
+        | ACTOR_EXTRA
+        | CRITIC_EXTRA
+        | TRAIN_ROLLOUT_STATS
+        | TRAINING_ENV_METRICS
+        | GRAD_NORM
+        | WEIGHTS
+        | ROLLOUT_OBS
+    )
     NONE = 0

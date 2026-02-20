@@ -6,45 +6,46 @@ from flax import nnx
 
 from nnx_ppo.networks import types
 
+
 class MoveFromCenterEnv:
-    '''Dummy environment with continuous steps in 2D. The agent is penalized for being
-       close to the origin. Episode ends if the agent reaches the border. In this env,
-       short lifespans are preferred.'''
+    """Dummy environment with continuous steps in 2D. The agent is penalized for being
+    close to the origin. Episode ends if the agent reaches the border. In this env,
+    short lifespans are preferred."""
 
     def __init__(self, border_radius=2.0):
         self.border_radius = border_radius
 
     def reset(self, rng):
         phi, rad = jax.random.uniform(rng, (2,))
-        rad *= self.border_radius*0.9
-        pos = jp.array([jp.cos(2*jp.pi*phi)*rad, jp.sin(2*jp.pi*phi)*rad])
+        rad *= self.border_radius * 0.9
+        pos = jp.array([jp.cos(2 * jp.pi * phi) * rad, jp.sin(2 * jp.pi * phi) * rad])
         data = dict(pos=pos)
         return self._get_state(data)
-    
+
     def step(self, state: mujoco_playground.State, action: jax.Array):
         action = jp.clip(action, -1, 1)
         state = state.replace(
-            data = dict(pos=state.data["pos"] + action),
+            data=dict(pos=state.data["pos"] + action),
         )
         return self._get_state(state.data)
-    
+
     def _get_state(self, data):
         d = jp.linalg.norm(data["pos"])
-        #Reward is negative, encouraging the agent to "escape" to the border
-        reward = d/self.border_radius - 1.0
+        # Reward is negative, encouraging the agent to "escape" to the border
+        reward = d / self.border_radius - 1.0
         return mujoco_playground.State(
-            data = data,
-            obs = data["pos"],
-            info = {},
-            reward = reward,
-            done = jp.where(d > self.border_radius, 1.0, 0.0),
-            metrics = {}
+            data=data,
+            obs=data["pos"],
+            info={},
+            reward=reward,
+            done=jp.where(d > self.border_radius, 1.0, 0.0),
+            metrics={},
         )
-    
+
     @property
     def observation_size(self):
         return 2
-    
+
     @property
     def action_size(self):
         return 2

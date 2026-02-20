@@ -1,5 +1,7 @@
 """Rodent imitation learning with simple MLP architecture."""
+
 import os
+
 os.environ["MUJOCO_GL"] = "egl"
 os.environ["PYOPENGL_PLATFORM"] = "egl"
 
@@ -16,11 +18,8 @@ from vnl_playground.tasks.wrappers import FlattenObsWrapper
 from nnx_ppo.networks.factories import make_mlp_actor_critic
 from nnx_ppo.algorithms import ppo
 from nnx_ppo.algorithms.types import LoggingLevel
-from nnx_ppo.algorithms.config import (
-    TrainConfig, PPOConfig, EvalConfig, VideoConfig
-)
+from nnx_ppo.algorithms.config import TrainConfig, PPOConfig, EvalConfig, VideoConfig
 from nnx_ppo.algorithms.callbacks import wandb_video_fn
-
 
 SEED = 40
 env_config = default_config()
@@ -85,10 +84,7 @@ eval_env = train_env
 rngs = nnx.Rngs(SEED)
 
 nets = make_mlp_actor_critic(
-    train_env.observation_size,
-    train_env.action_size,
-    rngs=rngs,
-    **net_config
+    train_env.observation_size, train_env.action_size, rngs=rngs, **net_config
 )
 
 # Initialize wandb
@@ -119,5 +115,7 @@ result = ppo.train_ppo(
     eval_env=eval_env,
 )
 
-print(f"Training complete: {result.total_steps} steps, {result.total_iterations} iterations")
+print(
+    f"Training complete: {result.total_steps} steps, {result.total_iterations} iterations"
+)
 print(f"Final eval reward: {result.eval_history[-1].get('episode_reward_mean', 'N/A')}")

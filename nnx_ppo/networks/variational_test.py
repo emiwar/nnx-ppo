@@ -44,14 +44,19 @@ class VariationalBottleneckTest(absltest.TestCase):
         """KL divergence should be ~0 when input encodes standard normal."""
         latent_size = 16
         batch_size = 32
-        vb = VariationalBottleneck(latent_size=latent_size, rng=nnx.Rngs(42), kl_weight=1.0)
+        vb = VariationalBottleneck(
+            latent_size=latent_size, rng=nnx.Rngs(42), kl_weight=1.0
+        )
         state = vb.initialize_state(batch_size)
         # Mean=0, softplus^-1(1 - min_std) ≈ softplus^-1(1) ≈ 0.54
         # For softplus(x) + min_std = 1, we need softplus(x) ≈ 1, so x ≈ 0.54
-        x = jp.concatenate([
-            jp.zeros((batch_size, latent_size)),  # mean = 0
-            jp.full((batch_size, latent_size), 0.54),  # softplus(0.54) ≈ 1
-        ], axis=-1)
+        x = jp.concatenate(
+            [
+                jp.zeros((batch_size, latent_size)),  # mean = 0
+                jp.full((batch_size, latent_size), 0.54),  # softplus(0.54) ≈ 1
+            ],
+            axis=-1,
+        )
         output = vb(state, x)
         # KL should be close to 0 for standard normal
         self.assertLess(jp.mean(output.metrics["kl_divergence"]), 0.1)
@@ -59,23 +64,31 @@ class VariationalBottleneckTest(absltest.TestCase):
     def test_kl_divergence_increases_with_mean(self):
         """KL divergence should increase as mean deviates from 0."""
         latent_size = 8
-        vb = VariationalBottleneck(latent_size=latent_size, rng=nnx.Rngs(42), kl_weight=1.0)
+        vb = VariationalBottleneck(
+            latent_size=latent_size, rng=nnx.Rngs(42), kl_weight=1.0
+        )
         state = vb.initialize_state(1)
         # Input with mean=0
-        x_zero = jp.concatenate([
-            jp.zeros((1, latent_size)),
-            jp.zeros((1, latent_size)),
-        ], axis=-1)
+        x_zero = jp.concatenate(
+            [
+                jp.zeros((1, latent_size)),
+                jp.zeros((1, latent_size)),
+            ],
+            axis=-1,
+        )
         output_zero = vb(state, x_zero)
         # Input with mean=5
-        x_large = jp.concatenate([
-            jp.full((1, latent_size), 5.0),
-            jp.zeros((1, latent_size)),
-        ], axis=-1)
+        x_large = jp.concatenate(
+            [
+                jp.full((1, latent_size), 5.0),
+                jp.zeros((1, latent_size)),
+            ],
+            axis=-1,
+        )
         output_large = vb(state, x_large)
         self.assertGreater(
             float(output_large.metrics["kl_divergence"][0]),
-            float(output_zero.metrics["kl_divergence"][0])
+            float(output_zero.metrics["kl_divergence"][0]),
         )
 
     def test_kl_weight_scales_loss(self):
@@ -87,7 +100,9 @@ class VariationalBottleneckTest(absltest.TestCase):
         output_low = vb_low(state, x)
         output_high = vb_high(state, x)
         # regularization_loss is per-batch, so sum to compare
-        ratio = jp.sum(output_high.regularization_loss) / jp.sum(output_low.regularization_loss)
+        ratio = jp.sum(output_high.regularization_loss) / jp.sum(
+            output_low.regularization_loss
+        )
         self.assertAlmostEqual(float(ratio), 10.0, places=5)
 
     def test_sampling_stochasticity(self):
@@ -108,11 +123,17 @@ class VariationalBottleneckTest(absltest.TestCase):
         obs_size = 16
         hidden_size = 32
         batch_size = 4
-        seq = Sequential([
-            make_mlp([obs_size, hidden_size, latent_size * 2], rngs, activation_last_layer=False),
-            VariationalBottleneck(latent_size, rngs, kl_weight=0.01),
-            make_mlp([latent_size, hidden_size], rngs),
-        ])
+        seq = Sequential(
+            [
+                make_mlp(
+                    [obs_size, hidden_size, latent_size * 2],
+                    rngs,
+                    activation_last_layer=False,
+                ),
+                VariationalBottleneck(latent_size, rngs, kl_weight=0.01),
+                make_mlp([latent_size, hidden_size], rngs),
+            ]
+        )
         state = seq.initialize_state(batch_size)
         x = jp.ones((batch_size, obs_size))
         output = seq(state, x)
@@ -153,5 +174,5 @@ class VariationalBottleneckTest(absltest.TestCase):
         self.assertTrue(jp.allclose(output_full.output[4:], output_mb2.output))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     absltest.main()
