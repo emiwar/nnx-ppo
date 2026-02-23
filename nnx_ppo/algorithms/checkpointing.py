@@ -66,10 +66,12 @@ def make_checkpoint_fn(
         ... )
     """
 
+    abs_directory = os.path.abspath(directory)
+
     def checkpoint_fn(training_state: TrainingState, step: int) -> None:
         import orbax.checkpoint as ocp
 
-        step_dir = os.path.join(directory, f"step_{step:010d}")
+        step_dir = os.path.join(abs_directory, f"step_{step:010d}")
         os.makedirs(step_dir, exist_ok=True)
 
         # Split network state: everything except RngKey → orbax, RngKey → pickle.
@@ -146,6 +148,8 @@ def load_checkpoint(
         ... )
     """
     import orbax.checkpoint as ocp
+
+    path = os.path.abspath(path)
 
     # Build abstract targets from the user-provided templates.
     # Use ... to capture remaining variables (RngKey) that we restore via pickle.
