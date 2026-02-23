@@ -45,6 +45,7 @@ def train_ppo(
     seed: Optional[int] = None,
     log_fn: Optional[Callable[[dict[str, Any], int], None]] = None,
     video_fn: Optional[Callable[[VideoData], None]] = None,
+    checkpoint_fn: Optional[Callable[[TrainingState, int], None]] = None,
     eval_env: Optional[RLEnv] = None,
     initial_state: Optional[TrainingState] = None,
 ) -> TrainResult:
@@ -60,6 +61,9 @@ def train_ppo(
                 If None, no logging is performed.
         video_fn: Called with VideoData after rendering eval episodes.
                   If None, no videos are recorded even if config.video.enabled.
+        checkpoint_fn: Called with (training_state, step) at
+                       config.checkpoint_every_steps intervals.
+                       If None, no checkpointing is performed.
         eval_env: Environment for evaluation rollouts. If None, uses env.
         initial_state: Resume training from an existing TrainingState.
                        If None, creates a new TrainingState.
@@ -106,6 +110,7 @@ def train_ppo(
     eval_history: list[dict[str, Any]] = []
     last_eval_step = -config.eval.every_steps  # Ensure eval at step 0
     last_video_step = -config.video.every_steps  # Ensure video at step 0
+    last_checkpoint_step = -config.checkpoint_every_steps  # Ensure checkpoint at step 0
     metrics: dict[str, Any] = {}
     n_iterations = 0
 
@@ -145,7 +150,7 @@ def train_ppo(
         video_fn(video_data)
         networks.train()
 
-    # Initial eval/video at step 0
+    # Initial eval/video/checkpoint at step 0
     steps = int(training_state.steps_taken)
     if config.eval.enabled:
         eval_metrics = run_eval(steps)
@@ -155,6 +160,11 @@ def train_ppo(
     if config.video.enabled:
         run_video(steps, n_iterations)
         last_video_step = steps
+    if checkpoint_fn is not None and _should_run(
+        steps, last_checkpoint_step, config.checkpoint_every_steps
+    ):
+        checkpoint_fn(training_state, steps)
+        last_checkpoint_step = steps
     if log_fn is not None and metrics:
         log_fn(metrics, steps)
 
@@ -193,6 +203,13 @@ def train_ppo(
         ):
             run_video(steps, n_iterations)
             last_video_step = steps
+
+        # Checkpointing
+        if checkpoint_fn is not None and _should_run(
+            steps, last_checkpoint_step, config.checkpoint_every_steps
+        ):
+            checkpoint_fn(training_state, steps)
+            last_checkpoint_step = steps
 
         # Logging
         if log_fn is not None:

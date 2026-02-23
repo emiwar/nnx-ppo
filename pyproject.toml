@@ -10,6 +10,7 @@ dependencies = [
     "flax>=0.12.4",
     "jax[cuda12]",
     "ml_collections",
+    "orbax-checkpoint",
     "playground",
     "jaxtyping",
 ]

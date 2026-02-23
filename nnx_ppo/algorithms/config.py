@@ -63,6 +63,7 @@ class TrainConfig:
     eval: EvalConfig = field(default_factory=EvalConfig)
     video: VideoConfig = field(default_factory=VideoConfig)
     seed: int = 17
+    checkpoint_every_steps: int = 500_000
 
 
 @dataclass
