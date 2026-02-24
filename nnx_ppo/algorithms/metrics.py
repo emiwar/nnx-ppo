@@ -6,7 +6,7 @@ from collections.abc import Mapping
 import jax
 import jax.numpy as jp
 from flax import nnx
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, PyTree
 
 from nnx_ppo.networks.types import PPONetwork
 from nnx_ppo.algorithms.types import LoggingLevel
@@ -14,7 +14,7 @@ from nnx_ppo.algorithms.rollout import Transition
 
 
 def compute_metrics(
-    loss_metrics: dict[str, Float[Array, "..."]],
+    loss_metrics: dict[str, PyTree],
     rollout_data: Transition,
     logging_level: LoggingLevel,
     percentile_levels: Optional[tuple[int, ...]] = None,

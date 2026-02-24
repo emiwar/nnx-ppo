@@ -9,6 +9,12 @@ from nnx_ppo.algorithms import rollout, ppo
 from nnx_ppo.algorithms.types import LoggingLevel
 from nnx_ppo.algorithms.config import PPOConfig, EvalConfig, TrainConfig
 import nnx_ppo.test_dummies.move_to_center_env
+from nnx_ppo.test_dummies.dict_obs_act_env import (
+    DictObsActEnv,
+    DictObsActNet,
+    TwoArmEnv,
+    TwoArmNet,
+)
 
 
 class PPOTest(absltest.TestCase):
@@ -229,7 +235,8 @@ class PPOTest(absltest.TestCase):
 
         ppo_advantages = ppo.gae(
             rewards=jp.array(rewards),
-            values=jp.array(values),
+            values_excl_last=jp.array(values[:-1]),
+            last_value=jp.array(values[-1]),
             done=jp.array(done, dtype=bool),
             truncation=jp.array(truncation, dtype=bool),
             lambda_=lambda_,
@@ -320,3 +327,62 @@ class PPOTest(absltest.TestCase):
             # Arbitrary threshold that empirically has been reasonably easy to reach
             if training_state.steps_taken > 1_500_000:
                 self.assertGreater(metrics["episode_reward_mean"].max(), 95.0)
+
+
+class DictObsActTest(absltest.TestCase):
+
+    def test_ppo_step_dict_obs_act(self):
+        """Verify dict obs and dict actions pipe correctly through ppo_step."""
+        SEED = 42
+        env = DictObsActEnv()
+        nets = DictObsActNet(nnx.Rngs(SEED))
+        config = PPOConfig(n_envs=8, rollout_length=4, n_epochs=2, n_minibatches=2)
+        training_state = ppo.new_training_state(env, nets, config.n_envs, SEED)
+        self.assertEqual(training_state.steps_taken, 0)
+        training_state, metrics = ppo.ppo_step(
+            env,
+            training_state,
+            config.n_envs,
+            config.rollout_length,
+            config.gae_lambda,
+            config.discounting_factor,
+            config.clip_range,
+            config.normalize_advantages,
+            config.n_epochs,
+            config.n_minibatches,
+            # Avoid LoggingLevel.ACTOR_EXTRA: it accesses metrics["action_sampler"]
+            # which is not provided by DictObsActNet.
+            LoggingLevel.LOSSES,
+        )
+        self.assertEqual(
+            training_state.steps_taken, config.n_envs * config.rollout_length
+        )
+        for k, v in metrics.items():
+            self.assertTrue(jp.all(jp.isfinite(v)), f"metrics[{k}] not finite.")
+
+    def test_ppo_step_dict_rewards(self):
+        """Verify dict rewards with per-component value estimates pipe correctly through ppo_step."""
+        SEED = 43
+        env = TwoArmEnv()
+        nets = TwoArmNet(nnx.Rngs(SEED))
+        config = PPOConfig(n_envs=8, rollout_length=4, n_epochs=2, n_minibatches=2)
+        training_state = ppo.new_training_state(env, nets, config.n_envs, SEED)
+        self.assertEqual(training_state.steps_taken, 0)
+        training_state, metrics = ppo.ppo_step(
+            env,
+            training_state,
+            config.n_envs,
+            config.rollout_length,
+            config.gae_lambda,
+            config.discounting_factor,
+            config.clip_range,
+            config.normalize_advantages,
+            config.n_epochs,
+            config.n_minibatches,
+            LoggingLevel.LOSSES | LoggingLevel.CRITIC_EXTRA,
+        )
+        self.assertEqual(
+            training_state.steps_taken, config.n_envs * config.rollout_length
+        )
+        for k, v in metrics.items():
+            self.assertTrue(jp.all(jp.isfinite(v)), f"metrics[{k}] not finite.")

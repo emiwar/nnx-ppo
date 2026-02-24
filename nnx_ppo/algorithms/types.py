@@ -59,7 +59,7 @@ class Transition(JaxDataclass):
 
     obs: PyTree[Float[Array, "..."]]
     network_output: PPONetworkOutput
-    rewards: Float[Array, "*time batch"]
+    rewards: PyTree[Float[Array, "*time batch"]]
     done: Bool[Array, "*time batch"]
     truncated: Bool[Array, "*time batch"]
     next_obs: PyTree[Float[Array, "..."]]  # Same pytree structure as obs

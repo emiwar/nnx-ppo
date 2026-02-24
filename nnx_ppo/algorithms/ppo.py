@@ -1,6 +1,7 @@
 from typing import Any, Optional
 from collections.abc import Callable
 import dataclasses
+import functools
 
 import numpy as np
 
@@ -23,6 +24,7 @@ from nnx_ppo.algorithms.config import (
     TrainResult,
 )
 from nnx_ppo.algorithms.metrics import compute_metrics, log_weight_stats
+
 
 def default_config() -> TrainConfig:
     """Return default training configuration."""
@@ -321,12 +323,15 @@ def ppo_step(
 
 def gae(
     rewards: Float[Array, "time batch"],
-    values: Float[Array, "time_plus_1 batch"],
+    values_excl_last: Float[Array, "time batch"],
+    last_value: Float[Array, "batch"],
     done: Bool[Array, "time batch"],
     truncation: Bool[Array, "time batch"],
     lambda_: ScalarLike,
     gamma: ScalarLike,
 ) -> Float[Array, "time batch"]:
+    last_value = last_value.reshape((1, last_value.shape[0]))
+    values = jp.concatenate((values_excl_last, last_value), axis=0)
     assert values.shape == (rewards.shape[0] + 1, rewards.shape[1])
 
     def inner_step(next_advantage, reward, old_value, next_value, done, truncated):
@@ -352,7 +357,7 @@ def gae(
         done=done,
         truncated=truncation,
     )
-    return advantages
+    return jax.lax.stop_gradient(advantages)
 
 
 def ppo_loss(
@@ -392,43 +397,65 @@ def ppo_loss(
 
     last_obs = jax.tree.map(lambda x: x[-1], rollout_data.next_obs)
     _, network_output_last = networks(next_net_state_again, last_obs)
-    last_value = jax.lax.stop_gradient(network_output_last.value_estimates)
-    last_value = last_value.reshape((1, last_value.shape[0]))
-    values_excl_last = network_output.value_estimates
-    values_incl_last = jp.concatenate((values_excl_last, last_value), axis=0)
-    advantages = gae(
-        rewards=rollout_data.rewards,
-        values=values_incl_last,
-        done=rollout_data.done,
-        truncation=rollout_data.truncated,
-        lambda_=gae_lambda,
-        gamma=discounting_factor,
+
+    # If done is flat, assume it is shared among all agents
+    done = rollout_data.done
+    truncated = rollout_data.truncated
+    if isinstance(done, jax.Array):
+        done = jax.tree.map(lambda _: done, rollout_data.rewards)
+        truncated = jax.tree.map(lambda _: truncated, rollout_data.rewards)
+
+    # Compute advantages per reward key
+    advantages = jax.tree.map(
+        functools.partial(gae, lambda_=gae_lambda, gamma=discounting_factor),
+        rollout_data.rewards,
+        network_output.value_estimates,
+        network_output_last.value_estimates,
+        done,
+        truncated,
     )
     advantages = jax.lax.stop_gradient(advantages)
-    target_values = jax.lax.stop_gradient(values_excl_last + advantages)
-
-    if normalize_advantages:
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        advantages = jax.lax.stop_gradient(advantages)
-
-    old_loglikelihoods = jax.lax.stop_gradient(
-        rollout_data.network_output.loglikelihoods
+    target_values = jax.lax.stop_gradient(
+        jax.tree.map(jp.add, network_output.value_estimates, advantages)
     )
-    likelihood_ratios = jp.exp(network_output.loglikelihoods - old_loglikelihoods)
-    loss_cand1 = likelihood_ratios * advantages
-    loss_cand2 = jp.clip(likelihood_ratios, 1 - clip_range, 1 + clip_range) * advantages
+    if normalize_advantages:
+        advantages = jax.tree.map(
+            lambda a: (a - a.mean()) / (a.std() + 1e-8), advantages
+        )
 
+    def clipped_loss(new_loglikelihoods, old_loglikelihoods, advantages):
+        likelihood_ratios = jp.exp(new_loglikelihoods - old_loglikelihoods)
+        loss_cand1 = likelihood_ratios * advantages
+        loss_cand2 = (
+            jp.clip(likelihood_ratios, 1 - clip_range, 1 + clip_range) * advantages
+        )
+        return -jp.mean(jp.minimum(loss_cand1, loss_cand2))
+
+    actor_losses = jax.tree.map(
+        clipped_loss,
+        network_output.loglikelihoods,
+        rollout_data.network_output.loglikelihoods,
+        advantages,
+    )
+    critic_losses = jax.tree.map(
+        lambda v, t: 0.5 * jp.mean((v - t) ** 2),
+        network_output.value_estimates,
+        target_values,
+    )
     # Note that it's the network's responsiblity to add entropy loss as one particular
     # instance of a regularization loss.
-    actor_loss = -jp.mean(jp.minimum(loss_cand1, loss_cand2))
-    critic_loss = 0.5 * jp.mean((network_output.value_estimates - target_values) ** 2)
-    regularization_loss = jp.mean(network_output.regularization_loss)
+    regularization_losses = jax.tree.map(jp.mean, network_output.regularization_loss)
+
+    actor_loss = jax.tree.reduce(jp.add, actor_losses)
+    critic_loss = jax.tree.reduce(jp.add, critic_losses)
+    regularization_loss = jax.tree.reduce(jp.add, regularization_losses)
 
     loss_metrics = dict()
     if LoggingLevel.LOSSES in logging_level:
-        loss_metrics["losses/actor"] = actor_loss
-        loss_metrics["losses/critic"] = critic_loss
-        loss_metrics["losses/regularization"] = regularization_loss
+        loss_metrics["losses/actor"] = actor_losses
+        loss_metrics["losses/critic"] = critic_losses
+        loss_metrics["losses/regularization"] = regularization_losses
+    """
     if LoggingLevel.ACTOR_EXTRA in logging_level:
         loss_metrics["correlations/ll_advantage"] = jp.corrcoef(
             rollout_data.network_output.loglikelihoods.flatten(), advantages.flatten()
@@ -460,22 +487,15 @@ def ppo_loss(
             network_output.metrics["action_sampler"]["sigma"]
             / rollout_data.network_output.metrics["action_sampler"]["sigma"]
         )
+    """
     if LoggingLevel.CRITIC_EXTRA in logging_level:
-        loss_metrics["losses/predicted_value"] = values_excl_last
+        # loss_metrics["losses/predicted_value"] = values_excl_last
         loss_metrics["losses/advantages"] = advantages
-        loss_metrics["losses/advantages_NaN"] = 1.0 - jp.isfinite(advantages).mean()
-        loss_metrics["losses/critic_R^2"] = 1.0 - 2 * critic_loss / (
-            jp.var(target_values) + 1e-8
-        )
-
+        # loss_metrics["losses/advantages_NaN"] = 1.0 - jp.isfinite(advantages).mean()
+        # loss_metrics["losses/critic_R^2"] = 1.0 - 2 * critic_loss / (
+        #    jp.var(target_values) + 1e-8
+        # )
     total_loss = actor_loss + critic_loss + regularization_loss
-
-    # Sometimes, for some inexplicable reason, the network produces garbage outputs
-    # during this function, but not during earlier rollouts. So a heuristic is that
-    # if the _mean_ likelihood ratio is out of clipping bounds, the minibatch is bad
-    # and we just ignore it by setting the loss to 0.0.
-    # total_loss *= jp.median(likelihood_ratios) > (1-clip_range)
-    # total_loss *= jp.median(likelihood_ratios) < (1+clip_range)
 
     return total_loss, loss_metrics
 

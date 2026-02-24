@@ -63,8 +63,34 @@ def unroll_env(
         out_axes=(nnx.Carry, 0),
         length=unroll_length,
     )(networks, (network_state, env_state), rng_keys_for_env_reset)
-    assert rollout.network_output.value_estimates.shape == rollout.rewards.shape
+    shapes_match = jax.tree.map(
+        lambda v, r: v.shape == r.shape,
+        rollout.network_output.value_estimates,
+        rollout.rewards,
+    )
+    assert all(jax.tree.leaves(shapes_match))
     return final_network_state, final_env_state, rollout
+
+
+def _add_reward_metrics(
+    out: dict,
+    name: str,
+    reward: Any,
+    percentile_levels: Optional[tuple[int, ...]],
+) -> None:
+    """Recursively build named metrics from a reward PyTree (scalar array or dict)."""
+    from collections.abc import Mapping
+
+    if isinstance(reward, Mapping):
+        for k, v in reward.items():
+            _add_reward_metrics(out, f"{name}/{k}", v, percentile_levels)
+    elif percentile_levels is not None:
+        percentiles = jp.percentile(reward, jp.array(percentile_levels))
+        for pl, p in zip(percentile_levels, percentiles):
+            out[f"{name}/p{int(pl)}"] = p
+    else:
+        out[f"{name}/mean"] = reward.mean()
+        out[f"{name}/std"] = reward.std()
 
 
 def eval_rollout(
@@ -87,7 +113,11 @@ def eval_rollout(
             done=jp.logical_or(next_env_state.done, env_state.done).astype(float)
         )
         # Only accumulate reward if env was not already done before this step
-        cuml_reward += jp.where(env_state.done, 0.0, next_env_state.reward)
+        reward_this_step = jax.tree.map(
+            lambda r: jp.where(env_state.done, jp.zeros_like(r), r),
+            next_env_state.reward,
+        )
+        cuml_reward = jax.tree.map(jp.add, cuml_reward, reward_this_step)
         lifespan += jp.where(next_env_state.done, 0.0, 1.0)
         return next_env_state, next_network_state, cuml_reward, lifespan
 
@@ -98,20 +128,20 @@ def eval_rollout(
         out_axes=nnx.Carry,
         length=max_episode_length,
     )
-    init_carry = (env_states, net_states, env_states.reward, jp.zeros(n_envs))
+    init_carry = (
+        env_states,
+        net_states,
+        jax.tree.map(jp.zeros_like, env_states.reward),
+        jp.zeros(n_envs),
+    )
     _, _, cuml_reward, lifespan = step_scan(networks, init_carry)
 
-    metrics = dict(
-        episode_reward_mean=cuml_reward.mean(),
-        episode_reward_std=cuml_reward.std(),
-        lifespan_mean=lifespan.mean(),
-        lifespan_std=lifespan.std(),
-    )
+    metrics = dict(lifespan_mean=lifespan.mean(), lifespan_std=lifespan.std())
+    _add_reward_metrics(metrics, "episode_reward", cuml_reward, logging_percentiles)
     if logging_percentiles is not None:
-        for name, arr in [("episode_reward", cuml_reward), ("lifespan", lifespan)]:
-            percentiles = jp.percentile(arr, jp.array(logging_percentiles))
-            for pl, p in zip(logging_percentiles, percentiles):
-                metrics[f"{name}/p{int(pl)}"] = p
+        percentiles = jp.percentile(lifespan, jp.array(logging_percentiles))
+        for pl, p in zip(logging_percentiles, percentiles):
+            metrics[f"lifespan/p{int(pl)}"] = p
     return metrics
 
 
@@ -143,9 +173,10 @@ def eval_rollout_for_render_scan(
         action = network_output.actions[0]
 
         next_env_state = env.step(env_state, action)
-        # Only accumulate reward if not already done
+        # Only accumulate reward if not already done; sum components for scalar total
+        reward_sum = sum(jax.tree.leaves(next_env_state.reward))
         new_cumulative_reward = cumulative_reward + jp.where(
-            already_done, 0.0, next_env_state.reward
+            already_done, 0.0, reward_sum
         )
         new_already_done = jp.logical_or(already_done, next_env_state.done)
         next_env_state = jax.lax.cond(

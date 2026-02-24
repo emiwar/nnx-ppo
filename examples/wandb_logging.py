@@ -95,7 +95,7 @@ wandb.init(
     },
     name=exp_name,
     tags=(env_name,),
-    notes="Using new train_ppo API",
+    notes="Test multi-agent refactor on single-agent env.",
 )
 
 # Train with wandb callbacks

@@ -11,11 +11,13 @@ from nnx_ppo.jax_dataclass import JaxDataclass
 @jax.tree_util.register_pytree_node_class
 @dataclasses.dataclass(frozen=True)
 class PPONetworkOutput(JaxDataclass):
-    actions: Float[Array, "*time batch action_dim"]
-    raw_actions: Float[Array, "*time batch action_dim"]
-    loglikelihoods: Float[Array, "*time batch"]
+    # actions and raw_actions are Any (not Float[Array, ...]) to support dict/PyTree
+    # actions for multi-agent or modular networks. See PPONetwork.__call__ docstring.
+    actions: Any
+    raw_actions: Any
+    loglikelihoods: PyTree[Float[Array, "*time batch"]]
     regularization_loss: Float[Array, "..."]  # Scalar or batch-sized; broadcastable
-    value_estimates: Float[Array, "*time batch"]
+    value_estimates: Any  # Float[Array, "*time batch"] or dict thereof for multi-reward networks
     metrics: dict[str, Any]
 
 
@@ -29,7 +31,7 @@ class PPONetwork(abc.ABC):
         self,
         network_state: ModuleState,
         obs: PyTree,
-        raw_action: Optional[Float[Array, "batch action_dim"]] = None,
+        raw_action: Optional[Any] = None,
     ) -> tuple[ModuleState, PPONetworkOutput]:
         """Apply both actor and critic networks to the environment observation `obs`.
 

@@ -52,15 +52,19 @@ def _make_ar1vb_nets(env, seed: int = 17):
     obs_size = env.observation_size
     action_size = env.action_size
 
-    actor = Sequential([
-        Dense(obs_size, _LATENT_SIZE * 2, rngs, activation=nnx.relu),
-        AR1VariationalBottleneck(_LATENT_SIZE, rng=rngs.params),
-        Dense(_LATENT_SIZE, action_size * 2, rngs),
-    ])
-    critic = Sequential([
-        Dense(obs_size, 8, rngs, activation=nnx.relu),
-        Dense(8, 1, rngs),
-    ])
+    actor = Sequential(
+        [
+            Dense(obs_size, _LATENT_SIZE * 2, rngs, activation=nnx.relu),
+            AR1VariationalBottleneck(_LATENT_SIZE, rng=rngs.params),
+            Dense(_LATENT_SIZE, action_size * 2, rngs),
+        ]
+    )
+    critic = Sequential(
+        [
+            Dense(obs_size, 8, rngs, activation=nnx.relu),
+            Dense(8, 1, rngs),
+        ]
+    )
     action_sampler = NormalTanhSampler(rngs, entropy_weight=1e-2)
     return PPOActorCritic(actor=actor, critic=critic, action_sampler=action_sampler)
 
@@ -223,9 +227,7 @@ class MakeCheckpointFnTest(absltest.TestCase):
             fn(state, step=2000)
             fn(state, step=3000)
             dirs = sorted(
-                d
-                for d in os.listdir(tmpdir)
-                if os.path.isdir(os.path.join(tmpdir, d))
+                d for d in os.listdir(tmpdir) if os.path.isdir(os.path.join(tmpdir, d))
             )
             self.assertEqual(len(dirs), 3)
             self.assertIn("step_0000001000", dirs)
@@ -324,7 +326,11 @@ class AR1VBCheckpointTest(absltest.TestCase):
             known_last_z = jp.ones((n_envs, _LATENT_SIZE)) * 7.77
             new_ar1vb_state = {"keys": actor_state[1]["keys"], "last_z": known_last_z}
             new_network_states = dict(state.network_states)
-            new_network_states["actor"] = [actor_state[0], new_ar1vb_state, actor_state[2]]
+            new_network_states["actor"] = [
+                actor_state[0],
+                new_ar1vb_state,
+                actor_state[2],
+            ]
             state = state.replace(network_states=new_network_states)
 
             fn = make_checkpoint_fn(tmpdir)
@@ -389,7 +395,9 @@ class CheckpointFnInvocationTest(absltest.TestCase):
         self.env = mujoco_playground.registry.load("CartpoleBalance")
         self.nets = _make_nets(self.env, seed=17)
 
-    def _tiny_config(self, total_steps: int, checkpoint_every_steps: int) -> TrainConfig:
+    def _tiny_config(
+        self, total_steps: int, checkpoint_every_steps: int
+    ) -> TrainConfig:
         return TrainConfig(
             ppo=PPOConfig(n_envs=4, rollout_length=20, total_steps=total_steps),
             eval=EvalConfig(enabled=False),
@@ -399,9 +407,13 @@ class CheckpointFnInvocationTest(absltest.TestCase):
     def test_checkpoint_fn_called_at_step_zero(self):
         """A checkpoint fires at step 0 because last_checkpoint_step starts at -every_steps."""
         calls = []
-        config = self._tiny_config(total_steps=4 * 20, checkpoint_every_steps=10_000_000)
+        config = self._tiny_config(
+            total_steps=4 * 20, checkpoint_every_steps=10_000_000
+        )
         ppo.train_ppo(
-            self.env, self.nets, config,
+            self.env,
+            self.nets,
+            config,
             checkpoint_fn=lambda s, t: calls.append(t),
         )
         self.assertIn(0, calls, "Expected a checkpoint at step 0.")
@@ -417,7 +429,9 @@ class CheckpointFnInvocationTest(absltest.TestCase):
             checkpoint_every_steps=STEPS_PER_ITER,
         )
         ppo.train_ppo(
-            self.env, self.nets, config,
+            self.env,
+            self.nets,
+            config,
             checkpoint_fn=lambda s, t: calls.append(t),
         )
         # Step-0 checkpoint + one per iteration = N_ITERS + 1 calls total.
@@ -436,7 +450,9 @@ class CheckpointFnInvocationTest(absltest.TestCase):
             checkpoint_every_steps=10_000_000,  # only fires at step 0
         )
         ppo.train_ppo(
-            self.env, self.nets, config,
+            self.env,
+            self.nets,
+            config,
             checkpoint_fn=lambda s, t: received.append((s, t)),
         )
         self.assertGreater(len(received), 0)
@@ -452,7 +468,9 @@ class CheckpointFnInvocationTest(absltest.TestCase):
             checkpoint_every_steps=10_000_000,
         )
         ppo.train_ppo(
-            self.env, self.nets, config,
+            self.env,
+            self.nets,
+            config,
             checkpoint_fn=lambda s, t: calls.append(t),
         )
         self.assertEqual(calls, [0])
