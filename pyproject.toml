@@ -16,6 +16,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["beartype", "pytest", "pyright", "brax", "playground"]
+docs = [
+    "sphinx>=7.0",
+    "furo",
+]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
