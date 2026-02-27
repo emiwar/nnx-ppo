@@ -2,6 +2,7 @@
 
 from typing import Any, Optional, Union
 from collections.abc import Mapping
+import warnings
 
 import jax
 import jax.numpy as jp
@@ -116,9 +117,12 @@ def log_weight_stats(
         networks: The PPO network to extract weights from.
         percentile_levels: Percentiles to compute. If None, uses mean/std.
     """
+    if not (hasattr(networks, "actor") and hasattr(networks, "critic")):
+        warnings.warn("Weight logging only defined for separate actor/critic networks. Skipping.")
+        return None
     # Extract parameters using nnx.state
-    actor_params = nnx.state(networks.actor, nnx.Param)
-    critic_params = nnx.state(networks.critic, nnx.Param)
+    actor_params = nnx.state(networks.actor, nnx.Param) # type: ignore
+    critic_params = nnx.state(networks.critic, nnx.Param) # type: ignore
 
     # Flatten all actor weights into single array
     actor_weights = jp.concatenate([p.flatten() for p in jax.tree.leaves(actor_params)])

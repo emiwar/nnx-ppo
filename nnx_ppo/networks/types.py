@@ -1,9 +1,12 @@
 import dataclasses
-from typing import Optional, Any, Union
+from typing import Optional, Any, Union, TYPE_CHECKING
 import abc
 import jax
 from flax import nnx
 from jaxtyping import Array, Float, PyTree, ScalarLike
+
+if TYPE_CHECKING:
+    from nnx_ppo.algorithms.types import Transition
 
 from nnx_ppo.jax_dataclass import JaxDataclass
 
@@ -24,7 +27,7 @@ class PPONetworkOutput(JaxDataclass):
 ModuleState = PyTree  # Any JAX pytree: (), (h, c), dict, etc.
 
 
-class PPONetwork(abc.ABC):
+class PPONetwork(nnx.Module, abc.ABC):
 
     @abc.abstractmethod
     def __call__(

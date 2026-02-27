@@ -99,7 +99,7 @@ def eval_rollout(
     n_envs: int,
     max_episode_length: int,
     key: PRNGKeyArray,
-    logging_percentiles: Optional[Float[Array, "num_percentiles"]] = None,
+    logging_percentiles: Optional[tuple[int, ...]] = None,
 ) -> dict[str, Float[Array, ""]]:
     env_keys = jax.random.split(key, n_envs)
     env_states = jax.vmap(env.reset)(env_keys)
@@ -109,7 +109,7 @@ def eval_rollout(
         env_state, network_state, cuml_reward, lifespan = carry
         next_network_state, network_output = networks(network_state, env_state.obs)
         next_env_state = jax.vmap(env.step)(env_state, network_output.actions)
-        next_env_state = next_env_state.replace(
+        next_env_state = next_env_state.replace(  # type: ignore[attr-defined]
             done=jp.logical_or(next_env_state.done, env_state.done).astype(float)
         )
         # Only accumulate reward if env was not already done before this step

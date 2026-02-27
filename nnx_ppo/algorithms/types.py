@@ -16,14 +16,21 @@ class EnvState(Protocol):
     """Minimal environment state interface.
 
     Satisfied by mujoco_playground.State and any compatible environment state.
+    Fields are declared as read-only properties so that frozen dataclasses
+    (which have immutable attributes) satisfy this protocol.
+    Note: replace() is intentionally omitted — playground's State has it at
+    runtime (via @struct.dataclass) but not in its type stubs.
     """
-    obs: Any
-    done: Shaped[Array, "..."]  # bool or float depending on env
-    reward: Any
-    info: dict[str, Any]
-    metrics: dict[str, Any]
-
-    def replace(self, **kwargs) -> "EnvState": ...
+    @property
+    def obs(self) -> Any: ...
+    @property
+    def done(self) -> Shaped[Array, "..."]: ...  # bool or float depending on env
+    @property
+    def reward(self) -> Any: ...
+    @property
+    def info(self) -> dict[str, Any]: ...
+    @property
+    def metrics(self) -> dict[str, Any]: ...
 
 
 @runtime_checkable
@@ -34,7 +41,7 @@ class RLEnv(Protocol):
     """
 
     def reset(self, rng: PRNGKeyArray) -> EnvState: ...
-    def step(self, state: EnvState, action: Any) -> EnvState: ...
+    def step(self, state: Any, action: Any) -> EnvState: ...
 
 
 @jax.tree_util.register_pytree_node_class

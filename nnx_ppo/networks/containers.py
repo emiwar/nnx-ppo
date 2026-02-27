@@ -1,4 +1,5 @@
 from typing import Any, Optional
+from collections.abc import Sequence
 
 import jax
 import jax.numpy as jp
@@ -39,11 +40,13 @@ class PPOActorCritic(PPONetwork, nnx.Module):
         raw_action: Optional[Float[Array, "batch action_dim"]] = None,
     ) -> tuple[dict[str, ModuleState], PPONetworkOutput]:
         regularization_loss = jp.array(0.0)
+        preprocessor_metrics: dict = {}
         if self.preprocessor is not None:
             preprocessor_output = self.preprocessor(network_state["preprocessor"], obs)
             obs = preprocessor_output.output
             network_state["preprocessor"] = preprocessor_output.next_state
             regularization_loss += preprocessor_output.regularization_loss
+            preprocessor_metrics = preprocessor_output.metrics
         actor_output = self.actor(network_state["actor"], obs)
         sampler_output = self.action_sampler(
             network_state["action_sampler"], actor_output.output, raw_action
@@ -64,9 +67,7 @@ class PPOActorCritic(PPONetwork, nnx.Module):
             regularization_loss=regularization_loss,
             value_estimates=jp.squeeze(critic_output.output, axis=-1),
             metrics={
-                "preprocessor": (
-                    preprocessor_output.metrics if self.preprocessor is not None else {}
-                ),
+                "preprocessor": preprocessor_metrics,
                 "actor": actor_output.metrics,
                 "critic": critic_output.metrics,
                 "action_sampler": sampler_output.metrics,
@@ -98,7 +99,7 @@ class PPOActorCritic(PPONetwork, nnx.Module):
 
 
 class Sequential(StatefulModule):
-    def __init__(self, layers: list[StatefulModule]):
+    def __init__(self, layers: Sequence[StatefulModule]):
         self.layers = nnx.List(layers)
 
     def __call__(

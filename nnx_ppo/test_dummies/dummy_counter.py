@@ -14,7 +14,7 @@ class DummyCounterEnv:
 
     def reset(self, rng):
         return mujoco_playground.State(
-            data={
+            data={  # type: ignore[arg-type]
                 "current_step": jp.array(0),
                 "reset_step": jax.random.randint(rng, (), 3, 10),
             },
@@ -32,7 +32,7 @@ class DummyCounterEnv:
         }
         done = jp.astype(data["current_step"] >= data["reset_step"], float)
         return mujoco_playground.State(
-            data=data,
+            data=data,  # type: ignore[arg-type]
             obs=jp.zeros(1),
             info={
                 "current_step": data["current_step"],
@@ -47,7 +47,7 @@ class DummyCounterNet(types.PPONetwork, nnx.Module):
     """Dummy stateful network that always outputs the number of steps since its
     last reset, independent of its input."""
 
-    def __call__(self, state, obs) -> tuple[Any, types.PPONetworkOutput]:
+    def __call__(self, state, obs, raw_action=None) -> tuple[Any, types.PPONetworkOutput]:
         old_counter = state["counter_state"]["counter"]
         new_counter = old_counter + 1
         new_state = {"counter_state": {"counter": new_counter}}

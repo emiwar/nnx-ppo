@@ -8,8 +8,7 @@ import numpy as np
 from flax import nnx
 import jax
 import jax.numpy as jp
-from jax.experimental import checkify
-from jaxtyping import Array, Float, Bool, PRNGKeyArray, ScalarLike, Integer
+from jaxtyping import Array, Float, Bool, ScalarLike, Integer
 import optax
 
 from nnx_ppo.networks.types import PPONetwork, ModuleState
@@ -142,7 +141,7 @@ def train_ppo(
         trajectory = rollout.unstack_trajectory(
             stacked_states, final_state, config.video.episode_length
         )
-        frames = eval_env.render(trajectory, **config.video.render_kwargs)
+        frames = getattr(eval_env, 'render')(trajectory, **config.video.render_kwargs)
         video_data = VideoData(
             frames=np.stack(frames),
             step=steps,
@@ -334,7 +333,14 @@ def gae(
     values = jp.concatenate((values_excl_last, last_value), axis=0)
     assert values.shape == (rewards.shape[0] + 1, rewards.shape[1])
 
-    def inner_step(next_advantage, reward, old_value, next_value, done, truncated):
+    def inner_step(
+        next_advantage: Float[Array, "batch"],
+        reward: Float[Array, "batch"],
+        old_value: Float[Array, "batch"],
+        next_value: Float[Array, "batch"],
+        done: Bool[Array, "batch"],
+        truncated: Bool[Array, "batch"],
+    ):
         next_value = jp.where(done, 0.0, next_value)
         new_value = reward + gamma * next_value
         advantage = new_value - old_value
@@ -539,7 +545,3 @@ def new_training_state(
     return TrainingState(
         networks, network_states, env_states, optimizer, training_key, jp.array(0.0)
     )
-
-
-def checkify_tree_equals(A, B, msg: str):
-    jax.tree.map(lambda a, b: checkify.check(jp.all(a == b), msg), A, B)

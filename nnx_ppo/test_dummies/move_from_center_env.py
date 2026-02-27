@@ -24,7 +24,7 @@ class MoveFromCenterEnv:
 
     def step(self, state: mujoco_playground.State, action: jax.Array):
         action = jp.clip(action, -1, 1)
-        state = state.replace(
+        state = state.replace(  # type: ignore[attr-defined]
             data=dict(pos=state.data["pos"] + action),
         )
         return self._get_state(state.data)

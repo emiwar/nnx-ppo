@@ -26,10 +26,10 @@ class JaxDataclass:
     """
 
     def replace(self, **kwargs):
-        return dataclasses.replace(self, **kwargs)
+        return dataclasses.replace(self, **kwargs)  # type: ignore[arg-type]
 
     def tree_flatten(self):
-        fields = dataclasses.fields(self)
+        fields = dataclasses.fields(self)  # type: ignore[arg-type]
         return [getattr(self, f.name) for f in fields], [f.name for f in fields]
 
     @classmethod

@@ -9,12 +9,12 @@ class RewardScalingWrapper:
 
     def reset(self, *args):
         next_state = self.env.reset(*args)
-        next_state = next_state.replace(reward=self.reward_scale * next_state.reward)
+        next_state = next_state.replace(reward=self.reward_scale * next_state.reward)  # type: ignore[attr-defined]
         return next_state
 
     def step(self, *args):
         next_state = self.env.step(*args)
-        next_state = next_state.replace(reward=self.reward_scale * next_state.reward)
+        next_state = next_state.replace(reward=self.reward_scale * next_state.reward)  # type: ignore[attr-defined]
         return next_state
 
     @property

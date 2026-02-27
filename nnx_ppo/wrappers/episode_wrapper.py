@@ -17,7 +17,7 @@ class EpisodeWrapper:
             next_state.info["step_counter"] >= self.max_len,
         )
         next_state.info["truncated"] = truncated
-        next_state = next_state.replace(
+        next_state = next_state.replace(  # type: ignore[attr-defined]
             done=jp.logical_or(next_state.done, truncated).astype(float)
         )
         return next_state
@@ -33,8 +33,8 @@ class EpisodeWrapper:
 
     @property
     def observation_size(self):
-        return self.env.observation_size
+        return self.env.observation_size  # type: ignore[attr-defined]
 
     @property
     def action_size(self):
-        return self.env.action_size
+        return self.env.action_size  # type: ignore[attr-defined]

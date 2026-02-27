@@ -150,7 +150,7 @@ class AR1VariationalBottleneck(StatefulModule):
                 - metrics: Dictionary with mu, sigma, kl_divergence, and squared diff
         """
         keys = state["keys"]
-        prev_z = state["last_z"]
+        prev_z: Float[Array, "batch {self.latent_size}"] = state["last_z"]
         if not self.backprop_through_time:
             prev_z = jax.lax.stop_gradient(prev_z)
 

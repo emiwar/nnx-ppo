@@ -10,6 +10,7 @@ from nnx_ppo.networks.types import StatefulModule, StatefulModuleOutput
 
 
 class ActionSampler(StatefulModule, abc.ABC):
+    deterministic: bool = False
 
     @abc.abstractmethod
     def __call__(

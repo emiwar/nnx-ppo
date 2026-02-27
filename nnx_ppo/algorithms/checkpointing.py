@@ -3,13 +3,20 @@
 import os
 import pickle
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import Any, Optional, Protocol, runtime_checkable
 
 import jax
 from flax import nnx
 
 from nnx_ppo.algorithms.config import TrainConfig
 from nnx_ppo.algorithms.types import TrainingState
+
+
+@runtime_checkable
+class CheckpointCallback(Protocol):
+    """Protocol for checkpoint callbacks with named parameters."""
+
+    def __call__(self, training_state: TrainingState, step: int) -> None: ...
 
 
 def _split_net_state(networks):
@@ -35,7 +42,7 @@ def _split_net_state(networks):
 def make_checkpoint_fn(
     directory: str,
     config: Optional[TrainConfig] = None,
-) -> Callable[[TrainingState, int], None]:
+) -> CheckpointCallback:
     """Create a checkpoint callback that saves TrainingState to disk.
 
     Each checkpoint is written to ``{directory}/step_{step:010d}/``, containing:

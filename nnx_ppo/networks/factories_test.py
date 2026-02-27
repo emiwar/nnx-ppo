@@ -4,6 +4,10 @@ import jax.numpy as jp
 from flax import nnx
 
 from nnx_ppo.networks import factories, types
+from nnx_ppo.networks.containers import Sequential
+from nnx_ppo.networks.feedforward import Dense
+from nnx_ppo.networks.normalizer import Normalizer
+from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 from nnx_ppo.algorithms.types import Transition
 
 
@@ -24,7 +28,11 @@ class MakeMLPActorCriticTest(absltest.TestCase):
 
         # Test actor and critic were independently initialized
         # Actor and critic are Sequential of Dense layers
+        assert isinstance(net.actor, Sequential)
+        assert isinstance(net.critic, Sequential)
         for actor_dense, critic_dense in zip(net.actor.layers, net.critic.layers):
+            assert isinstance(actor_dense, Dense)
+            assert isinstance(critic_dense, Dense)
             self.assertFalse(
                 jp.allclose(
                     actor_dense.linear.kernel[...], critic_dense.linear.kernel[...]
@@ -42,8 +50,11 @@ class MakeMLPActorCriticTest(absltest.TestCase):
         )
 
         # Test actor layers were independently initialized
+        assert isinstance(net.actor, Sequential)
         first_actor_dense = net.actor.layers[0]
+        assert isinstance(first_actor_dense, Dense)
         for actor_dense in net.actor.layers[1:]:
+            assert isinstance(actor_dense, Dense)
             self.assertFalse(
                 jp.allclose(
                     first_actor_dense.linear.kernel[...], actor_dense.linear.kernel[...]
@@ -121,6 +132,7 @@ class MakeMLPActorCriticTest(absltest.TestCase):
 
     def test_action_sampler_train_and_eval_mode(self):
         net = self.mlp_net
+        assert isinstance(net.action_sampler, NormalTanhSampler)
         self.assertFalse(net.action_sampler.deterministic)
         net.eval()
         self.assertTrue(net.action_sampler.deterministic)
@@ -159,6 +171,7 @@ class MakeMLPActorCriticTest(absltest.TestCase):
                 metrics={},
             )
             nets.update_statistics(dummy_transition, (i + 1) * BATCH_SIZE)
+            assert isinstance(nets.preprocessor, Normalizer)
             self.assertEqual(nets.preprocessor.counter[...], (i + 1) * BATCH_SIZE)
             self.assertEqual(nets.preprocessor.mean[...].shape, (OBS_SIZE,))
             self.assertEqual(nets.preprocessor.M2[...].shape, (OBS_SIZE,))

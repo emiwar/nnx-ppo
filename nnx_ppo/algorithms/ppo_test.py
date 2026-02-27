@@ -5,6 +5,7 @@ from flax import nnx
 import mujoco_playground
 
 from nnx_ppo.networks import factories
+from nnx_ppo.networks.normalizer import Normalizer
 from nnx_ppo.algorithms import rollout, ppo
 from nnx_ppo.algorithms.types import LoggingLevel
 from nnx_ppo.algorithms.config import PPOConfig, EvalConfig, TrainConfig
@@ -23,7 +24,7 @@ class PPOTest(absltest.TestCase):
         SEED = 17
         self.env = mujoco_playground.registry.load("CartpoleBalance")
         self.nets = factories.make_mlp_actor_critic(
-            self.env.observation_size,
+            self.env.observation_size,  # type: ignore[arg-type]
             self.env.action_size,
             actor_hidden_sizes=[16, 16],
             critic_hidden_sizes=[16, 16],
@@ -319,6 +320,7 @@ class PPOTest(absltest.TestCase):
                 training_state.steps_taken,
                 n_updates * config.ppo.rollout_length * config.ppo.n_envs,
             )
+            assert isinstance(nets.preprocessor, Normalizer)
             self.assertEqual(
                 nets.preprocessor.counter[...],
                 n_updates * config.ppo.rollout_length * config.ppo.n_envs,

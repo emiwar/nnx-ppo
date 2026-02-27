@@ -23,8 +23,8 @@ class DictEnvState(JaxDataclass):
     obs: Any    # {"pos": array[2], "vel": array[2]}
     reward: Any  # jax.Array or dict thereof for multi-reward environments
     done: jax.Array
-    info: dict
-    metrics: dict
+    info: dict[str, Any]
+    metrics: dict[str, Any]
 
 
 class DictObsActEnv:
@@ -38,8 +38,8 @@ class DictObsActEnv:
     Done:  |pos| > 3.0
     """
 
-    def reset(self, key: jax.Array) -> DictEnvState:
-        pos = jax.random.uniform(key, (2,), minval=-1.0, maxval=1.0)
+    def reset(self, rng: jax.Array) -> DictEnvState:
+        pos = jax.random.uniform(rng, (2,), minval=-1.0, maxval=1.0)
         vel = jp.zeros(2)
         return self._make_state(pos, vel)
 
@@ -109,8 +109,8 @@ class TwoArmState(JaxDataclass):
     obs: Any
     reward: Any
     done: jax.Array
-    info: dict
-    metrics: dict
+    info: dict[str, Any]
+    metrics: dict[str, Any]
 
 class TwoArmEnv:
     """Minimal multi-agent env.
@@ -121,10 +121,10 @@ class TwoArmEnv:
     reward = {"arm1": Float, "arm2": Float}
     """
 
-    def reset(self, key: jax.Array) -> TwoArmState:
+    def reset(self, rng: jax.Array) -> TwoArmState:
         pos = {
-            "arm1": jax.random.uniform(key, (2,), minval=-1.0, maxval=1.0),
-            "arm2": jax.random.uniform(key, (2,), minval=-1.0, maxval=1.0),
+            "arm1": jax.random.uniform(rng, (2,), minval=-1.0, maxval=1.0),
+            "arm2": jax.random.uniform(rng, (2,), minval=-1.0, maxval=1.0),
         }
         vel = {
             "arm1": jp.zeros(2),

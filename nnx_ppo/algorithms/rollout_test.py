@@ -19,7 +19,7 @@ class RolloutTest(absltest.TestCase):
 
         self.env = mujoco_playground.registry.load("CartpoleSwingup")
         self.nets = factories.make_mlp_actor_critic(
-            self.env.observation_size,
+            self.env.observation_size,  # type: ignore[arg-type]
             self.env.action_size,
             actor_hidden_sizes=[16, 16],
             critic_hidden_sizes=[16, 16],

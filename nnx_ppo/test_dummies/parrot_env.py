@@ -23,9 +23,9 @@ class ParrotEnv:
         else:
             reward = jp.array(0.0)
         obs_key, new_key = jax.random.split(rng_key)
-        next_obs = jp.tanh(jax.random.normal(obs_key, self.obs_size))
+        next_obs = jp.tanh(jax.random.normal(obs_key, self.obs_size))  # type: ignore[arg-type]
         return mujoco_playground.State(
-            data=dict(rng_key=new_key),
+            data=dict(rng_key=new_key),  # type: ignore[arg-type]
             obs=next_obs,
             info={},
             reward=reward,

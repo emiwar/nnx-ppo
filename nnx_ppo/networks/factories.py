@@ -113,7 +113,7 @@ def make_mlp_actor_critic(
     actor = make_mlp(
         actor_sizes,
         rngs,
-        activation,
+        activation,  # type: ignore[arg-type]
         activation_last_layer=False,
         kernel_init=kernel_init,
     )
@@ -122,7 +122,7 @@ def make_mlp_actor_critic(
     critic = make_mlp(
         critic_sizes,
         rngs,
-        activation,
+        activation,  # type: ignore[arg-type]
         activation_last_layer=False,
         kernel_init=kernel_init,
     )

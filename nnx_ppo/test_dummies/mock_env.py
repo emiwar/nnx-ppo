@@ -1,6 +1,7 @@
 """Mock environment for testing stateful networks with rollouts."""
 
 import dataclasses
+from typing import Any
 
 import jax
 import jax.numpy as jp
@@ -17,8 +18,8 @@ class MockEnvState(JaxDataclass):
     reward: jax.Array
     done: jax.Array
     step_count: jax.Array
-    info: dict
-    metrics: dict = dataclasses.field(default_factory=dict)
+    info: dict[str, Any]
+    metrics: dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
 class MockEnv:
@@ -36,8 +37,8 @@ class MockEnv:
         self.max_steps = max_steps
         self.observation_size = obs_size
 
-    def reset(self, key: jax.Array) -> MockEnvState:
-        (obs_key,) = jax.random.split(key, 1)
+    def reset(self, rng: jax.Array) -> MockEnvState:
+        (obs_key,) = jax.random.split(rng, 1)
         return MockEnvState(
             obs=jax.random.normal(obs_key, (self.obs_size,)),
             reward=jp.array(0.0),
