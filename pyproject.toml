@@ -11,12 +11,11 @@ dependencies = [
     "jax[cuda12]",
     "ml_collections",
     "orbax-checkpoint",
-    "playground",
     "jaxtyping",
 ]
 
 [project.optional-dependencies]
-dev = ["beartype", "pytest", "pyright"]
+dev = ["beartype", "pytest", "pyright", "brax", "playground"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
