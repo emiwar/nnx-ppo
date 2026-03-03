@@ -170,7 +170,7 @@ def eval_rollout_for_render_scan(
         net_state_batched = jax.tree.map(lambda x: x[None], net_state)
         next_net_state, network_output = networks(net_state_batched, obs_batched)
         next_net_state = jax.tree.map(lambda x: x[0], next_net_state)
-        action = network_output.actions[0]
+        action = jax.tree.map(lambda x: x[0], network_output.actions)
 
         next_env_state = env.step(env_state, action)
         # Only accumulate reward if not already done; sum components for scalar total
