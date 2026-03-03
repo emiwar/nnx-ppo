@@ -315,6 +315,7 @@ class LSTMTest(absltest.TestCase):
             discounting_factor=0.99,
             clip_range=0.2,
             normalize_advantages=True,
+            combine_advantages=False,
             n_epochs=2,
             n_minibatches=2,
             logging_level=LoggingLevel.LOSSES,

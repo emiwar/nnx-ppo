@@ -48,6 +48,7 @@ class PPOTest(absltest.TestCase):
             config.ppo.discounting_factor,
             config.ppo.clip_range,
             config.ppo.normalize_advantages,
+            config.ppo.combine_advantages,
             config.ppo.n_epochs,
             config.ppo.n_minibatches,
             LoggingLevel.ALL,
@@ -74,6 +75,7 @@ class PPOTest(absltest.TestCase):
             config.ppo.discounting_factor,
             config.ppo.clip_range,
             config.ppo.normalize_advantages,
+            config.ppo.combine_advantages,
             config.ppo.n_epochs,
             config.ppo.n_minibatches,
             LoggingLevel.ALL,
@@ -91,6 +93,7 @@ class PPOTest(absltest.TestCase):
             config.ppo.discounting_factor,
             config.ppo.clip_range,
             config.ppo.normalize_advantages,
+            config.ppo.combine_advantages,
             config.ppo.n_epochs,
             config.ppo.n_minibatches,
             LoggingLevel.ALL,
@@ -107,7 +110,7 @@ class PPOTest(absltest.TestCase):
             self.env, self.nets, config.ppo.n_envs, SEED
         )
         self.assertEqual(training_state.steps_taken, 0)
-        ppo_step_fcn = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10))
+        ppo_step_fcn = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10, 11))
         training_state, metrics = ppo_step_fcn(
             self.env,
             training_state,
@@ -117,6 +120,7 @@ class PPOTest(absltest.TestCase):
             config.ppo.discounting_factor,
             config.ppo.clip_range,
             config.ppo.normalize_advantages,
+            config.ppo.combine_advantages,
             config.ppo.n_epochs,
             config.ppo.n_minibatches,
             LoggingLevel.ALL,
@@ -133,6 +137,7 @@ class PPOTest(absltest.TestCase):
             config.ppo.discounting_factor,
             config.ppo.clip_range,
             config.ppo.normalize_advantages,
+            config.ppo.combine_advantages,
             config.ppo.n_epochs,
             config.ppo.n_minibatches,
             LoggingLevel.ALL,
@@ -149,7 +154,7 @@ class PPOTest(absltest.TestCase):
             self.env, self.nets, config.ppo.n_envs, SEED
         )
         self.assertEqual(training_state.steps_taken, 0)
-        ppo_step_fcn = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10))
+        ppo_step_fcn = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10, 11))
         training_state, metrics = ppo_step_fcn(
             self.env,
             training_state,
@@ -159,6 +164,7 @@ class PPOTest(absltest.TestCase):
             config.ppo.discounting_factor,
             config.ppo.clip_range,
             config.ppo.normalize_advantages,
+            config.ppo.combine_advantages,
             config.ppo.n_epochs,
             config.ppo.n_minibatches,
             LoggingLevel.ALL,
@@ -175,6 +181,7 @@ class PPOTest(absltest.TestCase):
             config.ppo.discounting_factor,
             config.ppo.clip_range,
             config.ppo.normalize_advantages,
+            config.ppo.combine_advantages,
             config.ppo.n_epochs,
             config.ppo.n_minibatches,
             LoggingLevel.ALL,
@@ -260,7 +267,7 @@ class PPOTest(absltest.TestCase):
         )
         config = ppo.default_config()
         training_state = ppo.new_training_state(env, nets, config.ppo.n_envs, SEED)
-        ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10))
+        ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10, 11))
         n_updates = 0
         while training_state.steps_taken < config.ppo.total_steps:
             training_state, metrics = ppo_step_jit(
@@ -272,6 +279,7 @@ class PPOTest(absltest.TestCase):
                 config.ppo.discounting_factor,
                 config.ppo.clip_range,
                 config.ppo.normalize_advantages,
+                config.ppo.combine_advantages,
                 config.ppo.n_epochs,
                 config.ppo.n_minibatches,
             )
@@ -300,7 +308,7 @@ class PPOTest(absltest.TestCase):
         )
         config = ppo.default_config()
         training_state = ppo.new_training_state(env, nets, config.ppo.n_envs, SEED)
-        ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10))
+        ppo_step_jit = nnx.jit(ppo.ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10, 11))
         n_updates = 0
         while training_state.steps_taken < config.ppo.total_steps:
             training_state, metrics = ppo_step_jit(
@@ -312,6 +320,7 @@ class PPOTest(absltest.TestCase):
                 config.ppo.discounting_factor,
                 config.ppo.clip_range,
                 config.ppo.normalize_advantages,
+                config.ppo.combine_advantages,
                 config.ppo.n_epochs,
                 config.ppo.n_minibatches,
             )
@@ -350,6 +359,7 @@ class DictObsActTest(absltest.TestCase):
             config.discounting_factor,
             config.clip_range,
             config.normalize_advantages,
+            config.combine_advantages,
             config.n_epochs,
             config.n_minibatches,
             # Avoid LoggingLevel.ACTOR_EXTRA: it accesses metrics["action_sampler"]
@@ -379,6 +389,36 @@ class DictObsActTest(absltest.TestCase):
             config.discounting_factor,
             config.clip_range,
             config.normalize_advantages,
+            config.combine_advantages,
+            config.n_epochs,
+            config.n_minibatches,
+            LoggingLevel.LOSSES | LoggingLevel.CRITIC_EXTRA,
+        )
+        self.assertEqual(
+            training_state.steps_taken, config.n_envs * config.rollout_length
+        )
+        for k, v in metrics.items():
+            self.assertTrue(jp.all(jp.isfinite(v)), f"metrics[{k}] not finite.")
+
+    def test_ppo_step_combine_advantages(self):
+        """Verify dict rewards with per-component value estimates pipe correctly through ppo_step."""
+        SEED = 43
+        env = TwoArmEnv()
+        nets = TwoArmNet(nnx.Rngs(SEED))
+        config = PPOConfig(n_envs=8, rollout_length=4, n_epochs=2, n_minibatches=2)
+        config.combine_advantages = True
+        training_state = ppo.new_training_state(env, nets, config.n_envs, SEED)
+        self.assertEqual(training_state.steps_taken, 0)
+        training_state, metrics = ppo.ppo_step(
+            env,
+            training_state,
+            config.n_envs,
+            config.rollout_length,
+            config.gae_lambda,
+            config.discounting_factor,
+            config.clip_range,
+            config.normalize_advantages,
+            config.combine_advantages,
             config.n_epochs,
             config.n_minibatches,
             LoggingLevel.LOSSES | LoggingLevel.CRITIC_EXTRA,

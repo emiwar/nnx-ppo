@@ -20,6 +20,7 @@ class PPOConfig:
     clip_range: float = 0.2
     learning_rate: float = 1e-4
     normalize_advantages: bool = True
+    combine_advantages: bool = False
     n_epochs: int = 4
     n_minibatches: int = 4
     gradient_clipping: Optional[float] = None

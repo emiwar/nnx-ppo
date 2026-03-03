@@ -101,7 +101,7 @@ def train_ppo(
         training_state = initial_state
 
     # JIT compile functions
-    ppo_step_jit = nnx.jit(ppo_step, static_argnums=(0, 2, 3, 7, 8, 9, 10, 11))
+    ppo_step_jit = nnx.jit(ppo_step, static_argnums=(0, 2, 3, 6, 7, 8, 9, 10, 11))
     eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3, 5))
     eval_rollout_render_jit = nnx.jit(
         rollout.eval_rollout_for_render_scan, static_argnums=(0, 2)
@@ -181,6 +181,7 @@ def train_ppo(
             config.ppo.discounting_factor,
             config.ppo.clip_range,
             config.ppo.normalize_advantages,
+            config.ppo.combine_advantages,
             config.ppo.n_epochs,
             config.ppo.n_minibatches,
             config.ppo.logging_level,
@@ -235,6 +236,7 @@ def ppo_step(
     discounting_factor: ScalarLike,
     clip_range: ScalarLike,
     normalize_advantages: bool,
+    combine_advantages: bool,
     n_epochs: int,
     n_minibatches: int,
     logging_level: LoggingLevel = LoggingLevel.LOSSES,
@@ -277,10 +279,10 @@ def ppo_step(
             rollout_data=minibatch_data,
             clip_range=clip_range,
             normalize_advantages=normalize_advantages,
+            combine_advantages=combine_advantages,
             discounting_factor=discounting_factor,
             gae_lambda=gae_lambda,
             logging_level=logging_level,
-            logging_percentiles=logging_percentiles,
         )
         if LoggingLevel.GRAD_NORM in logging_level:
             grad_norm = jp.sqrt(sum(jp.sum(g**2) for g in jax.tree.leaves(grads)))
@@ -372,10 +374,10 @@ def ppo_loss(
     rollout_data: rollout.Transition,
     clip_range: ScalarLike,
     normalize_advantages: bool,
+    combine_advantages: bool,
     discounting_factor: ScalarLike,
     gae_lambda: ScalarLike,
     logging_level: LoggingLevel,
-    logging_percentiles: Optional[tuple[int, ...]] = None,
 ) -> tuple[Float[Array, ""], dict[str, Any]]:
     rollout_data = jax.lax.stop_gradient(rollout_data)
 
@@ -424,6 +426,14 @@ def ppo_loss(
     target_values = jax.lax.stop_gradient(
         jax.tree.map(jp.add, network_output.value_estimates, advantages)
     )
+
+    if combine_advantages:
+        summed_advantage = jax.tree.reduce_associative(jp.add, advantages)
+        mean_advantage = summed_advantage / len(jax.tree.flatten(advantages))
+        # Replace all advantages with the mean advantage across critics
+        advantages = jax.tree.map(lambda _: mean_advantage, advantages)
+
+
     if normalize_advantages:
         advantages = jax.tree.map(
             lambda a: (a - a.mean()) / (a.std() + 1e-8), advantages
