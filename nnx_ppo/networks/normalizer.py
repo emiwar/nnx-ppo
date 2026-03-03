@@ -20,8 +20,8 @@ class Normalizer(StatefulModule):
             self.mean = NormalizerStatistics(jp.zeros(shape))
             self.M2 = NormalizerStatistics(jp.zeros(shape))
         else:
-            self.mean = NormalizerStatistics(jax.tree.map(jp.zeros_like, shape))
-            self.M2 = NormalizerStatistics(jax.tree.map(jp.zeros_like, shape))
+            self.mean = NormalizerStatistics(jax.tree.map(jp.zeros, shape))
+            self.M2 = NormalizerStatistics(jax.tree.map(jp.zeros, shape))
         self.counter = NormalizerStatistics(jp.array(0.0))
         self.epsilon = 1e-6
 

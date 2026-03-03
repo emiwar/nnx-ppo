@@ -137,8 +137,8 @@ class NormalizerPytreeTest(absltest.TestCase):
     """
 
     OBS_SIZE = {
-        "proprioception": jp.zeros(8),
-        "goal": jp.zeros(4),
+        "proprioception": 8,
+        "goal": 4,
     }
 
     def _make_dict_obs(self, n_time: int, batch: int, key) -> dict:
