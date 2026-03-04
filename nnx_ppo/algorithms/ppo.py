@@ -429,9 +429,14 @@ def ppo_loss(
 
     if combine_advantages:
         summed_advantage = jax.tree.reduce_associative(jp.add, advantages)
-        mean_advantage = summed_advantage / len(jax.tree.flatten(advantages))
-        # Replace all advantages with the mean advantage across critics
-        advantages = jax.tree.map(lambda _: mean_advantage, advantages)
+
+        if jax.tree.structure(network_output.loglikelihoods) == jax.tree.structure(advantages):
+            # Structured loglikelihoods matching advantages: use mean advantage for all modules
+            mean_advantage = summed_advantage / len(jax.tree.flatten(advantages))
+            advantages = jax.tree.map(lambda _: mean_advantage, advantages)
+        else:
+            # Scalar (joint) loglikelihoods: collapse all advantages into one matching array
+            advantages = summed_advantage
 
 
     if normalize_advantages:
