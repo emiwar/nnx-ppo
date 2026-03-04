@@ -434,9 +434,12 @@ def ppo_loss(
             # Structured loglikelihoods matching advantages: use mean advantage for all modules
             mean_advantage = summed_advantage / len(jax.tree.flatten(advantages))
             advantages = jax.tree.map(lambda _: mean_advantage, advantages)
+            print("Combining averages, but keeping loglikelihoods separate.")
         else:
             # Scalar (joint) loglikelihoods: collapse all advantages into one matching array
             advantages = summed_advantage
+            print("Combining averages to match single loglikelihood.")
+            print(f"Advantages shape: {advantages.shape}; loglikelihood shape: {network_output.loglikelihoods}")
 
 
     if normalize_advantages:
@@ -513,6 +516,7 @@ def ppo_loss(
         # loss_metrics["losses/predicted_value"] = values_excl_last
         loss_metrics["losses/advantages"] = advantages
         # loss_metrics["losses/advantages_NaN"] = 1.0 - jp.isfinite(advantages).mean()
+        loss_metrics["losses/critic_R^2"] = jax.tree.map(lambda l, tv: 1.0 - 2*l/(jp.var(tv)+1e-8), critic_losses, target_values)
         # loss_metrics["losses/critic_R^2"] = 1.0 - 2 * critic_loss / (
         #    jp.var(target_values) + 1e-8
         # )
