@@ -101,7 +101,7 @@ def train_ppo(
         training_state = initial_state
 
     # JIT compile functions
-    ppo_step_jit = nnx.jit(ppo_step, static_argnums=(0, 2, 3, 6, 7, 8, 9, 10, 11))
+    ppo_step_jit = nnx.jit(ppo_step, static_argnums=(0, 2, 3, 6, 7, 8, 9, 10, 11, 12))
     eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3, 5))
     eval_rollout_render_jit = nnx.jit(
         rollout.eval_rollout_for_render_scan, static_argnums=(0, 2)
