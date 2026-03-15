@@ -101,7 +101,7 @@ def train_ppo(
         training_state = initial_state
 
     # JIT compile functions
-    ppo_step_jit = nnx.jit(ppo_step, static_argnums=(0, 2, 3, 6, 7, 8, 9, 10, 11, 12))
+    ppo_step_jit = nnx.jit(ppo_step, static_argnums=(0, 2, 3, 6, 7, 8, 9, 10, 11, 12, 13))
     eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3, 5))
     eval_rollout_render_jit = nnx.jit(
         rollout.eval_rollout_for_render_scan, static_argnums=(0, 2)
@@ -184,6 +184,7 @@ def train_ppo(
             config.ppo.combine_advantages,
             config.ppo.n_epochs,
             config.ppo.n_minibatches,
+            config.ppo.critic_loss_weight,
             config.ppo.logging_level,
             config.ppo.logging_percentiles,
         )
@@ -239,6 +240,7 @@ def ppo_step(
     combine_advantages: bool,
     n_epochs: int,
     n_minibatches: int,
+    critic_loss_weight: ScalarLike = 1.0,
     logging_level: LoggingLevel = LoggingLevel.LOSSES,
     logging_percentiles: Optional[tuple[int, ...]] = None,
 ) -> tuple[TrainingState, dict[str, Any]]:
@@ -282,6 +284,7 @@ def ppo_step(
             combine_advantages=combine_advantages,
             discounting_factor=discounting_factor,
             gae_lambda=gae_lambda,
+            critic_loss_weight=critic_loss_weight,
             logging_level=logging_level,
         )
         if LoggingLevel.GRAD_NORM in logging_level:
@@ -377,6 +380,7 @@ def ppo_loss(
     combine_advantages: bool,
     discounting_factor: ScalarLike,
     gae_lambda: ScalarLike,
+    critic_loss_weight: ScalarLike,
     logging_level: LoggingLevel,
 ) -> tuple[Float[Array, ""], dict[str, Any]]:
     rollout_data = jax.lax.stop_gradient(rollout_data)
@@ -520,7 +524,7 @@ def ppo_loss(
         # loss_metrics["losses/critic_R^2"] = 1.0 - 2 * critic_loss / (
         #    jp.var(target_values) + 1e-8
         # )
-    total_loss = actor_loss + critic_loss + regularization_loss
+    total_loss = actor_loss + critic_loss_weight*critic_loss + regularization_loss
 
     return total_loss, loss_metrics
 

@@ -23,6 +23,7 @@ class PPOConfig:
     combine_advantages: bool = False
     n_epochs: int = 4
     n_minibatches: int = 4
+    critic_loss_weight: float = 1.0
     gradient_clipping: Optional[float] = None
     weight_decay: Optional[float] = None
     logging_level: LoggingLevel = LoggingLevel.LOSSES
