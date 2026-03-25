@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 import functools
 
 from flax import nnx
@@ -8,7 +8,6 @@ from jaxtyping import Array, Float, Key, Shaped, PRNGKeyArray
 import nnx_ppo.networks.types
 from nnx_ppo.networks.types import PPONetwork, ModuleState
 from nnx_ppo.algorithms.types import Transition, RLEnv, EnvState
-
 
 def single_transition(
     env: RLEnv,
@@ -144,18 +143,52 @@ def eval_rollout(
             metrics[f"lifespan/p{int(pl)}"] = p
     return metrics
 
+class SlimData(NamedTuple):
+    """Minimal mjx.Data fields needed for rendering."""
+    qpos: Any
+    qvel: Any
+    time: Any
+
+
+class SlimState(NamedTuple):
+    """Minimal env state for rendering, avoiding large mjx.Data contact buffers."""
+    data: SlimData
+    done: Any
+    info: Any
+    metrics: Any
+
+def _slim(env_state: EnvState) -> SlimState:
+    """Extract only the fields needed for rendering from a full env state.
+
+    Avoids storing large mjx.Data contact/constraint buffers (nconmax, njmax)
+    that MuJoCo Warp pre-allocates but that are not needed for rendering.
+    """
+    return SlimState(
+        data=SlimData(
+            qpos=env_state.data.qpos,
+            qvel=env_state.data.qvel,
+            time=env_state.data.time,
+        ),
+        done=env_state.done,
+        info=env_state.info,
+        metrics=env_state.metrics,
+    )
+
 
 def eval_rollout_for_render_scan(
     env: RLEnv,
     networks: PPONetwork,
     max_episode_length: int,
     key: PRNGKeyArray,
-) -> tuple[EnvState, EnvState, Float[Array, ""]]:
-    """JIT-compatible scan-based rollout that returns stacked states.
+) -> tuple[SlimState, SlimState, Float[Array, ""]]:
+    """JIT-compatible scan-based rollout that returns stacked slim states.
+
+    Returns stacked SlimState (qpos/qvel/time/info/done/metrics only) rather
+    than the full env state, avoiding large MuJoCo Warp contact buffers.
 
     Returns:
-      stacked_states: State pytree with leading dimension of max_episode_length.
-      final_state: The final environment state.
+      stacked_states: SlimState pytree with leading dimension of max_episode_length.
+      final_state: The final environment slim state.
       total_reward: Total reward accumulated during the episode.
     """
     key, key2 = jax.random.split(key)
@@ -193,7 +226,7 @@ def eval_rollout_for_render_scan(
             new_cumulative_reward,
             new_already_done,
             new_rng,
-        ), env_state
+        ), _slim(env_state)
 
     scan_fn = nnx.scan(
         step_fn,
@@ -207,7 +240,7 @@ def eval_rollout_for_render_scan(
         networks, init_carry
     )
 
-    return stacked_states, final_env_state, total_reward
+    return stacked_states, _slim(final_env_state), total_reward
 
 
 def unstack_trajectory(stacked_states, final_state, max_episode_length: int):
