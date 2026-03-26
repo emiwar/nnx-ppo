@@ -11,6 +11,7 @@ from nnx_ppo.networks.types import PPONetworkOutput, ModuleState
 from nnx_ppo.jax_dataclass import JaxDataclass
 
 
+
 @runtime_checkable
 class EnvState(Protocol):
     """Minimal environment state interface.
@@ -71,6 +72,45 @@ class Transition(JaxDataclass):
     truncated: Bool[Array, "*time batch"]
     next_obs: PyTree[Float[Array, "..."]]  # Same pytree structure as obs
     metrics: dict[str, Any]
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclasses.dataclass(frozen=True)
+class DistillationTransition(JaxDataclass):
+    """Rollout transition for distillation training.
+
+    Carries both student and teacher network outputs. The student's actions
+    drive the environment; the teacher's outputs (pre-computed outside of
+    gradient computation) serve as the distillation target.
+    """
+
+    obs: PyTree[Float[Array, "..."]]
+    student_output: PPONetworkOutput  # drives env; used in student time-scan replay
+    teacher_output: PPONetworkOutput  # frozen reference; raw_actions = teacher mean (eval mode)
+    rewards: PyTree[Float[Array, "*time batch"]]
+    done: Bool[Array, "*time batch"]
+    truncated: Bool[Array, "*time batch"]
+    next_obs: PyTree[Float[Array, "..."]]
+    metrics: dict[str, Any]
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclasses.dataclass(frozen=True)
+class DistillationState(JaxDataclass):
+    """Training state for distillation.
+
+    Mirrors TrainingState but has separate student and teacher states.
+    The teacher is passed as an external argument (like env) and is not
+    stored here. Only the teacher's per-env carry state is tracked.
+    """
+
+    student: Any  # PPONetwork, but Any because flax.nnx transforms it during JIT
+    student_states: Any  # ModuleState [n_envs, ...]
+    teacher_states: Any  # ModuleState [n_envs, ...] (tracked but not trained)
+    env_states: Any  # EnvState
+    optimizer: Any  # nnx.Optimizer (over student only)
+    rng_key: PRNGKeyArray
+    steps_taken: Float[Array, ""]
 
 
 class LoggingLevel(enum.Flag):

@@ -1,11 +1,11 @@
-"""Configuration dataclasses for train_ppo."""
+"""Configuration dataclasses for train_ppo and train_distillation."""
 
 from typing import Any, Optional
 from dataclasses import dataclass, field
 
 import numpy as np
 
-from nnx_ppo.algorithms.types import TrainingState, LoggingLevel
+from nnx_ppo.algorithms.types import TrainingState, DistillationState, LoggingLevel
 
 
 @dataclass
@@ -69,6 +69,33 @@ class TrainConfig:
 
 
 @dataclass
+class DistillationConfig:
+    """Core distillation algorithm parameters."""
+
+    n_envs: int = 256
+    rollout_length: int = 20
+    total_steps: int = 512_000
+    learning_rate: float = 1e-4
+    n_epochs: int = 4
+    n_minibatches: int = 4
+    gradient_clipping: Optional[float] = None
+    weight_decay: Optional[float] = None
+    logging_level: LoggingLevel = LoggingLevel.LOSSES
+    logging_percentiles: Optional[tuple[int, ...]] = None
+
+
+@dataclass
+class DistillationTrainConfig:
+    """Complete training configuration for distillation."""
+
+    distillation: DistillationConfig = field(default_factory=DistillationConfig)
+    eval: EvalConfig = field(default_factory=EvalConfig)
+    video: VideoConfig = field(default_factory=VideoConfig)
+    seed: int = 17
+    checkpoint_every_steps: int = 500_000
+
+
+@dataclass
 class VideoData:
     """Data passed to video callback."""
 
@@ -83,6 +110,17 @@ class TrainResult:
     """Result of train_ppo containing final state and summary."""
 
     training_state: TrainingState
+    final_metrics: dict[str, Any]
+    eval_history: list[dict[str, Any]]
+    total_steps: int
+    total_iterations: int
+
+
+@dataclass
+class DistillationTrainResult:
+    """Result of train_distillation containing final state and summary."""
+
+    training_state: DistillationState
     final_metrics: dict[str, Any]
     eval_history: list[dict[str, Any]]
     total_steps: int
