@@ -163,18 +163,18 @@ class MakeMLPActorCriticTest(absltest.TestCase):
             var_key, (N_STEPS + 1, BATCH_SIZE, OBS_SIZE)
         )
         state = nets.initialize_state(BATCH_SIZE)
+        from nnx_ppo.networks.types import Context
         for i in range(N_STEPS):
             state, network_output = nets(state, data[i])
-            dummy_transition = Transition(
-                obs=data[i : i + 1],
-                network_output=network_output,
-                rewards=jp.zeros((1, BATCH_SIZE)),
-                done=jp.zeros((1, BATCH_SIZE), jp.bool),
-                truncated=jp.zeros((1, BATCH_SIZE), jp.bool),
-                next_obs=jp.zeros_like(data[i : i + 1]),
-                metrics={},
+            # Stats are updated via a STATS_UPDATE-context forward pass that
+            # replays the rollout — here we do a single-step replay with the
+            # stored raw_action.
+            nets(
+                state,
+                data[i],
+                network_output.raw_actions,
+                context=Context.STATS_UPDATE,
             )
-            nets.update_statistics(dummy_transition, (i + 1) * BATCH_SIZE)
             assert isinstance(nets.preprocessor, Normalizer)
             self.assertEqual(nets.preprocessor.counter[...], (i + 1) * BATCH_SIZE)
             self.assertEqual(nets.preprocessor.mean[...].shape, (OBS_SIZE,))

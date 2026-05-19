@@ -1,12 +1,9 @@
 from typing import Any
-from warnings import deprecated
 
 import jax
 import jax.numpy as jp
 from flax import nnx
-from jaxtyping import ScalarLike
 
-from nnx_ppo.algorithms.types import Transition
 from nnx_ppo.networks.types import (
     Context,
     StatefulModule,
@@ -116,60 +113,3 @@ class Normalizer(StatefulModule):
         self.M2.set_value(new_M2)
         self.counter.set_value(new_count)
 
-    @deprecated(
-        "Internal helper for the legacy update_statistics(rollout, total_steps) "
-        "shim. Will be removed together with that shim once experiments are "
-        "migrated to the context=Context.STATS_UPDATE forward-pass path."
-    )
-    def _welford_full_rollout(self, obs: Any) -> None:
-        """Backwards-compat helper. Treats ``obs`` as a ``[T, B, *feat]``
-        rollout (or pytree thereof) and folds it into the live statistics
-        in one shot using the per-rollout Welford update formula. Equivalent
-        to applying ``_welford_step`` T times, but cheaper.
-        """
-        leaves = jax.tree.leaves(obs)
-        if not leaves:
-            return
-        batch_count = leaves[0].shape[0] * leaves[0].shape[1]
-        new_count = self.counter.get_value() + batch_count
-        frac = batch_count / new_count
-
-        batch_mean = jax.tree.map(lambda v: jp.mean(v, axis=(0, 1)), obs)
-        old_mean = self.mean.get_value()
-        delta_old = jax.tree.map(lambda bm, m: bm - m, batch_mean, old_mean)
-        new_mean = jax.tree.map(lambda m, d: m + d * frac, old_mean, delta_old)
-        self.mean.set_value(new_mean)
-
-        delta_new = jax.tree.map(lambda bm, m: bm - m, batch_mean, new_mean)
-        batch_var = jax.tree.map(lambda v: jp.var(v, axis=(0, 1)), obs)
-        old_M2 = self.M2.get_value()
-        new_M2 = jax.tree.map(
-            lambda m2, bv, d_old, d_new: m2
-            + batch_count * bv
-            + batch_count * d_old * d_new,
-            old_M2,
-            batch_var,
-            delta_old,
-            delta_new,
-        )
-        self.M2.set_value(new_M2)
-        self.counter.set_value(new_count)
-
-    @deprecated(
-        "Use the context=Context.STATS_UPDATE forward pass instead. This "
-        "shim is retained only for callers in vnl-experiments that haven't "
-        "migrated to the context-based API and will be removed once they "
-        "have."
-    )
-    def update_statistics(
-        self, last_rollout: Transition, total_steps: ScalarLike
-    ) -> None:
-        """Backwards-compat entry point used by older callers (e.g. NerveNet
-        variants that haven't migrated to the context-based API). Treats
-        ``last_rollout.obs`` as the rollout this normalizer saw and folds
-        it into the live statistics.
-
-        New code should pass ``context=Context.STATS_UPDATE`` to the
-        network's forward pass instead, which lets the walker invoke
-        ``__call__`` per timestep with the correctly-routed input."""
-        self._welford_full_rollout(last_rollout.obs)

@@ -4,11 +4,9 @@ from collections.abc import Sequence
 import jax
 import jax.numpy as jp
 from flax import nnx
-from jaxtyping import ScalarLike
 
 from nnx_ppo.algorithms.adapter import PPOAdapter
 from nnx_ppo.algorithms.distributions import ActionSampler
-from nnx_ppo.algorithms.types import Transition
 from nnx_ppo.networks.types import (
     Context,
     StatefulModule,
@@ -101,12 +99,6 @@ class Sequential(StatefulModule):
     def __getitem__(self, ind: int) -> StatefulModule:
         return self.layers[ind]
 
-    def update_statistics(
-        self, last_rollout: Transition, total_steps: ScalarLike
-    ) -> None:
-        for layer in self.layers:
-            layer.update_statistics(last_rollout, total_steps)
-
 
 class Concat(StatefulModule):
     def __init__(self, **kwargs: StatefulModule):
@@ -138,12 +130,6 @@ class Concat(StatefulModule):
 
     def reset_state(self, prev_state: dict[str, ModuleState]) -> dict[str, ModuleState]:
         return {k: c.reset_state(prev_state[k]) for k, c in self.components.items()}
-
-    def update_statistics(
-        self, last_rollout: Transition, total_steps: ScalarLike
-    ) -> None:
-        for component in self.components.values():
-            component.update_statistics(last_rollout, total_steps)
 
 
 class Flattener(StatefulModule):
@@ -205,12 +191,6 @@ class Parallel(StatefulModule):
 
     def reset_state(self, prev_state: dict[str, ModuleState]) -> dict[str, ModuleState]:
         return {k: c.reset_state(prev_state[k]) for k, c in self.components.items()}
-
-    def update_statistics(
-        self, last_rollout: Transition, total_steps: ScalarLike
-    ) -> None:
-        for component in self.components.values():
-            component.update_statistics(last_rollout, total_steps)
 
 
 class Splitter(StatefulModule):

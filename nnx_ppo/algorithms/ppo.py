@@ -310,7 +310,9 @@ def ppo_step(
     metrics["total_steps"] = total_steps
     if LoggingLevel.WEIGHTS in logging_level:
         log_weight_stats(metrics, training_state.networks, logging_percentiles)
-    training_state.networks.update_statistics(rollout_data, total_steps)
+    _replay_rollout_for_stats(
+        training_state.networks, training_state.network_states, rollout_data
+    )
 
     # Now that all updates are done, we can replace all the network (and environment)
     # states in training state. Note that this would have been incorrect to update
@@ -369,6 +371,47 @@ def gae(
         truncated=truncation,
     )
     return jax.lax.stop_gradient(advantages)
+
+
+@nnx.jit
+def _replay_rollout_for_stats(
+    networks: PPONetwork,
+    initial_network_state: Any,
+    rollout_data: rollout.Transition,
+) -> None:
+    """Replay the rollout through the network with ``context=STATS_UPDATE``.
+
+    Structurally identical to the LOSS_REPLAY scan in :func:`ppo_loss` — same
+    starting state, same stored ``raw_action``\\s, same per-step reset on
+    ``done`` — but invoked with the STATS_UPDATE context so that modules
+    that maintain running statistics (e.g. :class:`Normalizer`) accumulate
+    them from the exact activations they saw during rollout. The forward
+    output is discarded; only the side effects (NNX variable updates)
+    matter.
+    """
+    @jax.vmap
+    def reset_net_state(done, state):
+        return jax.lax.cond(done, networks.reset_state, lambda x: x, state)
+
+    def step_network(networks, net_state, obs, done, raw_action):
+        net_state, _ = networks(
+            net_state, obs, raw_action, context=Context.STATS_UPDATE
+        )
+        net_state = reset_net_state(done, net_state)
+        return net_state, None
+
+    time_scan = nnx.scan(
+        step_network,
+        in_axes=(nnx.StateAxes({...: nnx.Carry}), nnx.Carry, 0, 0, 0),
+        out_axes=(nnx.Carry, 0),
+    )
+    time_scan(
+        networks,
+        initial_network_state,
+        rollout_data.obs,
+        rollout_data.done,
+        rollout_data.network_output.raw_actions,
+    )
 
 
 def ppo_loss(

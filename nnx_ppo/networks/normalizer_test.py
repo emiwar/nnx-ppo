@@ -3,8 +3,7 @@ import jax
 import jax.numpy as jp
 
 from nnx_ppo.networks.normalizer import Normalizer
-from nnx_ppo.algorithms.types import Transition
-from nnx_ppo.networks.types import Context, PPONetworkOutput
+from nnx_ppo.networks.types import Context
 
 
 class NormalizerTest(absltest.TestCase):
@@ -30,7 +29,7 @@ class NormalizerTest(absltest.TestCase):
         expected = (x - 0.0) / 10.0
         self.assertTrue(jp.allclose(output.output, expected))
 
-    def test_normalizer_update_statistics(self):
+    def test_normalizer_stats_update_context(self):
         SEED = 42
         OBS_SIZE = 8
         BATCH_SIZE = 16
@@ -42,31 +41,11 @@ class NormalizerTest(absltest.TestCase):
         true_mean = jax.random.normal(mean_key, (OBS_SIZE,))
         data = true_mean + jax.random.normal(var_key, (N_STEPS, BATCH_SIZE, OBS_SIZE))
 
-        # Create dummy PPONetworkOutput for Transition
-        dummy_network_output = PPONetworkOutput(
-            actions=jp.zeros((BATCH_SIZE, 1)),
-            raw_actions=jp.zeros((BATCH_SIZE, 1)),
-            loglikelihoods=jp.zeros((BATCH_SIZE,)),
-            regularization_loss=jp.array(0.0),
-            value_estimates=jp.zeros((BATCH_SIZE,)),
-            metrics={},
-        )
-
+        state = normalizer.initialize_state(BATCH_SIZE)
         for i in range(N_STEPS):
-            obs_batch = data[i : i + 1]  # Shape: (1, BATCH_SIZE, OBS_SIZE)
-            dummy_transition = Transition(
-                obs=obs_batch,
-                network_output=dummy_network_output,
-                rewards=jp.zeros((1, BATCH_SIZE)),
-                done=jp.zeros((1, BATCH_SIZE), jp.bool),
-                truncated=jp.zeros((1, BATCH_SIZE), jp.bool),
-                next_obs=jp.zeros_like(obs_batch),
-                metrics={},
-            )
-            normalizer.update_statistics(dummy_transition, (i + 1) * BATCH_SIZE)
+            normalizer(state, data[i], context=Context.STATS_UPDATE)
             self.assertEqual(normalizer.counter.get_value(), (i + 1) * BATCH_SIZE)
 
-        # After all updates, check statistics accuracy
         true_data_mean = jp.mean(data, axis=(0, 1))
         true_data_std = jp.std(data, axis=(0, 1))
         est_mean = normalizer.mean.get_value()
@@ -86,35 +65,15 @@ class NormalizerTest(absltest.TestCase):
         key = jax.random.key(SEED)
         data_key, test_key = jax.random.split(key)
 
-        # Generate training data with non-trivial mean and variance
         true_mean = jp.array([1.0, -2.0, 3.0, -4.0, 5.0, -6.0])
         true_std = jp.array([0.5, 1.0, 2.0, 0.1, 3.0, 0.8])
         data = true_mean + true_std * jax.random.normal(
             data_key, (N_STEPS, BATCH_SIZE, OBS_SIZE)
         )
 
-        dummy_network_output = PPONetworkOutput(
-            actions=jp.zeros((BATCH_SIZE, 1)),
-            raw_actions=jp.zeros((BATCH_SIZE, 1)),
-            loglikelihoods=jp.zeros((BATCH_SIZE,)),
-            regularization_loss=jp.array(0.0),
-            value_estimates=jp.zeros((BATCH_SIZE,)),
-            metrics={},
-        )
-
-        # Update statistics
+        state = normalizer.initialize_state(BATCH_SIZE)
         for i in range(N_STEPS):
-            obs_batch = data[i : i + 1]
-            dummy_transition = Transition(
-                obs=obs_batch,
-                network_output=dummy_network_output,
-                rewards=jp.zeros((1, BATCH_SIZE)),
-                done=jp.zeros((1, BATCH_SIZE), jp.bool),
-                truncated=jp.zeros((1, BATCH_SIZE), jp.bool),
-                next_obs=jp.zeros_like(obs_batch),
-                metrics={},
-            )
-            normalizer.update_statistics(dummy_transition, (i + 1) * BATCH_SIZE)
+            normalizer(state, data[i], context=Context.STATS_UPDATE)
 
         # Generate test data from same distribution
         test_data = true_mean + true_std * jax.random.normal(test_key, (100, OBS_SIZE))
@@ -141,32 +100,12 @@ class NormalizerPytreeTest(absltest.TestCase):
         "goal": 4,
     }
 
-    def _make_dict_obs(self, n_time: int, batch: int, key) -> dict:
+    def _make_dict_obs(self, batch: int, key) -> dict:
         k1, k2 = jax.random.split(key)
         return {
-            "proprioception": jax.random.normal(k1, (n_time, batch, 8)),
-            "goal": jax.random.normal(k2, (n_time, batch, 4)),
+            "proprioception": jax.random.normal(k1, (batch, 8)),
+            "goal": jax.random.normal(k2, (batch, 4)),
         }
-
-    def _make_transition(self, obs, batch_size) -> Transition:
-        dummy_output = PPONetworkOutput(
-            actions=jp.zeros((batch_size, 1)),
-            raw_actions=jp.zeros((batch_size, 1)),
-            loglikelihoods=jp.zeros((batch_size,)),
-            regularization_loss=jp.array(0.0),
-            value_estimates=jp.zeros((batch_size,)),
-            metrics={},
-        )
-        n_time = jax.tree.leaves(obs)[0].shape[0]
-        return Transition(
-            obs=obs,
-            network_output=dummy_output,
-            rewards=jp.zeros((n_time, batch_size)),
-            done=jp.zeros((n_time, batch_size), jp.bool),
-            truncated=jp.zeros((n_time, batch_size), jp.bool),
-            next_obs=jax.tree.map(jp.zeros_like, obs),
-            metrics={},
-        )
 
     def test_pytree_initialization(self):
         normalizer = Normalizer(self.OBS_SIZE)
@@ -190,22 +129,21 @@ class NormalizerPytreeTest(absltest.TestCase):
         self.assertTrue(jp.allclose(output.output["proprioception"], jp.full((1, 8), 0.2)))
         self.assertTrue(jp.allclose(output.output["goal"], jp.full((1, 4), 0.5)))
 
-    def test_pytree_update_statistics(self):
-        """update_statistics should work with dict-structured observations."""
+    def test_pytree_stats_update(self):
+        """STATS_UPDATE context should accumulate stats over dict observations."""
         SEED = 7
         BATCH_SIZE = 32
         N_STEPS = 10
         normalizer = Normalizer(self.OBS_SIZE)
 
+        state = normalizer.initialize_state(BATCH_SIZE)
         key = jax.random.key(SEED)
-        for i in range(N_STEPS):
+        for _ in range(N_STEPS):
             key, subkey = jax.random.split(key)
-            obs = self._make_dict_obs(1, BATCH_SIZE, subkey)
-            transition = self._make_transition(obs, BATCH_SIZE)
-            normalizer.update_statistics(transition, (i + 1) * BATCH_SIZE)
+            obs = self._make_dict_obs(BATCH_SIZE, subkey)
+            normalizer(state, obs, context=Context.STATS_UPDATE)
 
         self.assertEqual(normalizer.counter.get_value(), N_STEPS * BATCH_SIZE)
-        # mean should be approximately 0 for standard normal data
         for leaf in jax.tree.leaves(normalizer.mean.get_value()):
             self.assertLess(float(jp.max(jp.abs(leaf))), 0.5)
 
@@ -216,92 +154,27 @@ class NormalizerPytreeTest(absltest.TestCase):
         N_STEPS = 20
         normalizer = Normalizer(self.OBS_SIZE)
 
-        # Shift obs so normalization has real work to do
         true_mean = {"proprioception": jp.full((8,), 3.0), "goal": jp.full((4,), -2.0)}
+        state = normalizer.initialize_state(BATCH_SIZE)
         key = jax.random.key(SEED)
-        for i in range(N_STEPS):
+        for _ in range(N_STEPS):
             key, subkey = jax.random.split(key)
-            raw = self._make_dict_obs(1, BATCH_SIZE, subkey)
+            raw = self._make_dict_obs(BATCH_SIZE, subkey)
             obs = jax.tree.map(lambda x, m: x + m, raw, true_mean)
-            transition = self._make_transition(obs, BATCH_SIZE)
-            normalizer.update_statistics(transition, (i + 1) * BATCH_SIZE)
+            normalizer(state, obs, context=Context.STATS_UPDATE)
 
-        # Test that a fresh batch gets normalized to ~zero mean
         key, subkey = jax.random.split(key)
-        test_raw = self._make_dict_obs(1, 200, subkey)
+        test_raw = self._make_dict_obs(200, subkey)
         test_obs = jax.tree.map(lambda x, m: x + m, test_raw, true_mean)
-        # Squeeze time dim for the forward pass
-        test_obs_squeezed = jax.tree.map(lambda x: x[0], test_obs)
-        state = normalizer.initialize_state(200)
-        output = normalizer(state, test_obs_squeezed)
+        eval_state = normalizer.initialize_state(200)
+        output = normalizer(eval_state, test_obs)
         for key_name, leaf in output.output.items():
             self.assertLess(float(jp.max(jp.abs(jp.mean(leaf, axis=0)))), 0.5,
                             msg=f"key={key_name}: normalized mean too far from 0")
 
 
 class NormalizerStatsUpdateContextTest(absltest.TestCase):
-    """The STATS_UPDATE context should produce the same end-state statistics
-    as the legacy update_statistics(rollout, total_steps) path."""
-
-    def test_stats_update_parity_with_legacy(self):
-        SEED = 7
-        OBS_SIZE = 5
-        BATCH_SIZE = 32
-        N_STEPS = 16
-
-        key = jax.random.key(SEED)
-        true_mean = jp.array([1.0, -2.0, 0.5, 3.0, -1.0])
-        true_std = jp.array([0.5, 1.5, 2.0, 0.3, 1.0])
-        data = true_mean + true_std * jax.random.normal(
-            key, (N_STEPS, BATCH_SIZE, OBS_SIZE)
-        )
-
-        # Path A: legacy update_statistics on a single Transition for the whole rollout.
-        normalizer_a = Normalizer(OBS_SIZE)
-        dummy_out = PPONetworkOutput(
-            actions=jp.zeros((N_STEPS, BATCH_SIZE, 1)),
-            raw_actions=jp.zeros((N_STEPS, BATCH_SIZE, 1)),
-            loglikelihoods=jp.zeros((N_STEPS, BATCH_SIZE)),
-            regularization_loss=jp.array(0.0),
-            value_estimates=jp.zeros((N_STEPS, BATCH_SIZE)),
-            metrics={},
-        )
-        transition = Transition(
-            obs=data,
-            network_output=dummy_out,
-            rewards=jp.zeros((N_STEPS, BATCH_SIZE)),
-            done=jp.zeros((N_STEPS, BATCH_SIZE), bool),
-            truncated=jp.zeros((N_STEPS, BATCH_SIZE), bool),
-            next_obs=data,
-            metrics={},
-        )
-        normalizer_a.update_statistics(transition, total_steps=jp.array(0.0))
-
-        # Path B: per-step __call__ with context=STATS_UPDATE, mimicking what
-        # the post-loss replay pass will do.
-        normalizer_b = Normalizer(OBS_SIZE)
-        state = normalizer_b.initialize_state(BATCH_SIZE)
-        for t in range(N_STEPS):
-            normalizer_b(state, data[t], context=Context.STATS_UPDATE)
-
-        self.assertTrue(
-            jp.allclose(
-                normalizer_a.mean.get_value(),
-                normalizer_b.mean.get_value(),
-                atol=1e-5,
-            )
-        )
-        self.assertTrue(
-            jp.allclose(
-                normalizer_a.M2.get_value(),
-                normalizer_b.M2.get_value(),
-                atol=1e-3,
-            )
-        )
-        self.assertEqual(
-            float(normalizer_a.counter.get_value()),
-            float(normalizer_b.counter.get_value()),
-        )
+    """STATS_UPDATE context updates live stats; other contexts must not."""
 
     def test_non_stats_update_context_does_not_change_stats(self):
         """Calling __call__ with ROLLOUT / LOSS_REPLAY / INFERENCE must not

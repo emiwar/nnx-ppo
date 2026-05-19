@@ -305,9 +305,10 @@ def distillation_step(
 
     total_steps = distillation_state.steps_taken + rollout_length * n_envs
 
-    # Phase 3: Update student's running statistics (e.g. observation normalizer).
-    # update_statistics is typed to accept Transition, so we build a stub from the
-    # relevant fields. The normalizer only accesses .obs and .done.size.
+    # Phase 3: STATS_UPDATE replay — re-runs the rollout through the student
+    # with stored raw_actions so any embedded Normalizer (or other
+    # stats-bearing module) folds the exact rollout activations into its
+    # running statistics. Forward output is discarded.
     stats_transition = Transition(
         obs=rollout_data.obs,
         network_output=rollout_data.student_output,
@@ -317,7 +318,12 @@ def distillation_step(
         next_obs=rollout_data.next_obs,
         metrics=rollout_data.metrics,
     )
-    distillation_state.student.update_statistics(stats_transition, total_steps)
+    from nnx_ppo.algorithms.ppo import _replay_rollout_for_stats
+    _replay_rollout_for_stats(
+        distillation_state.student,
+        distillation_state.student_states,
+        stats_transition,
+    )
 
     # Build metrics dict
     metrics: dict[str, Any] = {}

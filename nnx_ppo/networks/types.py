@@ -1,14 +1,10 @@
 import dataclasses
 import enum
-from typing import Optional, Any, Union, TYPE_CHECKING
-from warnings import deprecated
+from typing import Optional, Any, Union
 import abc
 import jax
 from flax import nnx
-from jaxtyping import Array, Float, PyTree, ScalarLike
-
-if TYPE_CHECKING:
-    from nnx_ppo.algorithms.types import Transition
+from jaxtyping import Array, Float, PyTree
 
 from nnx_ppo.jax_dataclass import JaxDataclass
 
@@ -121,17 +117,6 @@ class PPONetwork(nnx.Module, abc.ABC):
         """
         return prev_state
 
-    @deprecated(
-        "Use the context=Context.STATS_UPDATE forward pass to update running "
-        "statistics inside __call__ instead. This hook remains for backwards "
-        "compatibility with networks that haven't migrated yet and will be "
-        "removed once vnl-experiments are rewritten on the new API."
-    )
-    def update_statistics(
-        self, last_rollout: "Transition", total_steps: ScalarLike
-    ) -> None:
-        return None
-
 
 @jax.tree_util.register_pytree_node_class
 @dataclasses.dataclass(frozen=True)
@@ -216,22 +201,3 @@ class StatefulModule(abc.ABC, nnx.Module):
     def reset_state(self, prev_state: ModuleState) -> ModuleState:
         return prev_state
 
-    @deprecated(
-        "Use context=Context.STATS_UPDATE in __call__ instead. This hook is "
-        "kept only for backwards compatibility with networks that haven't "
-        "migrated to the context-based API and will be removed once the "
-        "experiment rewrites land."
-    )
-    def update_statistics(
-        self, last_rollout: "Transition", total_steps: ScalarLike
-    ) -> None:
-        """Legacy hook called by older training code after a rollout. New code
-        relies on the per-step inline updates that ``Normalizer`` and other
-        stats-bearing modules perform when ``__call__`` is invoked with
-        ``context=Context.STATS_UPDATE``.
-
-        Args:
-          last_rollout (Transition[T, B, ...]): dataclass with the most recent rollout.
-          total_steps: Total number of steps taken so far.
-        """
-        return None

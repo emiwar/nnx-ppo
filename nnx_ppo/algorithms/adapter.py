@@ -186,16 +186,3 @@ class PPOAdapter(PPONetwork):
             },
         }
 
-    def update_statistics(self, last_rollout, total_steps) -> None:
-        """Backwards-compat dispatch to children's legacy update_statistics.
-
-        Walks ``self.inner`` and each action sampler, letting any module
-        that hasn't migrated to the ``context=STATS_UPDATE`` forward path
-        update its statistics through its own override. Currently this is
-        how ``Normalizer`` is kept up to date — its inline STATS_UPDATE
-        path will replace this once ``ppo_step`` switches to the
-        STATS_UPDATE replay pass.
-        """
-        self.inner.update_statistics(last_rollout, total_steps)
-        for sampler in self.action_samplers.values():
-            sampler.update_statistics(last_rollout, total_steps)

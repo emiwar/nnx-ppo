@@ -35,10 +35,23 @@ Recurrent Layers
    :special-members: __call__, __init__
    :show-inheritance:
 
-Action Sampling
----------------
+Delays
+------
 
-.. automodule:: nnx_ppo.networks.sampling_layers
+.. automodule:: nnx_ppo.networks.delay
+   :members:
+   :special-members: __call__, __init__
+   :show-inheritance:
+
+Population Graphs
+-----------------
+
+.. automodule:: nnx_ppo.networks.graph
+   :members:
+   :special-members: __call__, __init__
+   :show-inheritance:
+
+.. automodule:: nnx_ppo.networks.graph.graph
    :members:
    :special-members: __call__, __init__
    :show-inheritance:

@@ -24,6 +24,22 @@ Training
    :members:
    :show-inheritance:
 
+Action Sampling
+---------------
+
+.. automodule:: nnx_ppo.algorithms.distributions
+   :members:
+   :special-members: __call__, __init__
+   :show-inheritance:
+
+PPO Adapter
+-----------
+
+.. automodule:: nnx_ppo.algorithms.adapter
+   :members:
+   :special-members: __call__, __init__
+   :show-inheritance:
+
 Rollout
 -------
 
