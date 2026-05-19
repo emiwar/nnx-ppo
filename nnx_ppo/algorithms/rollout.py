@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jp
 from jaxtyping import Array, Float, Key, Shaped, PRNGKeyArray
 import nnx_ppo.networks.types
-from nnx_ppo.networks.types import PPONetwork, ModuleState
+from nnx_ppo.networks.types import Context, PPONetwork, ModuleState
 from nnx_ppo.algorithms.types import Transition, RLEnv, EnvState
 
 def single_transition(
@@ -14,9 +14,13 @@ def single_transition(
     networks: PPONetwork,
     carry: tuple[ModuleState, EnvState],
     rng_keys_for_env_reset: Key[Array, "batch"],
+    *,
+    context: Context = Context.ROLLOUT,
 ) -> tuple[tuple[ModuleState, EnvState], Transition]:
     network_state, env_state = carry
-    next_network_state, network_output = networks(network_state, env_state.obs)
+    next_network_state, network_output = networks(
+        network_state, env_state.obs, context=context
+    )
     next_env_state = jax.vmap(env.step)(env_state, network_output.actions)
     transition = Transition(
         obs=env_state.obs,
@@ -50,12 +54,14 @@ def unroll_env(
     network_state: ModuleState,
     unroll_length: int,
     rng_key_for_env_reset: PRNGKeyArray,
+    *,
+    context: Context = Context.ROLLOUT,
 ) -> tuple[ModuleState, EnvState, Transition]:
     batch_size = env_state.done.shape[0]
     rng_keys_for_env_reset = jax.random.split(
         rng_key_for_env_reset, (unroll_length, batch_size)
     )
-    step = functools.partial(single_transition, env)
+    step = functools.partial(single_transition, env, context=context)
     (final_network_state, final_env_state), rollout = nnx.scan(
         step,
         in_axes=(nnx.StateAxes({...: nnx.Carry}), nnx.Carry, 0),
@@ -106,7 +112,9 @@ def eval_rollout(
 
     def step(env, networks, carry):
         env_state, network_state, cuml_reward, lifespan = carry
-        next_network_state, network_output = networks(network_state, env_state.obs)
+        next_network_state, network_output = networks(
+            network_state, env_state.obs, context=Context.INFERENCE
+        )
         next_env_state = jax.vmap(env.step)(env_state, network_output.actions)
         next_env_state = next_env_state.replace(  # type: ignore[attr-defined]
             done=jp.logical_or(next_env_state.done, env_state.done).astype(float)
@@ -201,7 +209,9 @@ def eval_rollout_for_render_scan(
 
         obs_batched = jax.tree.map(lambda x: x[None], env_state.obs)
         net_state_batched = jax.tree.map(lambda x: x[None], net_state)
-        next_net_state, network_output = networks(net_state_batched, obs_batched)
+        next_net_state, network_output = networks(
+            net_state_batched, obs_batched, context=Context.INFERENCE
+        )
         next_net_state = jax.tree.map(lambda x: x[0], next_net_state)
         action = jax.tree.map(lambda x: x[0], network_output.actions)
 

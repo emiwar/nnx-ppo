@@ -4,7 +4,7 @@ import jax.numpy as jp
 
 from nnx_ppo.networks.normalizer import Normalizer
 from nnx_ppo.algorithms.types import Transition
-from nnx_ppo.networks.types import PPONetworkOutput
+from nnx_ppo.networks.types import Context, PPONetworkOutput
 
 
 class NormalizerTest(absltest.TestCase):
@@ -237,6 +237,91 @@ class NormalizerPytreeTest(absltest.TestCase):
         for key_name, leaf in output.output.items():
             self.assertLess(float(jp.max(jp.abs(jp.mean(leaf, axis=0)))), 0.5,
                             msg=f"key={key_name}: normalized mean too far from 0")
+
+
+class NormalizerStatsUpdateContextTest(absltest.TestCase):
+    """The STATS_UPDATE context should produce the same end-state statistics
+    as the legacy update_statistics(rollout, total_steps) path."""
+
+    def test_stats_update_parity_with_legacy(self):
+        SEED = 7
+        OBS_SIZE = 5
+        BATCH_SIZE = 32
+        N_STEPS = 16
+
+        key = jax.random.key(SEED)
+        true_mean = jp.array([1.0, -2.0, 0.5, 3.0, -1.0])
+        true_std = jp.array([0.5, 1.5, 2.0, 0.3, 1.0])
+        data = true_mean + true_std * jax.random.normal(
+            key, (N_STEPS, BATCH_SIZE, OBS_SIZE)
+        )
+
+        # Path A: legacy update_statistics on a single Transition for the whole rollout.
+        normalizer_a = Normalizer(OBS_SIZE)
+        dummy_out = PPONetworkOutput(
+            actions=jp.zeros((N_STEPS, BATCH_SIZE, 1)),
+            raw_actions=jp.zeros((N_STEPS, BATCH_SIZE, 1)),
+            loglikelihoods=jp.zeros((N_STEPS, BATCH_SIZE)),
+            regularization_loss=jp.array(0.0),
+            value_estimates=jp.zeros((N_STEPS, BATCH_SIZE)),
+            metrics={},
+        )
+        transition = Transition(
+            obs=data,
+            network_output=dummy_out,
+            rewards=jp.zeros((N_STEPS, BATCH_SIZE)),
+            done=jp.zeros((N_STEPS, BATCH_SIZE), bool),
+            truncated=jp.zeros((N_STEPS, BATCH_SIZE), bool),
+            next_obs=data,
+            metrics={},
+        )
+        normalizer_a.update_statistics(transition, total_steps=jp.array(0.0))
+
+        # Path B: per-step __call__ with context=STATS_UPDATE, mimicking what
+        # the post-loss replay pass will do.
+        normalizer_b = Normalizer(OBS_SIZE)
+        state = normalizer_b.initialize_state(BATCH_SIZE)
+        for t in range(N_STEPS):
+            normalizer_b(state, data[t], context=Context.STATS_UPDATE)
+
+        self.assertTrue(
+            jp.allclose(
+                normalizer_a.mean.get_value(),
+                normalizer_b.mean.get_value(),
+                atol=1e-5,
+            )
+        )
+        self.assertTrue(
+            jp.allclose(
+                normalizer_a.M2.get_value(),
+                normalizer_b.M2.get_value(),
+                atol=1e-3,
+            )
+        )
+        self.assertEqual(
+            float(normalizer_a.counter.get_value()),
+            float(normalizer_b.counter.get_value()),
+        )
+
+    def test_non_stats_update_context_does_not_change_stats(self):
+        """Calling __call__ with ROLLOUT / LOSS_REPLAY / INFERENCE must not
+        mutate the live mean/M2/counter."""
+        normalizer = Normalizer(3)
+        # Seed with some data first via STATS_UPDATE.
+        state = normalizer.initialize_state(4)
+        normalizer(state, jp.ones((4, 3)) * 5.0, context=Context.STATS_UPDATE)
+        snapshot_mean = normalizer.mean.get_value()
+        snapshot_M2 = normalizer.M2.get_value()
+        snapshot_count = normalizer.counter.get_value()
+
+        for ctx in (Context.ROLLOUT, Context.LOSS_REPLAY, Context.INFERENCE):
+            normalizer(state, jp.ones((4, 3)) * 999.0, context=ctx)
+
+        self.assertTrue(jp.allclose(normalizer.mean.get_value(), snapshot_mean))
+        self.assertTrue(jp.allclose(normalizer.M2.get_value(), snapshot_M2))
+        self.assertEqual(
+            float(normalizer.counter.get_value()), float(snapshot_count)
+        )
 
 
 if __name__ == "__main__":

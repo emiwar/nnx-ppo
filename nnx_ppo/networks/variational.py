@@ -5,7 +5,7 @@ import jax.numpy as jp
 from flax import nnx
 from jaxtyping import Array, Float, Key, PRNGKeyArray
 
-from nnx_ppo.networks.types import StatefulModule, StatefulModuleOutput
+from nnx_ppo.networks.types import Context, StatefulModule, StatefulModuleOutput
 
 
 class VariationalBottleneck(StatefulModule):
@@ -33,7 +33,11 @@ class VariationalBottleneck(StatefulModule):
         self.min_std = min_std
 
     def __call__(
-        self, key: Key[Array, "batch"], x: Float[Array, "batch {2*self.latent_size}"]
+        self,
+        key: Key[Array, "batch"],
+        x: Float[Array, "batch {2*self.latent_size}"],
+        *,
+        context: Context = Context.INFERENCE,
     ) -> StatefulModuleOutput:
         """Sample from the variational distribution.
 
@@ -134,6 +138,8 @@ class AR1VariationalBottleneck(StatefulModule):
         self,
         state: AR1State,
         x: Float[Array, "batch {2*self.latent_size}"],
+        *,
+        context: Context = Context.INFERENCE,
     ) -> StatefulModuleOutput:
         """Sample from the variational distribution.
 

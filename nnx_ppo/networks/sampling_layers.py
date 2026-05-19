@@ -6,7 +6,7 @@ import jax.numpy as jp
 from flax import nnx
 from jaxtyping import Array, Float
 
-from nnx_ppo.networks.types import StatefulModule, StatefulModuleOutput
+from nnx_ppo.networks.types import Context, StatefulModule, StatefulModuleOutput
 
 
 class ActionSampler(StatefulModule, abc.ABC):
@@ -18,6 +18,8 @@ class ActionSampler(StatefulModule, abc.ABC):
         state: tuple[()],
         mean_and_std: Float[Array, "batch mean_std_dim"],
         raw_action: Optional[Float[Array, "batch mean_std_dim//2"]] = None,
+        *,
+        context: Context = Context.INFERENCE,
     ) -> StatefulModuleOutput:
         """Apply the layer.
 
@@ -49,6 +51,8 @@ class NormalTanhSampler(ActionSampler):
         state: tuple[()],
         mean_and_std: Float[Array, "batch mean_std_dim"],
         raw_action: Optional[Float[Array, "batch mean_std_dim//2"]] = None,
+        *,
+        context: Context = Context.INFERENCE,
     ) -> StatefulModuleOutput:
         mean, std = jp.split(mean_and_std, 2, axis=-1)
         # std = self.std_scale*0.5*(jp.tanh(std)+1) + self.min_std

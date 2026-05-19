@@ -7,7 +7,7 @@ import jax.numpy as jp
 from flax import nnx
 from jaxtyping import Array, Float
 
-from nnx_ppo.networks.types import StatefulModule, StatefulModuleOutput
+from nnx_ppo.networks.types import Context, StatefulModule, StatefulModuleOutput
 
 # LSTM carry type: tuple of (hidden_state, cell_state)
 LSTMCarry = tuple[Float[Array, "*batch hidden"], Float[Array, "*batch hidden"]]
@@ -87,7 +87,11 @@ class LSTM(StatefulModule):
             self.initial_c = nnx.Param(jp.zeros((hidden_features,)))
 
     def __call__(
-        self, state: LSTMCarry, x: Float[Array, "batch {self.in_features}"]
+        self,
+        state: LSTMCarry,
+        x: Float[Array, "batch {self.in_features}"],
+        *,
+        context: Context = Context.INFERENCE,
     ) -> StatefulModuleOutput:
         """Process input through the LSTM.
 

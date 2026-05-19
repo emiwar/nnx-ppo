@@ -7,7 +7,7 @@ import jax.numpy as jp
 from flax import nnx
 from jaxtyping import Array, Float
 
-from nnx_ppo.networks.types import StatefulModule, StatefulModuleOutput
+from nnx_ppo.networks.types import Context, StatefulModule, StatefulModuleOutput
 
 
 class Dense(StatefulModule):
@@ -40,7 +40,11 @@ class Dense(StatefulModule):
         self.activation = activation
 
     def __call__(
-        self, state: tuple[()], x: Float[Array, "batch {self.in_features}"]
+        self,
+        state: tuple[()],
+        x: Float[Array, "batch {self.in_features}"],
+        *,
+        context: Context = Context.INFERENCE,
     ) -> StatefulModuleOutput:
         y = self.linear(x)
         if self.activation is not None:

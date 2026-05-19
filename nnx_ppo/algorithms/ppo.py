@@ -11,7 +11,7 @@ import jax.numpy as jp
 from jaxtyping import Array, Float, Bool, ScalarLike, Integer
 import optax
 
-from nnx_ppo.networks.types import PPONetwork, ModuleState
+from nnx_ppo.networks.types import Context, PPONetwork, ModuleState
 from nnx_ppo.algorithms import rollout
 from nnx_ppo.algorithms.types import TrainingState, LoggingLevel, RLEnv, EnvState
 from nnx_ppo.algorithms.config import (
@@ -390,7 +390,9 @@ def ppo_loss(
         return jax.lax.cond(done, networks.reset_state, lambda x: x, state)
 
     def step_network(networks: PPONetwork, net_state, obs, done, raw_action):
-        net_state, network_output = networks(net_state, obs, raw_action)
+        net_state, network_output = networks(
+            net_state, obs, raw_action, context=Context.LOSS_REPLAY
+        )
         net_state = reset_net_state(done, net_state)
         return net_state, network_output
 
@@ -408,7 +410,9 @@ def ppo_loss(
     )
 
     last_obs = jax.tree.map(lambda x: x[-1], rollout_data.next_obs)
-    _, network_output_last = networks(next_net_state_again, last_obs)
+    _, network_output_last = networks(
+        next_net_state_again, last_obs, context=Context.LOSS_REPLAY
+    )
 
     # If done is flat, assume it is shared among all agents
     done = rollout_data.done
