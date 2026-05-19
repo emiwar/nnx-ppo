@@ -7,7 +7,7 @@ from nnx_ppo.networks import factories, types
 from nnx_ppo.networks.containers import Sequential
 from nnx_ppo.networks.feedforward import Dense
 from nnx_ppo.networks.normalizer import Normalizer
-from nnx_ppo.networks.sampling_layers import NormalTanhSampler
+from nnx_ppo.algorithms.distributions import NormalTanhSampler
 from nnx_ppo.algorithms.types import Transition
 
 
@@ -64,10 +64,14 @@ class MakeMLPActorCriticTest(absltest.TestCase):
     def test_init_state(self):
         net = self.mlp_net
 
-        # Init
+        # Init — PPOActorCritic now inherits PPOAdapter's state structure
+        # ({"inner": ..., "samplers": ...}). The "inner" entry mirrors the
+        # Sequential([preprocessor, Parallel(action_params=actor, value=critic)])
+        # tree under the hood.
         first_state = net.initialize_state(batch_size=17)
-        self.assertIn("actor", first_state)
-        self.assertIn("critic", first_state)
+        self.assertIn("inner", first_state)
+        self.assertIn("samplers", first_state)
+        self.assertIn("action_params", first_state["samplers"])
 
     def test_simple_input(self):
         net = self.mlp_net
@@ -98,8 +102,8 @@ class MakeMLPActorCriticTest(absltest.TestCase):
 
         next_state, output = call_net(net, next_state, simple_obs)
         self.assertIsInstance(output, types.PPONetworkOutput)
-        self.assertIn("actor", next_state)
-        self.assertIn("critic", next_state)
+        self.assertIn("inner", next_state)
+        self.assertIn("samplers", next_state)
 
     def test_simple_input_batched(self):
         net = self.mlp_net
@@ -119,8 +123,8 @@ class MakeMLPActorCriticTest(absltest.TestCase):
 
         next_state, second_output = net(next_state, simple_obs)
         self.assertIsInstance(second_output, types.PPONetworkOutput)
-        self.assertIn("actor", next_state)
-        self.assertIn("critic", next_state)
+        self.assertIn("inner", next_state)
+        self.assertIn("samplers", next_state)
         self.assertFalse(
             jp.allclose(first_output.actions, second_output.actions),
             "Stochasticity in actions.",

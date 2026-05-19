@@ -8,7 +8,7 @@ from flax import nnx
 from nnx_ppo.networks.variational import AR1VariationalBottleneck
 from nnx_ppo.networks.feedforward import Dense
 from nnx_ppo.networks.containers import PPOActorCritic, Sequential
-from nnx_ppo.networks.sampling_layers import NormalTanhSampler
+from nnx_ppo.algorithms.distributions import NormalTanhSampler
 from nnx_ppo.algorithms import rollout
 from nnx_ppo.algorithms.ppo import ppo_step, new_training_state
 from nnx_ppo.algorithms.types import LoggingLevel

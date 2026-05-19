@@ -12,7 +12,7 @@ import jax.numpy as jp
 from flax import nnx
 
 from nnx_ppo.jax_dataclass import JaxDataclass
-from nnx_ppo.networks.types import ModuleState, PPONetwork, PPONetworkOutput
+from nnx_ppo.networks.types import Context, ModuleState, PPONetwork, PPONetworkOutput
 
 
 @jax.tree_util.register_pytree_node_class
@@ -77,7 +77,14 @@ class DictObsActNet(PPONetwork, nnx.Module):
         # 4 inputs -> scalar value estimate
         self.critic = nnx.Linear(4, 1, rngs=rngs)
 
-    def __call__(self, network_state, obs, raw_action=None):
+    def __call__(
+        self,
+        network_state,
+        obs,
+        raw_action=None,
+        *,
+        context: Context = Context.INFERENCE,
+    ):
         obs_flat = jp.concatenate([obs["pos"], obs["vel"]], axis=-1)  # [batch, 4]
         actor_out = self.actor(obs_flat)  # [batch, 2]
         value = jp.squeeze(self.critic(obs_flat), axis=-1)  # [batch]
@@ -161,7 +168,14 @@ class TwoArmNet(PPONetwork, nnx.Module):
         self.actor = nnx.Linear(8, 4, rngs=rngs)
         self.critic = nnx.Linear(8, 2, rngs=rngs)
 
-    def __call__(self, network_state: tuple, obs, raw_action=None):
+    def __call__(
+        self,
+        network_state: tuple,
+        obs,
+        raw_action=None,
+        *,
+        context: Context = Context.INFERENCE,
+    ):
         obs_flat = jax.vmap(lambda t: jax.flatten_util.ravel_pytree(t)[0])(obs)  # [batch, 8]
         actor_out = self.actor(obs_flat)  # [batch, 4]
         critic_out = self.critic(obs_flat)  # [batch, 2]

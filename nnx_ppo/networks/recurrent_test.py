@@ -7,7 +7,7 @@ from nnx_ppo.networks.recurrent import LSTM
 from nnx_ppo.networks.feedforward import Dense
 from nnx_ppo.networks.factories import make_mlp
 from nnx_ppo.networks.containers import Sequential, PPOActorCritic
-from nnx_ppo.networks.sampling_layers import NormalTanhSampler
+from nnx_ppo.algorithms.distributions import NormalTanhSampler
 from nnx_ppo.algorithms import rollout
 from nnx_ppo.algorithms.ppo import ppo_step, new_training_state
 from nnx_ppo.algorithms.types import LoggingLevel

@@ -1,27 +1,39 @@
 from typing import Any, Optional
 from collections.abc import Sequence
-from warnings import deprecated
 
 import jax
 import jax.numpy as jp
 from flax import nnx
-from jaxtyping import Array, Float, PyTree, ScalarLike
+from jaxtyping import ScalarLike
 
+from nnx_ppo.algorithms.adapter import PPOAdapter
+from nnx_ppo.algorithms.distributions import ActionSampler
 from nnx_ppo.algorithms.types import Transition
-from nnx_ppo.networks.sampling_layers import ActionSampler
 from nnx_ppo.networks.types import (
     Context,
-    PPONetwork,
-    PPONetworkOutput,
     StatefulModule,
     ModuleState,
     StatefulModuleOutput,
 )
 
 
-class PPOActorCritic(PPONetwork, nnx.Module):
-    """A general PPO actor-critic network consisting of separate actor and critic
-    networks."""
+class PPOActorCritic(PPOAdapter):
+    """Convenience PPO network for the standard one-actor / one-critic case.
+
+    A thin subclass of :class:`~nnx_ppo.algorithms.adapter.PPOAdapter` that
+    wires up the conventional decomposition: one actor producing action
+    distribution parameters, one critic producing a scalar value estimate,
+    and an optional preprocessor (typically a :class:`Normalizer`) sitting
+    in front of both.
+
+    Use this for the typical single-agent setup. Drop down to bare
+    ``PPOAdapter`` when you need modular or multi-head networks (e.g. one
+    sampler per body-module, per-population value heads).
+
+    The ``actor``, ``critic``, ``action_sampler``, and ``preprocessor``
+    constructor arguments are also exposed as attributes after init, so
+    external code can introspect them (e.g. for parameter logging).
+    """
 
     def __init__(
         self,
@@ -30,81 +42,24 @@ class PPOActorCritic(PPONetwork, nnx.Module):
         action_sampler: ActionSampler,
         preprocessor: Optional[StatefulModule] = None,
     ):
+        # Expose direct references for backwards compatibility with code
+        # that introspects networks.actor / .critic / .action_sampler /
+        # .preprocessor (factories_test, metrics.py, checkpointing_test,
+        # vnl-experiments). NNX handles shared references to the same
+        # module instance across attributes.
         self.actor = actor
         self.critic = critic
         self.action_sampler = action_sampler
         self.preprocessor = preprocessor
 
-    def __call__(
-        self,
-        network_state: dict[str, ModuleState],
-        obs: PyTree[Float[Array, "..."]],
-        raw_action: Optional[Float[Array, "batch action_dim"]] = None,
-        *,
-        context: Context = Context.INFERENCE,
-    ) -> tuple[dict[str, ModuleState], PPONetworkOutput]:
-        regularization_loss = jp.array(0.0)
-        preprocessor_metrics: dict = {}
-        if self.preprocessor is not None:
-            preprocessor_output = self.preprocessor(
-                network_state["preprocessor"], obs, context=context
-            )
-            obs = preprocessor_output.output
-            network_state["preprocessor"] = preprocessor_output.next_state
-            regularization_loss += preprocessor_output.regularization_loss
-            preprocessor_metrics = preprocessor_output.metrics
-        actor_output = self.actor(network_state["actor"], obs, context=context)
-        sampler_output = self.action_sampler(
-            network_state["action_sampler"],
-            actor_output.output,
-            raw_action,
-            context=context,
+        inner: StatefulModule = Parallel(action_params=actor, value=critic)
+        if preprocessor is not None:
+            inner = Sequential([preprocessor, inner])
+        super().__init__(
+            inner=inner,
+            action_specs={"action_params": action_sampler},
+            value_specs="value",
         )
-        action, raw_action, loglikelihood = sampler_output.output
-        critic_output = self.critic(network_state["critic"], obs, context=context)
-
-        network_state["actor"] = actor_output.next_state
-        network_state["action_sampler"] = sampler_output.next_state
-        network_state["critic"] = critic_output.next_state
-        regularization_loss += actor_output.regularization_loss
-        regularization_loss += sampler_output.regularization_loss
-        regularization_loss += critic_output.regularization_loss
-        return network_state, PPONetworkOutput(
-            actions=action,
-            raw_actions=raw_action,
-            loglikelihoods=loglikelihood,
-            regularization_loss=regularization_loss,
-            value_estimates=jp.squeeze(critic_output.output, axis=-1),
-            metrics={
-                "preprocessor": preprocessor_metrics,
-                "actor": actor_output.metrics,
-                "critic": critic_output.metrics,
-                "action_sampler": sampler_output.metrics,
-            },
-        )
-
-    @property
-    def components(self):
-        components = {
-            "actor": self.actor,
-            "critic": self.critic,
-            "action_sampler": self.action_sampler,
-        }
-        if self.preprocessor is not None:
-            components["preprocessor"] = self.preprocessor
-        return components
-
-    def initialize_state(self, batch_size: int) -> dict[str, ModuleState]:
-        return {k: v.initialize_state(batch_size) for k, v in self.components.items()}
-
-    def reset_state(self, prev_state: dict[str, ModuleState]) -> dict[str, ModuleState]:
-        return {k: v.reset_state(prev_state[k]) for k, v in self.components.items()}
-
-    def update_statistics(
-        self, last_rollout: Transition, total_steps: ScalarLike
-    ) -> None:
-        for comp in self.components.values():
-            comp.update_statistics(last_rollout, total_steps)
 
 
 class Sequential(StatefulModule):

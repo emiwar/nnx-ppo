@@ -47,7 +47,14 @@ class DummyCounterNet(types.PPONetwork, nnx.Module):
     """Dummy stateful network that always outputs the number of steps since its
     last reset, independent of its input."""
 
-    def __call__(self, state, obs, raw_action=None) -> tuple[Any, types.PPONetworkOutput]:
+    def __call__(
+        self,
+        state,
+        obs,
+        raw_action=None,
+        *,
+        context: types.Context = types.Context.INFERENCE,
+    ) -> tuple[Any, types.PPONetworkOutput]:
         old_counter = state["counter_state"]["counter"]
         new_counter = old_counter + 1
         new_state = {"counter_state": {"counter": new_counter}}

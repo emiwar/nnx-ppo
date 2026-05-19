@@ -12,7 +12,7 @@ from flax import nnx
 from nnx_ppo.networks import factories
 from nnx_ppo.networks.containers import PPOActorCritic, Sequential
 from nnx_ppo.networks.feedforward import Dense
-from nnx_ppo.networks.sampling_layers import NormalTanhSampler
+from nnx_ppo.algorithms.distributions import NormalTanhSampler
 from nnx_ppo.networks.variational import AR1VariationalBottleneck
 from nnx_ppo.algorithms import ppo
 from nnx_ppo.algorithms.checkpointing import make_checkpoint_fn, load_checkpoint
@@ -321,16 +321,22 @@ class AR1VBCheckpointTest(absltest.TestCase):
         try:
             state = self._make_training_state(n_envs=n_envs)
 
-            # AR1VB is layer index 1 in the actor Sequential: [Dense, AR1VB, Dense].
-            actor_state = state.network_states["actor"]
+            # Under PPOAdapter the state is {"inner": <inner>, "samplers": {...}}.
+            # PPOActorCritic with no preprocessor uses inner = Parallel(action_params=actor, value=critic),
+            # so inner state is {"action_params": [...], "value": [...]}.
+            # AR1VB is layer index 1 of the actor Sequential.
+            inner_state = state.network_states["inner"]
+            actor_state = inner_state["action_params"]
             known_last_z = jp.ones((n_envs, _LATENT_SIZE)) * 7.77
             new_ar1vb_state = {"keys": actor_state[1]["keys"], "last_z": known_last_z}
-            new_network_states = dict(state.network_states)
-            new_network_states["actor"] = [
+            new_inner_state = dict(inner_state)
+            new_inner_state["action_params"] = [
                 actor_state[0],
                 new_ar1vb_state,
                 actor_state[2],
             ]
+            new_network_states = dict(state.network_states)
+            new_network_states["inner"] = new_inner_state
             state = state.replace(network_states=new_network_states)
 
             fn = make_checkpoint_fn(tmpdir)
@@ -344,7 +350,9 @@ class AR1VBCheckpointTest(absltest.TestCase):
             )
             loaded = ckpt["training_state"]
 
-            loaded_last_z = loaded.network_states["actor"][1]["last_z"]
+            loaded_last_z = (
+                loaded.network_states["inner"]["action_params"][1]["last_z"]
+            )
             self.assertTrue(
                 jp.allclose(loaded_last_z, known_last_z),
                 "AR1VB last_z not preserved after checkpoint.",
@@ -358,8 +366,13 @@ class AR1VBCheckpointTest(absltest.TestCase):
         tmpdir = tempfile.mkdtemp()
         try:
             state = self._make_training_state(n_envs=n_envs)
-            # Initial last_z should be all NaN (from initialize_state).
-            initial_last_z = state.network_states["actor"][1]["last_z"]
+            # Under PPOAdapter, the actor Sequential's state lives at
+            # state.network_states["inner"]["action_params"] (no preprocessor
+            # in this test, so inner is Parallel directly, not wrapped in
+            # Sequential).
+            initial_last_z = (
+                state.network_states["inner"]["action_params"][1]["last_z"]
+            )
             self.assertTrue(
                 jp.all(jp.isnan(initial_last_z)),
                 "Expected initial last_z to be all NaN.",
@@ -376,7 +389,9 @@ class AR1VBCheckpointTest(absltest.TestCase):
             )
             loaded = ckpt["training_state"]
 
-            loaded_last_z = loaded.network_states["actor"][1]["last_z"]
+            loaded_last_z = (
+                loaded.network_states["inner"]["action_params"][1]["last_z"]
+            )
             self.assertTrue(
                 jp.all(jp.isnan(loaded_last_z)),
                 "AR1VB NaN sentinel not preserved after checkpoint.",

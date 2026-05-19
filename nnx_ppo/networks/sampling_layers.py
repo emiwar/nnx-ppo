@@ -1,117 +1,24 @@
-from typing import Optional
-import abc
+"""Backwards-compatibility re-export shim.
 
-import jax
-import jax.numpy as jp
-from flax import nnx
-from jaxtyping import Array, Float
+Action samplers moved to :mod:`nnx_ppo.algorithms.distributions` — they are
+policy-distribution machinery, not general network layers, and belong
+alongside the rest of the PPO algorithm code.
 
-from nnx_ppo.networks.types import Context, StatefulModule, StatefulModuleOutput
+New code should import from ``nnx_ppo.algorithms.distributions``. This
+module re-exports the symbols and emits a ``DeprecationWarning`` on import
+so callers in ``vnl-experiments`` keep working until they migrate.
+"""
 
+import warnings
 
-class ActionSampler(StatefulModule, abc.ABC):
-    deterministic: bool = False
+from nnx_ppo.algorithms.distributions import ActionSampler, NormalTanhSampler
 
-    @abc.abstractmethod
-    def __call__(
-        self,
-        state: tuple[()],
-        mean_and_std: Float[Array, "batch mean_std_dim"],
-        raw_action: Optional[Float[Array, "batch mean_std_dim//2"]] = None,
-        *,
-        context: Context = Context.INFERENCE,
-    ) -> StatefulModuleOutput:
-        """Apply the layer.
+warnings.warn(
+    "nnx_ppo.networks.sampling_layers has moved to "
+    "nnx_ppo.algorithms.distributions. Update your imports; this shim will "
+    "be removed once vnl-experiments are migrated to the new API.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
-        Args:
-            state: Empty tuple (stateless sampler).
-            mean_and_std: Concatenated mean and std, shape (batch, 2*action_dim).
-            raw_action: Optional pre-sampled action, shape (batch, action_dim).
-        """
-
-
-class NormalTanhSampler(ActionSampler):
-    """Normal distribution followed by tanh."""
-
-    def __init__(
-        self,
-        rng: nnx.Rngs,
-        entropy_weight: float,
-        min_std: float = 1e-3,
-        std_scale: float = 1.0,
-    ):
-        self.rng = rng
-        self.min_std = min_std
-        self.std_scale = std_scale
-        self.deterministic = False
-        self.entropy_weight = entropy_weight
-
-    def __call__(
-        self,
-        state: tuple[()],
-        mean_and_std: Float[Array, "batch mean_std_dim"],
-        raw_action: Optional[Float[Array, "batch mean_std_dim//2"]] = None,
-        *,
-        context: Context = Context.INFERENCE,
-    ) -> StatefulModuleOutput:
-        mean, std = jp.split(mean_and_std, 2, axis=-1)
-        # std = self.std_scale*0.5*(jp.tanh(std)+1) + self.min_std
-        std = (jax.nn.softplus(std) + self.min_std) * self.std_scale
-
-        # We want to sample an action even if raw_action is specified, so that the
-        # state of the RNG is consistent after the call.
-        if self.deterministic:
-            sampled_action = mean
-        else:
-            sampled_action = mean + std * jax.random.normal(self.rng(), mean.shape)
-        if raw_action is None:
-            raw_action = jax.lax.stop_gradient(sampled_action)
-        action = jp.tanh(raw_action)
-        loglikelihood = self._loglikelihood(raw_action, mean, std)
-        entropy_cost = -self.entropy_weight * self._entropy(mean, std)
-        return StatefulModuleOutput(
-            next_state=(),
-            output=(action, raw_action, loglikelihood),
-            regularization_loss=entropy_cost,
-            metrics={"mu": mean, "sigma": std},
-        )
-
-    def initialize_state(self, batch_size: int) -> tuple[()]:
-        return ()
-
-    def _loglikelihood(
-        self,
-        raw_action: Float[Array, "batch action_dim"],
-        mean: Float[Array, "batch action_dim"],
-        std: Float[Array, "batch action_dim"],
-    ) -> Float[Array, "batch"]:
-        z = raw_action
-
-        # Log-likelihood for normal:
-        log_unnormalized = -0.5 * jp.square((z - mean) / std)
-        log_normalization = 0.5 * jp.log(2.0 * jp.pi) + jp.log(std)
-        log_prob = log_unnormalized - log_normalization
-
-        # Modify the log-likelihood due to tanh transformation. Should be log|d/dz tanh(z)|.
-        # The expression below is a numerically stable version of log|d/dz tanh(z)| borrowed from Brax
-        log_det_jacobian = 2.0 * (jp.log(2.0) - z - jax.nn.softplus(-2.0 * z))
-        log_prob -= log_det_jacobian
-
-        # Sum over last dimension if needed
-        log_prob = jp.sum(log_prob, axis=-1)
-
-        return log_prob
-
-    def _entropy(
-        self,
-        mean: Float[Array, "batch action_dim"],
-        std: Float[Array, "batch action_dim"],
-    ) -> Float[Array, "batch"]:
-        # Entropy per dimension, sum over action dimensions
-        normal_entropy = 0.5 + 0.5 * jp.log(2.0 * jp.pi) + jp.log(std)
-        # No analytical formula for entropy, use a single Monte Carlo sample
-        z = mean + std * jax.lax.stop_gradient(
-            jax.random.normal(self.rng(), mean.shape)
-        )
-        log_det_jacobian = 2.0 * (jp.log(2.0) - z - jax.nn.softplus(-2.0 * z))
-        return jp.sum(normal_entropy + log_det_jacobian, axis=-1)
+__all__ = ["ActionSampler", "NormalTanhSampler"]

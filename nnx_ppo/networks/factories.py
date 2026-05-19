@@ -4,9 +4,9 @@ from collections.abc import Callable
 from flax import nnx
 from jaxtyping import Array
 
+from nnx_ppo.algorithms.distributions import NormalTanhSampler
 from nnx_ppo.networks.containers import PPOActorCritic, Sequential
 from nnx_ppo.networks.feedforward import Dense
-from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 from nnx_ppo.networks.normalizer import Normalizer
 
 
