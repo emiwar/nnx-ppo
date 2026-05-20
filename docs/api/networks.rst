@@ -19,6 +19,14 @@ Containers
    :special-members: __call__, __init__
    :show-inheritance:
 
+Utilities
+---------
+
+.. automodule:: nnx_ppo.networks.utils
+   :members:
+   :special-members: __call__, __init__
+   :show-inheritance:
+
 Feedforward Layers
 ------------------
 
