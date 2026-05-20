@@ -1,7 +1,6 @@
 from typing import Any, Optional
 from collections.abc import Sequence
 
-import jax
 import jax.numpy as jp
 from flax import nnx
 
@@ -130,22 +129,6 @@ class Concat(StatefulModule):
 
     def reset_state(self, prev_state: dict[str, ModuleState]) -> dict[str, ModuleState]:
         return {k: c.reset_state(prev_state[k]) for k, c in self.components.items()}
-
-
-class Flattener(StatefulModule):
-    """Takes a PyTree as input and concatenates each leaf along the last axis."""
-
-    def __call__(
-        self,
-        state: tuple[()],
-        x: Any,
-        *,
-        context: Context = Context.INFERENCE,
-    ) -> StatefulModuleOutput:
-        flattened, _ = jax.tree.flatten(x)
-        flattened = [a.reshape((a.shape[0], -1)) for a in flattened]
-        concated = jp.concatenate(flattened, axis=-1)
-        return StatefulModuleOutput((), concated, jp.array(0.0), {})
 
 
 class Parallel(StatefulModule):
