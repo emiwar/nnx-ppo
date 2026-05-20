@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from typing import Any
 
 import jax
@@ -13,6 +14,23 @@ from nnx_ppo.networks.types import (
 
 class NormalizerStatistics(nnx.Variable):
     pass
+
+
+def _canonicalize(obj: Any) -> Any:
+    """Recursively convert any Mapping (e.g. OrderedDict, FrozenDict,
+    ConfigDict) to a plain ``dict``. JAX registers plain ``dict`` and
+    ``OrderedDict`` as distinct pytree node types, so a Normalizer
+    initialised from one and called with the other fails to ``tree.map``.
+    Canonicalising both sides to plain ``dict`` removes the mismatch.
+    Lists/tuples and other types are preserved.
+    """
+    if isinstance(obj, Mapping):
+        return {k: _canonicalize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_canonicalize(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_canonicalize(v) for v in obj)
+    return obj
 
 
 class Normalizer(StatefulModule):
@@ -42,6 +60,7 @@ class Normalizer(StatefulModule):
             self.mean = NormalizerStatistics(jp.zeros(shape))
             self.M2 = NormalizerStatistics(jp.zeros(shape))
         else:
+            shape = _canonicalize(shape)
             self.mean = NormalizerStatistics(jax.tree.map(jp.zeros, shape))
             self.M2 = NormalizerStatistics(jax.tree.map(jp.zeros, shape))
         self.counter = NormalizerStatistics(jp.array(0.0))
@@ -54,6 +73,9 @@ class Normalizer(StatefulModule):
         *,
         context: Context = Context.INFERENCE,
     ) -> StatefulModuleOutput:
+        # Canonicalise any incoming Mapping (OrderedDict, FrozenDict, ...)
+        # to plain dict so jax.tree.map aligns with self.mean / self.M2.
+        x = _canonicalize(x)
         if context == Context.STATS_UPDATE:
             self._welford_step(x)
         std = jax.lax.cond(
