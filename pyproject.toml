@@ -18,7 +18,7 @@ dependencies = [
 dev = ["beartype", "pytest", "pyright", "brax", "playground"]
 docs = [
     "sphinx>=7.0",
-    "furo",
+    "sphinx-rtd-theme",
 ]
 
 [build-system]

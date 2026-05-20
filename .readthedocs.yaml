@@ -13,3 +13,14 @@ build:
 # Build documentation in the "docs/" directory with Sphinx
 sphinx:
    configuration: docs/conf.py
+
+# Install the project with the `docs` extra so that:
+#   - sphinx_rtd_theme is available to conf.py (the theme is no longer
+#     installed by default on Read the Docs builders), and
+#   - autodoc can import nnx_ppo modules and their runtime dependencies.
+python:
+  install:
+    - method: pip
+      path: .
+      extra_requirements:
+        - docs
