@@ -11,7 +11,13 @@ from nnx_ppo.networks.types import (
     StatefulModule,
     StatefulModuleOutput,
 )
-from nnx_ppo.networks.utils import Filter, Flattener, Merge, Scale
+from nnx_ppo.networks.utils import (
+    Filter,
+    Flattener,
+    Map,
+    Merge,
+    Scale,
+)
 
 
 class ScaleTest(absltest.TestCase):
@@ -206,6 +212,79 @@ class MergeTest(absltest.TestCase):
         out = m(state, jp.ones((4, 2)))
         np.testing.assert_array_equal(out.next_state["a"], jp.ones(4, jp.int32))
         np.testing.assert_array_equal(out.next_state["b"], jp.ones(4, jp.int32))
+
+
+class MapTest(absltest.TestCase):
+
+    class _AddOne(StatefulModule):
+        def __call__(self, s, x, *, context: Context = Context.INFERENCE):
+            return StatefulModuleOutput(s, x + 1.0, jp.array(0.0), {})
+
+    def test_basic_per_key_dispatch(self):
+        m = Map(a=MapTest._AddOne(), b=MapTest._AddOne())
+        state = m.initialize_state(3)
+        out = m(state, {"a": jp.zeros((3, 4)), "b": jp.full((3, 2), 7.0)})
+        self.assertEqual(set(out.output.keys()), {"a", "b"})
+        np.testing.assert_array_equal(out.output["a"], jp.ones((3, 4)))
+        np.testing.assert_array_equal(out.output["b"], jp.full((3, 2), 8.0))
+
+    def test_dict_constructor(self):
+        m = Map({"x": MapTest._AddOne(), "y": MapTest._AddOne()})
+        out = m(m.initialize_state(1), {"x": jp.zeros((1, 2)), "y": jp.zeros((1, 2))})
+        self.assertEqual(set(out.output.keys()), {"x", "y"})
+
+    def test_both_ctor_forms_rejected(self):
+        with self.assertRaises(ValueError):
+            Map({"a": MapTest._AddOne()}, b=MapTest._AddOne())
+
+    def test_empty_rejected(self):
+        with self.assertRaises(ValueError):
+            Map()
+
+    def test_extra_input_keys_are_ignored(self):
+        # Map only consumes keys named in its components.
+        m = Map(a=MapTest._AddOne())
+        out = m(m.initialize_state(1), {"a": jp.zeros((1, 2)), "extra": jp.ones((1, 9))})
+        self.assertEqual(list(out.output.keys()), ["a"])
+
+    def test_missing_input_key_raises(self):
+        m = Map(a=MapTest._AddOne(), b=MapTest._AddOne())
+        with self.assertRaises(KeyError):
+            m(m.initialize_state(1), {"a": jp.zeros((1, 2))})
+
+
+class ParallelDictCtorTest(absltest.TestCase):
+    """Parallel and Concat both accept either kwargs or a positional dict."""
+
+    def test_parallel_dict_ctor(self):
+        from nnx_ppo.networks.containers import Parallel
+        from nnx_ppo.networks.feedforward import Dense
+
+        rngs = nnx.Rngs(0)
+        p = Parallel({"a": Dense(4, 2, rngs), "b": Dense(4, 3, rngs)})
+        out = p(p.initialize_state(2), jp.ones((2, 4)))
+        self.assertEqual(set(out.output.keys()), {"a", "b"})
+        self.assertEqual(out.output["a"].shape, (2, 2))
+
+    def test_concat_dict_ctor(self):
+        from nnx_ppo.networks.containers import Concat
+        from nnx_ppo.networks.feedforward import Dense
+
+        rngs = nnx.Rngs(0)
+        c = Concat({"a": Dense(3, 2, rngs), "b": Dense(4, 5, rngs)})
+        out = c(
+            c.initialize_state(2),
+            {"a": jp.zeros((2, 3)), "b": jp.zeros((2, 4))},
+        )
+        self.assertEqual(out.output.shape, (2, 7))
+
+    def test_parallel_both_forms_rejected(self):
+        from nnx_ppo.networks.containers import Parallel
+        from nnx_ppo.networks.feedforward import Dense
+
+        rngs = nnx.Rngs(0)
+        with self.assertRaises(ValueError):
+            Parallel({"a": Dense(2, 2, rngs)}, b=Dense(2, 2, rngs))
 
 
 class ComposesWithPPOAdapterTest(absltest.TestCase):

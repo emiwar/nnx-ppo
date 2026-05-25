@@ -38,6 +38,28 @@ from nnx_ppo.networks.types import (
 FilterSpec = Union[str, tuple, Callable[[Any], Any]]
 
 
+def _resolve_components(
+    name: str,
+    modules: dict | None,
+    kwargs: dict,
+) -> dict:
+    """Helper for containers that accept either ``X({k: v, ...})`` or
+    ``X(k=v, ...)`` construction.
+
+    Returns the chosen component dict; raises if both forms are used or
+    neither is non-empty.
+    """
+    if modules is not None and kwargs:
+        raise ValueError(
+            f"{name}: pass either a positional dict or keyword arguments, "
+            "not both"
+        )
+    components = modules if modules is not None else kwargs
+    if not components:
+        raise ValueError(f"{name} requires at least one component")
+    return components
+
+
 class Flattener(StatefulModule):
     """Flatten a pytree into a tensor (or a dict-of-tensors).
 
@@ -194,13 +216,21 @@ class Merge(StatefulModule):
             critic=detached_critic_stack,    # emits {value_arm_L, ...}
         )
 
+    Accepts either keyword arguments (when names are valid Python
+    identifiers) or a positional dict ``Merge({...})`` (when they are
+    not).
+
     Carry state is a dict ``{name: component_state}`` — same shape as
     :class:`~nnx_ppo.networks.containers.Parallel`.
     """
 
-    def __init__(self, **components: StatefulModule):
-        if not components:
-            raise ValueError("Merge requires at least one component")
+    def __init__(
+        self,
+        modules: dict[str, StatefulModule] | None = None,
+        /,
+        **kwargs: StatefulModule,
+    ):
+        components = _resolve_components("Merge", modules, kwargs)
         self.components = nnx.Dict(components)
 
     def __call__(
@@ -233,6 +263,75 @@ class Merge(StatefulModule):
                 merged[k] = v
         return StatefulModuleOutput(
             new_state, merged, regularization_loss, metrics
+        )
+
+    def initialize_state(self, batch_size: int) -> dict[str, ModuleState]:
+        return {
+            k: c.initialize_state(batch_size) for k, c in self.components.items()
+        }
+
+    def reset_state(
+        self, prev_state: dict[str, ModuleState]
+    ) -> dict[str, ModuleState]:
+        return {
+            k: c.reset_state(prev_state[k]) for k, c in self.components.items()
+        }
+
+
+class Map(StatefulModule):
+    """Per-key dispatch: dict input, dict output.
+
+    Each named sub-module sees the upstream's same-named entry as input
+    and produces the same-named entry of the output. Distinct from:
+
+    * :class:`~nnx_ppo.networks.containers.Parallel` — same input fed to
+      every component, dict output.
+    * :class:`~nnx_ppo.networks.containers.Concat` — per-key dispatch,
+      concatenated output (no dict).
+
+    Use this when you want to apply a different module to each entry of
+    a structured input — e.g. a per-population action sampler::
+
+        Map({pop: NormalTanhSampler(rngs, ...) for pop in POPULATIONS})
+
+    The input dict must contain at least every key in ``modules``; extra
+    keys are dropped.
+
+    Accepts either keyword arguments or a positional dict
+    ``Map({...})`` (necessary when keys are not valid Python
+    identifiers).
+
+    Carry state is a dict ``{name: component_state}``.
+    """
+
+    def __init__(
+        self,
+        modules: dict[str, StatefulModule] | None = None,
+        /,
+        **kwargs: StatefulModule,
+    ):
+        components = _resolve_components("Map", modules, kwargs)
+        self.components = nnx.Dict(components)
+
+    def __call__(
+        self,
+        state: dict[str, ModuleState],
+        x: dict[str, Any],
+        *,
+        context: Context = Context.INFERENCE,
+    ) -> StatefulModuleOutput:
+        new_state: dict[str, ModuleState] = {}
+        outputs: dict[str, Any] = {}
+        regularization_loss = jp.array(0.0)
+        metrics: dict[str, Any] = {}
+        for name, component in self.components.items():
+            out = component(state[name], x[name], context=context)
+            new_state[name] = out.next_state
+            outputs[name] = out.output
+            regularization_loss = regularization_loss + out.regularization_loss
+            metrics[name] = out.metrics
+        return StatefulModuleOutput(
+            new_state, outputs, regularization_loss, metrics
         )
 
     def initialize_state(self, batch_size: int) -> dict[str, ModuleState]:

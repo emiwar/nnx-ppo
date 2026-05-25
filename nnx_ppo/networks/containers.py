@@ -100,8 +100,29 @@ class Sequential(StatefulModule):
 
 
 class Concat(StatefulModule):
-    def __init__(self, **kwargs: StatefulModule):
-        self.components = nnx.Dict(kwargs)
+    """Per-key dispatch + concat: dict input, single-tensor output.
+
+    Each named sub-module sees the upstream's same-named entry as
+    input; the per-component outputs are concatenated along the last
+    axis. Accepts either keyword arguments or a positional dict
+    ``Concat({...})`` (when keys are not valid Python identifiers).
+    """
+
+    def __init__(
+        self,
+        modules: dict[str, StatefulModule] | None = None,
+        /,
+        **kwargs: StatefulModule,
+    ):
+        if modules is not None and kwargs:
+            raise ValueError(
+                "Concat: pass either a positional dict or keyword "
+                "arguments, not both"
+            )
+        components = modules if modules is not None else kwargs
+        if not components:
+            raise ValueError("Concat requires at least one component")
+        self.components = nnx.Dict(components)
 
     def __call__(
         self,
@@ -145,7 +166,18 @@ class Parallel(StatefulModule):
         # trunk(state, x).output is {"action_params": ..., "value": ...}
     """
 
-    def __init__(self, **components: StatefulModule):
+    def __init__(
+        self,
+        modules: dict[str, StatefulModule] | None = None,
+        /,
+        **kwargs: StatefulModule,
+    ):
+        if modules is not None and kwargs:
+            raise ValueError(
+                "Parallel: pass either a positional dict or keyword "
+                "arguments, not both"
+            )
+        components = modules if modules is not None else kwargs
         if not components:
             raise ValueError("Parallel requires at least one sub-module")
         self.components = nnx.Dict(components)
