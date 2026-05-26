@@ -437,16 +437,18 @@ def ppo_loss(
     if combine_advantages:
         summed_advantage = jax.tree.reduce_associative(jp.add, advantages)
 
-        if jax.tree.structure(network_output.loglikelihoods) == jax.tree.structure(advantages):
-            # Structured loglikelihoods matching advantages: use mean advantage for all modules
-            mean_advantage = summed_advantage / len(jax.tree.flatten(advantages))
-            advantages = jax.tree.map(lambda _: mean_advantage, advantages)
-            print("Combining averages, but keeping loglikelihoods separate.")
-        else:
-            # Scalar (joint) loglikelihoods: collapse all advantages into one matching array
+        if isinstance(network_output.loglikelihoods, jax.Array):
+            # Scalar (joint) loglikelihoods: collapse all advantages into a single array.
             advantages = summed_advantage
-            print("Combining averages to match single loglikelihood.")
-            print(f"Advantages shape: {advantages.shape}; loglikelihood shape: {network_output.loglikelihoods}")
+        else:
+            # Structured loglikelihoods (possibly with a different key set than
+            # advantages, e.g. value heads on every body module but actions
+            # only on actuated ones). Broadcast the team-summed advantage to
+            # the loglikelihoods tree so each per-module policy is optimised
+            # against the shared team advantage.
+            advantages = jax.tree.map(
+                lambda _: summed_advantage, network_output.loglikelihoods
+            )
 
 
     if normalize_advantages:
