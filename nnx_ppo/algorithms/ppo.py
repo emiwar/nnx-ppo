@@ -11,7 +11,7 @@ import jax.numpy as jp
 from jaxtyping import Array, Float, Bool, ScalarLike, Integer
 import optax
 
-from nnx_ppo.networks.types import Context, PPONetwork, ModuleState
+from nnx_ppo.networks.types import ModuleState, StatefulModule
 from nnx_ppo.algorithms import rollout
 from nnx_ppo.algorithms.types import TrainingState, LoggingLevel, RLEnv, EnvState
 from nnx_ppo.algorithms.config import (
@@ -39,7 +39,7 @@ def _should_run(steps: int, last_step: int, every_steps: int) -> bool:
 
 def train_ppo(
     env: RLEnv,
-    networks: PPONetwork,
+    networks: StatefulModule,
     config: Optional[TrainConfig] = None,
     *,
     total_steps: Optional[int] = None,
@@ -310,9 +310,7 @@ def ppo_step(
     metrics["total_steps"] = total_steps
     if LoggingLevel.WEIGHTS in logging_level:
         log_weight_stats(metrics, training_state.networks, logging_percentiles)
-    _replay_rollout_for_stats(
-        training_state.networks, training_state.network_states, rollout_data
-    )
+    training_state.networks.update_statistics(rollout_data.rollout_extras)
 
     # Now that all updates are done, we can replace all the network (and environment)
     # states in training state. Note that this would have been incorrect to update
@@ -373,49 +371,8 @@ def gae(
     return jax.lax.stop_gradient(advantages)
 
 
-@nnx.jit
-def _replay_rollout_for_stats(
-    networks: PPONetwork,
-    initial_network_state: Any,
-    rollout_data: rollout.Transition,
-) -> None:
-    """Replay the rollout through the network with ``context=STATS_UPDATE``.
-
-    Structurally identical to the LOSS_REPLAY scan in :func:`ppo_loss` — same
-    starting state, same stored ``raw_action``\\s, same per-step reset on
-    ``done`` — but invoked with the STATS_UPDATE context so that modules
-    that maintain running statistics (e.g. :class:`Normalizer`) accumulate
-    them from the exact activations they saw during rollout. The forward
-    output is discarded; only the side effects (NNX variable updates)
-    matter.
-    """
-    @jax.vmap
-    def reset_net_state(done, state):
-        return jax.lax.cond(done, networks.reset_state, lambda x: x, state)
-
-    def step_network(networks, net_state, obs, done, raw_action):
-        net_state, _ = networks(
-            net_state, obs, raw_action, context=Context.STATS_UPDATE
-        )
-        net_state = reset_net_state(done, net_state)
-        return net_state, None
-
-    time_scan = nnx.scan(
-        step_network,
-        in_axes=(nnx.StateAxes({...: nnx.Carry}), nnx.Carry, 0, 0, 0),
-        out_axes=(nnx.Carry, 0),
-    )
-    time_scan(
-        networks,
-        initial_network_state,
-        rollout_data.obs,
-        rollout_data.done,
-        rollout_data.network_output.raw_actions,
-    )
-
-
 def ppo_loss(
-    networks: PPONetwork,
+    networks: StatefulModule,
     network_state: Any,
     rollout_data: rollout.Transition,
     clip_range: ScalarLike,
@@ -432,30 +389,29 @@ def ppo_loss(
     def reset_net_state(done, state):
         return jax.lax.cond(done, networks.reset_state, lambda x: x, state)
 
-    def step_network(networks: PPONetwork, net_state, obs, done, raw_action):
-        net_state, network_output = networks(
-            net_state, obs, raw_action, context=Context.LOSS_REPLAY
-        )
-        net_state = reset_net_state(done, net_state)
-        return net_state, network_output
+    def step_network(networks: StatefulModule, net_state, obs, done, rollout_extras):
+        out = networks(net_state, obs, rollout_extras)
+        new_net_state = reset_net_state(done, out.next_state)
+        return new_net_state, (out.output, out.regularization_loss)
 
     time_scan = nnx.scan(
         step_network,
         in_axes=(nnx.StateAxes({...: nnx.Carry}), nnx.Carry, 0, 0, 0),
         out_axes=(nnx.Carry, 0),
     )
-    next_net_state_again, network_output = time_scan(
+    next_net_state_again, (network_output, scanned_reg_loss) = time_scan(
         networks,
         network_state,
         rollout_data.obs,
         rollout_data.done,
-        rollout_data.network_output.raw_actions,
+        rollout_data.rollout_extras,
     )
 
     last_obs = jax.tree.map(lambda x: x[-1], rollout_data.next_obs)
-    _, network_output_last = networks(
-        next_net_state_again, last_obs, context=Context.LOSS_REPLAY
-    )
+    # Last-step query is only used to bootstrap value_estimates at T+1;
+    # rollout_extras=None lets samplers fall back to fresh-sample.
+    out_last = networks(next_net_state_again, last_obs)
+    network_output_last = out_last.output
 
     # If done is flat, assume it is shared among all agents
     done = rollout_data.done
@@ -519,7 +475,7 @@ def ppo_loss(
     )
     # Note that it's the network's responsiblity to add entropy loss as one particular
     # instance of a regularization loss.
-    regularization_losses = jax.tree.map(jp.mean, network_output.regularization_loss)
+    regularization_losses = jax.tree.map(jp.mean, scanned_reg_loss)
 
     actor_loss = jax.tree.reduce(jp.add, actor_losses)
     critic_loss = jax.tree.reduce(jp.add, critic_losses)
@@ -578,7 +534,7 @@ def ppo_loss(
 
 def new_training_state(
     env: RLEnv,
-    networks: PPONetwork,
+    networks: StatefulModule,
     n_envs: int,
     seed: int | Integer[Array, ""],
     learning_rate: float = 1e-4,

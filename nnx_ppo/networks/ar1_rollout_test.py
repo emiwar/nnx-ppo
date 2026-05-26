@@ -7,8 +7,9 @@ from flax import nnx
 
 from nnx_ppo.networks.variational import AR1VariationalBottleneck
 from nnx_ppo.networks.feedforward import Dense
-from nnx_ppo.networks.containers import PPOActorCritic, Sequential
-from nnx_ppo.algorithms.distributions import NormalTanhSampler
+from nnx_ppo.networks.adapter import PPOAdapter
+from nnx_ppo.networks.containers import Sequential
+from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 from nnx_ppo.algorithms import rollout
 from nnx_ppo.algorithms.ppo import ppo_step, new_training_state
 from nnx_ppo.algorithms.types import LoggingLevel
@@ -52,7 +53,10 @@ class AR1RolloutTest(absltest.TestCase):
         )
 
         sampler = NormalTanhSampler(rngs, entropy_weight=1e-3)
-        networks = PPOActorCritic(actor=actor, critic=critic, action_sampler=sampler)
+        networks = PPOAdapter(
+            action=Sequential([*actor.layers, sampler]),
+            value=critic,
+        )
 
         # Initialize states
         key = jax.random.key(0)
@@ -77,10 +81,10 @@ class AR1RolloutTest(absltest.TestCase):
             jp.any(jp.isnan(rollout_data.network_output.actions)),
             "NaN found in actions",
         )
-        self.assertFalse(
-            jp.any(jp.isnan(rollout_data.network_output.raw_actions)),
-            "NaN found in raw_actions",
-        )
+        # Raw action is stored in rollout_extras (action sampler emits it
+        # in ROLLOUT). Walk the tree to find any NaNs.
+        for leaf in jax.tree.leaves(rollout_data.rollout_extras):
+            self.assertFalse(jp.any(jp.isnan(leaf)), "NaN found in rollout_extras")
         self.assertFalse(
             jp.any(jp.isnan(rollout_data.network_output.loglikelihoods)),
             "NaN found in loglikelihoods",
@@ -89,10 +93,10 @@ class AR1RolloutTest(absltest.TestCase):
             jp.any(jp.isnan(rollout_data.network_output.value_estimates)),
             "NaN found in value_estimates",
         )
-        self.assertFalse(
-            jp.any(jp.isnan(rollout_data.network_output.regularization_loss)),
-            "NaN found in regularization_loss",
-        )
+        # Regularization loss now flows through Transition.metrics["net"]
+        # rather than PPONetworkOutput; check it's NaN-free at the top.
+        # The PPONetworkOutput dataclass no longer carries a regularization
+        # field — see CLAUDE.md.
 
         # Note: The internal state (last_z) CAN contain NaN for envs that just reset.
         # That's expected behavior - the key test is that NaN doesn't leak to outputs.
@@ -234,7 +238,10 @@ class AR1RolloutTest(absltest.TestCase):
         )
 
         sampler = NormalTanhSampler(rngs, entropy_weight=1e-3)
-        networks = PPOActorCritic(actor=actor, critic=critic, action_sampler=sampler)
+        networks = PPOAdapter(
+            action=Sequential([*actor.layers, sampler]),
+            value=critic,
+        )
 
         # Create training state
         training_state = new_training_state(

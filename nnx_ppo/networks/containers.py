@@ -1,62 +1,14 @@
-from typing import Any, Optional
+from typing import Any
 from collections.abc import Sequence
 
 import jax.numpy as jp
 from flax import nnx
 
-from nnx_ppo.algorithms.adapter import PPOAdapter
-from nnx_ppo.algorithms.distributions import ActionSampler
 from nnx_ppo.networks.types import (
-    Context,
     StatefulModule,
     ModuleState,
     StatefulModuleOutput,
 )
-
-
-class PPOActorCritic(PPOAdapter):
-    """Convenience PPO network for the standard one-actor / one-critic case.
-
-    A thin subclass of :class:`~nnx_ppo.algorithms.adapter.PPOAdapter` that
-    wires up the conventional decomposition: one actor producing action
-    distribution parameters, one critic producing a scalar value estimate,
-    and an optional preprocessor (typically a :class:`Normalizer`) sitting
-    in front of both.
-
-    Use this for the typical single-agent setup. Drop down to bare
-    ``PPOAdapter`` when you need modular or multi-head networks (e.g. one
-    sampler per body-module, per-population value heads).
-
-    The ``actor``, ``critic``, ``action_sampler``, and ``preprocessor``
-    constructor arguments are also exposed as attributes after init, so
-    external code can introspect them (e.g. for parameter logging).
-    """
-
-    def __init__(
-        self,
-        actor: StatefulModule,
-        critic: StatefulModule,
-        action_sampler: ActionSampler,
-        preprocessor: Optional[StatefulModule] = None,
-    ):
-        # Expose direct references for backwards compatibility with code
-        # that introspects networks.actor / .critic / .action_sampler /
-        # .preprocessor (factories_test, metrics.py, checkpointing_test,
-        # vnl-experiments). NNX handles shared references to the same
-        # module instance across attributes.
-        self.actor = actor
-        self.critic = critic
-        self.action_sampler = action_sampler
-        self.preprocessor = preprocessor
-
-        inner: StatefulModule = Parallel(action_params=actor, value=critic)
-        if preprocessor is not None:
-            inner = Sequential([preprocessor, inner])
-        super().__init__(
-            inner=inner,
-            action_specs={"action_params": action_sampler},
-            value_specs="value",
-        )
 
 
 class Sequential(StatefulModule):
@@ -67,33 +19,34 @@ class Sequential(StatefulModule):
         self,
         network_state: list[ModuleState],
         obs: Any,
-        *,
-        context: Context = Context.INFERENCE,
+        rollout_extras: Any = None,
     ) -> StatefulModuleOutput:
         new_network_state = []
+        new_extras: list[Any] = []
         x = obs
         regularization_loss = jp.array(0.0)
         metrics = {}
-        for layer, layer_state in zip(self.layers, network_state):
-            layer_output = layer(layer_state, x, context=context)
-            new_state = layer_output.next_state
+        for i, (layer, layer_state) in enumerate(zip(self.layers, network_state)):
+            layer_extras = None if rollout_extras is None else rollout_extras[i]
+            layer_output = layer(layer_state, x, layer_extras)
+            new_network_state.append(layer_output.next_state)
+            new_extras.append(layer_output.rollout_extras)
             x = layer_output.output
-            new_network_state.append(new_state)
             regularization_loss += layer_output.regularization_loss
             metrics[len(metrics)] = layer_output.metrics
-        return StatefulModuleOutput(new_network_state, x, regularization_loss, metrics)
+        return StatefulModuleOutput(
+            new_network_state, x, regularization_loss, metrics, new_extras
+        )
 
     def initialize_state(self, batch_size: int) -> list[ModuleState]:
-        state = []
-        for layer in self.layers:
-            state.append(layer.initialize_state(batch_size))
-        return state
+        return [layer.initialize_state(batch_size) for layer in self.layers]
 
     def reset_state(self, prev_state: list[ModuleState]) -> list[ModuleState]:
-        new_states = []
-        for layer, layer_prev_state in zip(self.layers, prev_state):
-            new_states.append(layer.reset_state(layer_prev_state))
-        return new_states
+        return [layer.reset_state(s) for layer, s in zip(self.layers, prev_state)]
+
+    def update_statistics(self, rollout_extras: Any) -> None:
+        for layer, layer_extras in zip(self.layers, rollout_extras):
+            layer.update_statistics(layer_extras)
 
     def __getitem__(self, ind: int) -> StatefulModule:
         return self.layers[ind]
@@ -128,28 +81,35 @@ class Concat(StatefulModule):
         self,
         state: dict[str, ModuleState],
         x: dict[str, Any],
-        *,
-        context: Context = Context.INFERENCE,
+        rollout_extras: Any = None,
     ) -> StatefulModuleOutput:
-        new_state = {}
+        new_state: dict[str, ModuleState] = {}
+        new_extras: dict[str, Any] = {}
         regularization_loss = jp.array(0.0)
         outputs = []
-        metrics = {}
+        metrics: dict[str, Any] = {}
         for key, component in self.components.items():
-            component_input = x[key]
-            component_output = component(state[key], component_input, context=context)
-            regularization_loss += component_output.regularization_loss
-            new_state[key] = component_output.next_state
-            metrics[key] = component_output.metrics
-            outputs.append(component_output.output)
+            child_extras = None if rollout_extras is None else rollout_extras[key]
+            out = component(state[key], x[key], child_extras)
+            regularization_loss += out.regularization_loss
+            new_state[key] = out.next_state
+            new_extras[key] = out.rollout_extras
+            metrics[key] = out.metrics
+            outputs.append(out.output)
         concated = jp.concatenate(outputs, axis=-1)
-        return StatefulModuleOutput(new_state, concated, regularization_loss, metrics)
+        return StatefulModuleOutput(
+            new_state, concated, regularization_loss, metrics, new_extras
+        )
 
     def initialize_state(self, batch_size: int) -> dict[str, ModuleState]:
         return {k: c.initialize_state(batch_size) for k, c in self.components.items()}
 
     def reset_state(self, prev_state: dict[str, ModuleState]) -> dict[str, ModuleState]:
         return {k: c.reset_state(prev_state[k]) for k, c in self.components.items()}
+
+    def update_statistics(self, rollout_extras: Any) -> None:
+        for key, component in self.components.items():
+            component.update_statistics(rollout_extras[key])
 
 
 class Parallel(StatefulModule):
@@ -186,26 +146,34 @@ class Parallel(StatefulModule):
         self,
         state: dict[str, ModuleState],
         x: Any,
-        *,
-        context: Context = Context.INFERENCE,
+        rollout_extras: Any = None,
     ) -> StatefulModuleOutput:
         new_state: dict[str, ModuleState] = {}
+        new_extras: dict[str, Any] = {}
         outputs: dict[str, Any] = {}
         regularization_loss = jp.array(0.0)
         metrics: dict[str, Any] = {}
         for key, component in self.components.items():
-            out = component(state[key], x, context=context)
+            child_extras = None if rollout_extras is None else rollout_extras[key]
+            out = component(state[key], x, child_extras)
             new_state[key] = out.next_state
+            new_extras[key] = out.rollout_extras
             outputs[key] = out.output
             regularization_loss += out.regularization_loss
             metrics[key] = out.metrics
-        return StatefulModuleOutput(new_state, outputs, regularization_loss, metrics)
+        return StatefulModuleOutput(
+            new_state, outputs, regularization_loss, metrics, new_extras
+        )
 
     def initialize_state(self, batch_size: int) -> dict[str, ModuleState]:
         return {k: c.initialize_state(batch_size) for k, c in self.components.items()}
 
     def reset_state(self, prev_state: dict[str, ModuleState]) -> dict[str, ModuleState]:
         return {k: c.reset_state(prev_state[k]) for k, c in self.components.items()}
+
+    def update_statistics(self, rollout_extras: Any) -> None:
+        for key, component in self.components.items():
+            component.update_statistics(rollout_extras[key])
 
 
 class Splitter(StatefulModule):
@@ -240,12 +208,11 @@ class Splitter(StatefulModule):
         self,
         state: tuple[()],
         x: Any,
-        *,
-        context: Context = Context.INFERENCE,
+        rollout_extras: Any = None,
     ) -> StatefulModuleOutput:
         outputs: dict[str, Any] = {}
         offset = 0
         for key, size in self._sizes.items():
             outputs[key] = x[..., offset : offset + size]
             offset += size
-        return StatefulModuleOutput((), outputs, jp.array(0.0), {})
+        return StatefulModuleOutput((), outputs, jp.array(0.0), {}, None)

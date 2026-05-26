@@ -72,6 +72,12 @@ class Transition(JaxDataclass):
     truncated: Bool[Array, "*time batch"]
     next_obs: PyTree[Float[Array, "..."]]  # Same pytree structure as obs
     metrics: dict[str, Any]
+    # Per-step snapshots emitted by stateful modules during ROLLOUT so they
+    # can be replayed during LOSS_REPLAY and folded into running statistics
+    # by `update_statistics`. Pytree shape mirrors the network's `state`
+    # tree, with `None` at every leaf that emits nothing. Stacked over T
+    # by the rollout scan.
+    rollout_extras: Any = None
 
 
 @jax.tree_util.register_pytree_node_class

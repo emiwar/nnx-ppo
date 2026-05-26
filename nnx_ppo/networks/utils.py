@@ -1,7 +1,8 @@
 """Small utility :class:`StatefulModule` s.
 
 These are stateless layers that handle pytree projection / reshaping /
-scalar arithmetic. They thread ``context`` through but don't read it.
+scalar arithmetic. Container utilities route their children's
+``rollout_extras`` the same way they route state.
 
 Available:
 
@@ -16,8 +17,10 @@ Available:
 * :class:`Merge` — run several named sub-modules on the same input,
   each producing a dict, and merge them into one flat dict. The
   natural complement to :class:`Parallel` when downstream consumers
-  (e.g. :class:`~nnx_ppo.algorithms.adapter.PPOAdapter`) want one
-  flat dict of named heads.
+  (e.g. :class:`~nnx_ppo.networks.adapter.PPOAdapter`) want one flat
+  dict of named heads.
+* :class:`Map` — per-key dispatch: dict input, dict output. Each
+  named sub-module sees the upstream's same-named entry.
 """
 
 from collections.abc import Callable
@@ -28,7 +31,6 @@ import jax.numpy as jp
 from flax import nnx
 
 from nnx_ppo.networks.types import (
-    Context,
     ModuleState,
     StatefulModule,
     StatefulModuleOutput,
@@ -89,11 +91,10 @@ class Flattener(StatefulModule):
         self,
         state: tuple[()],
         x: Any,
-        *,
-        context: Context = Context.INFERENCE,
+        rollout_extras: Any = None,
     ) -> StatefulModuleOutput:
         output = _flatten_at_depth(x, self.preserve_levels)
-        return StatefulModuleOutput((), output, jp.array(0.0), {})
+        return StatefulModuleOutput((), output, jp.array(0.0), {}, None)
 
 
 def _flatten_at_depth(x: Any, preserve_levels: int) -> Any:
@@ -129,19 +130,6 @@ class Filter(StatefulModule):
 
     The result is a dict with the same keys as ``spec``. Anything in
     the input not named (directly or via a callable) is dropped.
-
-    Use it to ablate observation streams (mask out goal information
-    from the actor), to give the critic privileged info, or to reshape
-    structured observations before a downstream consumer that expects
-    a flat dict.
-
-    Example::
-
-        actor_filter = Filter({
-            "arm_L":  ("arm_L", "proprioception"),
-            "arm_R":  ("arm_R", "proprioception"),
-            "root":   lambda obs: jp.zeros_like(obs["root"]["pos"][..., :0]),
-        })
     """
 
     def __init__(self, spec: dict[str, FilterSpec]):
@@ -161,8 +149,7 @@ class Filter(StatefulModule):
         self,
         state: tuple[()],
         x: Any,
-        *,
-        context: Context = Context.INFERENCE,
+        rollout_extras: Any = None,
     ) -> StatefulModuleOutput:
         output: dict[str, Any] = {}
         for out_key, sub in self._spec.items():
@@ -175,16 +162,11 @@ class Filter(StatefulModule):
                 output[out_key] = v
             else:  # callable
                 output[out_key] = sub(x)
-        return StatefulModuleOutput((), output, jp.array(0.0), {})
+        return StatefulModuleOutput((), output, jp.array(0.0), {}, None)
 
 
 class Scale(StatefulModule):
-    """Multiply the input by a fixed scalar factor.
-
-    Cheaper to read than burying the factor inside a Dense's
-    initializer, and keeps the factor visible to downstream
-    introspection (logging, weight inspection).
-    """
+    """Multiply the input by a fixed scalar factor."""
 
     def __init__(self, factor: float):
         self.factor = float(factor)
@@ -193,11 +175,10 @@ class Scale(StatefulModule):
         self,
         state: tuple[()],
         x: Any,
-        *,
-        context: Context = Context.INFERENCE,
+        rollout_extras: Any = None,
     ) -> StatefulModuleOutput:
         return StatefulModuleOutput(
-            state, jax.tree.map(lambda v: v * self.factor, x), jp.array(0.0), {}
+            state, jax.tree.map(lambda v: v * self.factor, x), jp.array(0.0), {}, None
         )
 
 
@@ -206,15 +187,6 @@ class Merge(StatefulModule):
 
     Each sub-module must return a ``dict``. The outputs are merged into
     one flat dict; duplicate keys across components are a hard error.
-    Use this when a downstream consumer (e.g.
-    :class:`~nnx_ppo.algorithms.adapter.PPOAdapter`) wants one flat
-    dict of named heads but the heads come from independent
-    sub-networks::
-
-        inner = Merge(
-            motors=graph,                    # emits {motor_arm_L, ...}
-            critic=detached_critic_stack,    # emits {value_arm_L, ...}
-        )
 
     Accepts either keyword arguments (when names are valid Python
     identifiers) or a positional dict ``Merge({...})`` (when they are
@@ -237,16 +209,18 @@ class Merge(StatefulModule):
         self,
         state: dict[str, ModuleState],
         x: Any,
-        *,
-        context: Context = Context.INFERENCE,
+        rollout_extras: Any = None,
     ) -> StatefulModuleOutput:
         new_state: dict[str, ModuleState] = {}
+        new_extras: dict[str, Any] = {}
         merged: dict[str, Any] = {}
         regularization_loss = jp.array(0.0)
         metrics: dict[str, Any] = {}
         for name, component in self.components.items():
-            out = component(state[name], x, context=context)
+            child_extras = None if rollout_extras is None else rollout_extras[name]
+            out = component(state[name], x, child_extras)
             new_state[name] = out.next_state
+            new_extras[name] = out.rollout_extras
             regularization_loss += out.regularization_loss
             metrics[name] = out.metrics
             if not isinstance(out.output, dict):
@@ -262,7 +236,7 @@ class Merge(StatefulModule):
                     )
                 merged[k] = v
         return StatefulModuleOutput(
-            new_state, merged, regularization_loss, metrics
+            new_state, merged, regularization_loss, metrics, new_extras
         )
 
     def initialize_state(self, batch_size: int) -> dict[str, ModuleState]:
@@ -277,6 +251,10 @@ class Merge(StatefulModule):
             k: c.reset_state(prev_state[k]) for k, c in self.components.items()
         }
 
+    def update_statistics(self, rollout_extras: Any) -> None:
+        for name, component in self.components.items():
+            component.update_statistics(rollout_extras[name])
+
 
 class Map(StatefulModule):
     """Per-key dispatch: dict input, dict output.
@@ -288,11 +266,6 @@ class Map(StatefulModule):
       every component, dict output.
     * :class:`~nnx_ppo.networks.containers.Concat` — per-key dispatch,
       concatenated output (no dict).
-
-    Use this when you want to apply a different module to each entry of
-    a structured input — e.g. a per-population action sampler::
-
-        Map({pop: NormalTanhSampler(rngs, ...) for pop in POPULATIONS})
 
     The input dict must contain at least every key in ``modules``; extra
     keys are dropped.
@@ -317,21 +290,23 @@ class Map(StatefulModule):
         self,
         state: dict[str, ModuleState],
         x: dict[str, Any],
-        *,
-        context: Context = Context.INFERENCE,
+        rollout_extras: Any = None,
     ) -> StatefulModuleOutput:
         new_state: dict[str, ModuleState] = {}
+        new_extras: dict[str, Any] = {}
         outputs: dict[str, Any] = {}
         regularization_loss = jp.array(0.0)
         metrics: dict[str, Any] = {}
         for name, component in self.components.items():
-            out = component(state[name], x[name], context=context)
+            child_extras = None if rollout_extras is None else rollout_extras[name]
+            out = component(state[name], x[name], child_extras)
             new_state[name] = out.next_state
+            new_extras[name] = out.rollout_extras
             outputs[name] = out.output
             regularization_loss = regularization_loss + out.regularization_loss
             metrics[name] = out.metrics
         return StatefulModuleOutput(
-            new_state, outputs, regularization_loss, metrics
+            new_state, outputs, regularization_loss, metrics, new_extras
         )
 
     def initialize_state(self, batch_size: int) -> dict[str, ModuleState]:
@@ -345,3 +320,7 @@ class Map(StatefulModule):
         return {
             k: c.reset_state(prev_state[k]) for k, c in self.components.items()
         }
+
+    def update_statistics(self, rollout_extras: Any) -> None:
+        for name, component in self.components.items():
+            component.update_statistics(rollout_extras[name])

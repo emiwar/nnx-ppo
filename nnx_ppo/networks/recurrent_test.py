@@ -6,12 +6,23 @@ from flax import nnx
 from nnx_ppo.networks.recurrent import LSTM
 from nnx_ppo.networks.feedforward import Dense
 from nnx_ppo.networks.factories import make_mlp
-from nnx_ppo.networks.containers import Sequential, PPOActorCritic
-from nnx_ppo.algorithms.distributions import NormalTanhSampler
+from nnx_ppo.networks.adapter import PPOAdapter
+from nnx_ppo.networks.containers import Sequential
+from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 from nnx_ppo.algorithms import rollout
 from nnx_ppo.algorithms.ppo import ppo_step, new_training_state
 from nnx_ppo.algorithms.types import LoggingLevel
 from nnx_ppo.test_dummies.mock_env import MockEnv
+
+
+def _make_actor_critic(actor, critic, sampler):
+    """Build a one-actor / one-critic network. Sampler is the last layer of
+    the actor's Sequential chain; the adapter is returned bare (no outer
+    Sequential is needed when there's no Normalizer)."""
+    return PPOAdapter(
+        action=Sequential([*actor.layers, sampler]),
+        value=critic,
+    )
 
 
 class LSTMTest(absltest.TestCase):
@@ -247,7 +258,7 @@ class LSTMTest(absltest.TestCase):
         )
 
         sampler = NormalTanhSampler(rngs, entropy_weight=1e-3)
-        networks = PPOActorCritic(actor=actor, critic=critic, action_sampler=sampler)
+        networks = _make_actor_critic(actor, critic, sampler)
 
         # Initialize states
         key = jax.random.key(0)
@@ -300,7 +311,7 @@ class LSTMTest(absltest.TestCase):
         )
 
         sampler = NormalTanhSampler(rngs, entropy_weight=1e-3)
-        networks = PPOActorCritic(actor=actor, critic=critic, action_sampler=sampler)
+        networks = _make_actor_critic(actor, critic, sampler)
 
         training_state = new_training_state(
             env, networks, n_envs, seed=42, learning_rate=1e-4, gradient_clipping=1.0

@@ -1,13 +1,13 @@
 """Recurrent network modules for PPO."""
 from collections.abc import Callable
-from typing import Optional
+from typing import Any, Optional
 
 import jax
 import jax.numpy as jp
 from flax import nnx
 from jaxtyping import Array, Float
 
-from nnx_ppo.networks.types import Context, StatefulModule, StatefulModuleOutput
+from nnx_ppo.networks.types import StatefulModule, StatefulModuleOutput
 
 # LSTM carry type: tuple of (hidden_state, cell_state)
 LSTMCarry = tuple[Float[Array, "*batch hidden"], Float[Array, "*batch hidden"]]
@@ -90,8 +90,7 @@ class LSTM(StatefulModule):
         self,
         state: LSTMCarry,
         x: Float[Array, "batch {self.in_features}"],
-        *,
-        context: Context = Context.INFERENCE,
+        rollout_extras: Any = None,
     ) -> StatefulModuleOutput:
         """Process input through the LSTM.
 
@@ -114,6 +113,7 @@ class LSTM(StatefulModule):
             output=output,
             regularization_loss=jp.zeros(x.shape[0]),
             metrics={},
+            rollout_extras=None,
         )
 
     def initialize_state(

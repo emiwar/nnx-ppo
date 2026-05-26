@@ -338,9 +338,10 @@ class PPOTest(absltest.TestCase):
                 training_state.steps_taken,
                 n_updates * config.ppo.rollout_length * config.ppo.n_envs,
             )
-            assert isinstance(nets.preprocessor, Normalizer)
+            normalizer = nets.layers[0]
+            assert isinstance(normalizer, Normalizer)
             self.assertEqual(
-                nets.preprocessor.counter[...],
+                normalizer.counter[...],
                 n_updates * config.ppo.rollout_length * config.ppo.n_envs,
             )
 

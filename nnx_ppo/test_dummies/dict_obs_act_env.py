@@ -12,7 +12,12 @@ import jax.numpy as jp
 from flax import nnx
 
 from nnx_ppo.jax_dataclass import JaxDataclass
-from nnx_ppo.networks.types import Context, ModuleState, PPONetwork, PPONetworkOutput
+from nnx_ppo.networks.types import (
+    ModuleState,
+    PPONetworkOutput,
+    StatefulModule,
+    StatefulModuleOutput,
+)
 
 
 @jax.tree_util.register_pytree_node_class
@@ -61,7 +66,7 @@ class DictObsActEnv:
         )
 
 
-class DictObsActNet(PPONetwork, nnx.Module):
+class DictObsActNet(StatefulModule):
     """Minimal network that consumes dict obs and produces dict actions.
 
     obs    = {"pos": array[batch, 2], "vel": array[batch, 2]}
@@ -81,28 +86,31 @@ class DictObsActNet(PPONetwork, nnx.Module):
         self,
         network_state,
         obs,
-        raw_action=None,
-        *,
-        context: Context = Context.INFERENCE,
-    ):
+        rollout_extras: Any = None,
+    ) -> StatefulModuleOutput:
         obs_flat = jp.concatenate([obs["pos"], obs["vel"]], axis=-1)  # [batch, 4]
         actor_out = self.actor(obs_flat)  # [batch, 2]
         value = jp.squeeze(self.critic(obs_flat), axis=-1)  # [batch]
 
-        if raw_action is None:
+        if rollout_extras is not None:
+            raw_action = rollout_extras
+        else:
             raw_action = {"force": actor_out}
 
         actions = {"force": jp.tanh(raw_action["force"])}
         batch_size = obs_flat.shape[0]
         loglikelihoods = jp.zeros(batch_size)
 
-        return network_state, PPONetworkOutput(
-            actions=actions,
-            raw_actions=raw_action,
-            loglikelihoods=loglikelihoods,
+        return StatefulModuleOutput(
+            next_state=network_state,
+            output=PPONetworkOutput(
+                actions=actions,
+                loglikelihoods=loglikelihoods,
+                value_estimates=value,
+            ),
             regularization_loss=jp.zeros(batch_size),
-            value_estimates=value,
             metrics={},
+            rollout_extras=raw_action,
         )
 
     def initialize_state(self, batch_size: int):
@@ -161,7 +169,7 @@ class TwoArmEnv:
         return TwoArmState(obs=obs, reward=reward, done=done, info={}, metrics={})
 
 
-class TwoArmNet(PPONetwork, nnx.Module):
+class TwoArmNet(StatefulModule):
     """Network with dict obs/actions and dict value estimates matching TwoArmState."""
 
     def __init__(self, rngs: nnx.Rngs):
@@ -172,27 +180,30 @@ class TwoArmNet(PPONetwork, nnx.Module):
         self,
         network_state: tuple,
         obs,
-        raw_action=None,
-        *,
-        context: Context = Context.INFERENCE,
-    ):
+        rollout_extras: Any = None,
+    ) -> StatefulModuleOutput:
         obs_flat = jax.vmap(lambda t: jax.flatten_util.ravel_pytree(t)[0])(obs)  # [batch, 8]
         actor_out = self.actor(obs_flat)  # [batch, 4]
         critic_out = self.critic(obs_flat)  # [batch, 2]
 
         actions = {"arm1": actor_out[:, :2], "arm2": actor_out[:, 2:]}
-        values =  {"arm1": critic_out[:, 0], "arm2": critic_out[:, 1]}
+        values = {"arm1": critic_out[:, 0], "arm2": critic_out[:, 1]}
         batch_size = obs_flat.shape[0]
 
-        return network_state, PPONetworkOutput(
-            actions=actions,
-            raw_actions=actions,
-            loglikelihoods={"arm1": jp.zeros(batch_size),
-                            "arm2": jp.zeros(batch_size)},
+        return StatefulModuleOutput(
+            next_state=network_state,
+            output=PPONetworkOutput(
+                actions=actions,
+                loglikelihoods={
+                    "arm1": jp.zeros(batch_size),
+                    "arm2": jp.zeros(batch_size),
+                },
+                value_estimates=values,
+            ),
             regularization_loss=jp.zeros(batch_size),
-            value_estimates=values,
             metrics={},
+            rollout_extras=None,
         )
-    
+
     def initialize_state(self, batch_size: int) -> ModuleState:
         return ()

@@ -43,7 +43,7 @@ class DummyCounterEnv:
         )
 
 
-class DummyCounterNet(types.PPONetwork, nnx.Module):
+class DummyCounterNet(types.StatefulModule):
     """Dummy stateful network that always outputs the number of steps since its
     last reset, independent of its input."""
 
@@ -51,20 +51,21 @@ class DummyCounterNet(types.PPONetwork, nnx.Module):
         self,
         state,
         obs,
-        raw_action=None,
-        *,
-        context: types.Context = types.Context.INFERENCE,
-    ) -> tuple[Any, types.PPONetworkOutput]:
+        rollout_extras: Any = None,
+    ) -> types.StatefulModuleOutput:
         old_counter = state["counter_state"]["counter"]
         new_counter = old_counter + 1
         new_state = {"counter_state": {"counter": new_counter}}
-        return new_state, types.PPONetworkOutput(
-            actions=new_counter.astype(float)[:, None],
-            raw_actions=new_counter.astype(float)[:, None],
-            loglikelihoods=jp.ones_like(old_counter, dtype=float),
+        return types.StatefulModuleOutput(
+            next_state=new_state,
+            output=types.PPONetworkOutput(
+                actions=new_counter.astype(float)[:, None],
+                loglikelihoods=jp.ones_like(old_counter, dtype=float),
+                value_estimates=jp.ones_like(old_counter, dtype=float),
+            ),
             regularization_loss=jp.array(0.0),
-            value_estimates=jp.ones_like(old_counter, dtype=float),
             metrics={},
+            rollout_extras=None,
         )
 
     def initialize_state(self, batch_size: int) -> dict:

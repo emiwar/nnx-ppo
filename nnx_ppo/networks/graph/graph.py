@@ -41,7 +41,6 @@ from nnx_ppo.networks.feedforward import Dense
 from nnx_ppo.networks.graph.connection import Connection
 from nnx_ppo.networks.graph.population import Population
 from nnx_ppo.networks.types import (
-    Context,
     ModuleState,
     StatefulModule,
     StatefulModuleOutput,
@@ -309,18 +308,23 @@ class PopulationGraph(StatefulModule):
         self,
         state: ModuleState,
         obs: Any,
-        *,
-        context: Context = Context.INFERENCE,
+        rollout_extras: Any = None,
     ) -> StatefulModuleOutput:
         self._assert_finalized()
         pop_state = state["populations"]
         conn_state = state["connections"]
+        conn_extras = (
+            [None] * len(self.connections)
+            if rollout_extras is None
+            else rollout_extras["connections"]
+        )
 
         batch_size = jax.tree.leaves(obs)[0].shape[0]
         arange = jp.arange(batch_size)
 
         new_pop_state: dict[str, dict] = {}
         new_conn_state: list[Any] = [None] * len(self.connections)
+        new_conn_extras: list[Any] = [None] * len(self.connections)
         current_outputs: dict[str, jax.Array] = {}
         reg_loss = jp.array(0.0)
         metrics: dict[str, Any] = {}
@@ -347,9 +351,10 @@ class PopulationGraph(StatefulModule):
                     src_out = buf[arange, read_idx]
 
                 conn_out = conn.transform(
-                    conn_state[i], src_out, context=context
+                    conn_state[i], src_out, conn_extras[i]
                 )
                 new_conn_state[i] = conn_out.next_state
+                new_conn_extras[i] = conn_out.rollout_extras
                 integrated = integrated + conn_out.output
                 reg_loss = reg_loss + jp.sum(conn_out.regularization_loss)
 
@@ -384,7 +389,17 @@ class PopulationGraph(StatefulModule):
             "populations": new_pop_state,
             "connections": new_conn_state,
         }
-        return StatefulModuleOutput(new_state, outputs, reg_loss, metrics)
+        new_extras = {
+            "connections": new_conn_extras,
+        }
+        return StatefulModuleOutput(
+            new_state, outputs, reg_loss, metrics, new_extras
+        )
+
+    def update_statistics(self, rollout_extras: Any) -> None:
+        conn_extras = rollout_extras["connections"]
+        for conn, extras in zip(self.connections, conn_extras):
+            conn.transform.update_statistics(extras)
 
     # ------------------------------------------------------------------
     # State lifecycle

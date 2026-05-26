@@ -1,31 +1,35 @@
-"""Policy distributions / action samplers.
+"""Action samplers.
 
-Action samplers turn pre-distribution parameters (e.g. concatenated mean and
-log_std) into an action plus its log-likelihood. They are PPO-algorithm
-machinery, not general-purpose network layers — they need
-``raw_action`` from the rollout to reproduce log-likelihoods during loss
-replay, they own entropy / KL bonuses, and they decide stochastic vs.
-deterministic sampling. This is why they live here under ``algorithms/``
-rather than in ``networks/``.
+Action samplers turn pre-distribution parameters (e.g. concatenated mean
+and log_std) into a sampled action plus its log-likelihood. They are
+ordinary :class:`StatefulModule` s: they live inside the network just
+like any other layer, and the user composes them with the other
+containers (typically as the last layer of the ``action=`` port of a
+:class:`~nnx_ppo.networks.adapter.PPOAdapter`).
 
-Sampler behaviour by lifecycle ``Context``:
+Sampler behaviour is driven by ``rollout_extras``:
 
-- ``ROLLOUT``: sample stochastically (or use mean if the per-instance
-  ``deterministic`` flag is set).
-- ``LOSS_REPLAY`` / ``STATS_UPDATE``: ``raw_action`` is provided by the
-  caller; the sampler uses it and computes log-likelihoods. The RNG
-  stream still advances so subsequent ``__call__`` invocations remain
-  consistent with rollout.
-- ``INFERENCE``: per-instance ``deterministic`` flag decides
-  stochastic-vs-mean (stochastic eval vs. distillation teacher).
+- ``rollout_extras is None`` (ROLLOUT and INFERENCE): sample fresh. In
+  the returned :class:`StatefulModuleOutput.rollout_extras` field, emit
+  the sampled raw action so a later LOSS_REPLAY pass can reproduce it.
+- ``rollout_extras is not None`` (LOSS_REPLAY): use the stored raw
+  action to compute the log-likelihood under the current policy. The
+  RNG stream still advances so any downstream stochastic layers stay
+  in lockstep with the rollout.
 
-The pre-existing ``raw_action`` argument already covers most of these
-behaviours; ``context`` is threaded for forward compatibility (e.g. for
-modules that want to assert raw_action presence in LOSS_REPLAY).
+The per-instance ``deterministic`` flag is orthogonal: when set to
+``True`` (typically by ``network.eval()``), the sampler returns the
+mean instead of sampling. It applies regardless of whether
+``rollout_extras`` is provided.
+
+Forward output is a small dict ``{"action", "log_likelihood"}``. The
+enclosing :class:`PPOAdapter` lifts each field into the matching dict
+on :class:`PPONetworkOutput`. Mean / std live in the sampler's
+``metrics`` for logging.
 """
 
-from typing import Optional
 import abc
+from typing import Any, Optional
 
 import jax
 import jax.numpy as jp
@@ -33,7 +37,6 @@ from flax import nnx
 from jaxtyping import Array, Float
 
 from nnx_ppo.networks.types import (
-    Context,
     StatefulModule,
     StatefulModuleOutput,
 )
@@ -47,17 +50,16 @@ class ActionSampler(StatefulModule, abc.ABC):
         self,
         state: tuple[()],
         mean_and_std: Float[Array, "batch mean_std_dim"],
-        raw_action: Optional[Float[Array, "batch mean_std_dim//2"]] = None,
-        *,
-        context: Context = Context.INFERENCE,
+        rollout_extras: Optional[Float[Array, "batch action_dim"]] = None,
     ) -> StatefulModuleOutput:
-        """Apply the layer.
+        """Apply the sampler.
 
         Args:
             state: Empty tuple (stateless sampler).
-            mean_and_std: Concatenated mean and std, shape (batch, 2*action_dim).
-            raw_action: Optional pre-sampled action, shape (batch, action_dim).
-            context: Lifecycle context. See module docstring.
+            mean_and_std: Concatenated mean and std, shape
+                ``[batch, 2 * action_dim]``.
+            rollout_extras: ``None`` to sample fresh (ROLLOUT / INFERENCE);
+                the stored action to reuse (LOSS_REPLAY).
         """
 
 
@@ -81,29 +83,33 @@ class NormalTanhSampler(ActionSampler):
         self,
         state: tuple[()],
         mean_and_std: Float[Array, "batch mean_std_dim"],
-        raw_action: Optional[Float[Array, "batch mean_std_dim//2"]] = None,
-        *,
-        context: Context = Context.INFERENCE,
+        rollout_extras: Optional[Float[Array, "batch action_dim"]] = None,
     ) -> StatefulModuleOutput:
         mean, std = jp.split(mean_and_std, 2, axis=-1)
         std = (jax.nn.softplus(std) + self.min_std) * self.std_scale
 
-        # We want to sample an action even if raw_action is specified, so that the
-        # state of the RNG is consistent after the call.
+        # Sample even when rollout_extras is supplied, so the RNG stream
+        # advances identically across the rollout and the loss replay.
         if self.deterministic:
             sampled_action = mean
         else:
             sampled_action = mean + std * jax.random.normal(self.rng(), mean.shape)
-        if raw_action is None:
+
+        if rollout_extras is None:
             raw_action = jax.lax.stop_gradient(sampled_action)
+        else:
+            raw_action = rollout_extras
+
         action = jp.tanh(raw_action)
         loglikelihood = self._loglikelihood(raw_action, mean, std)
         entropy_cost = -self.entropy_weight * self._entropy(mean, std)
+
         return StatefulModuleOutput(
             next_state=(),
-            output=(action, raw_action, loglikelihood),
+            output={"action": action, "log_likelihood": loglikelihood},
             regularization_loss=entropy_cost,
             metrics={"mu": mean, "sigma": std},
+            rollout_extras=raw_action,
         )
 
     def initialize_state(self, batch_size: int) -> tuple[()]:
@@ -117,29 +123,23 @@ class NormalTanhSampler(ActionSampler):
     ) -> Float[Array, "batch"]:
         z = raw_action
 
-        # Log-likelihood for normal:
+        # Normal log-likelihood.
         log_unnormalized = -0.5 * jp.square((z - mean) / std)
         log_normalization = 0.5 * jp.log(2.0 * jp.pi) + jp.log(std)
         log_prob = log_unnormalized - log_normalization
 
-        # Modify the log-likelihood due to tanh transformation. Should be log|d/dz tanh(z)|.
-        # The expression below is a numerically stable version of log|d/dz tanh(z)| borrowed from Brax
+        # Numerically stable log|d/dz tanh(z)| correction (Brax-style).
         log_det_jacobian = 2.0 * (jp.log(2.0) - z - jax.nn.softplus(-2.0 * z))
         log_prob -= log_det_jacobian
 
-        # Sum over last dimension if needed
-        log_prob = jp.sum(log_prob, axis=-1)
-
-        return log_prob
+        return jp.sum(log_prob, axis=-1)
 
     def _entropy(
         self,
         mean: Float[Array, "batch action_dim"],
         std: Float[Array, "batch action_dim"],
     ) -> Float[Array, "batch"]:
-        # Entropy per dimension, sum over action dimensions
         normal_entropy = 0.5 + 0.5 * jp.log(2.0 * jp.pi) + jp.log(std)
-        # No analytical formula for entropy, use a single Monte Carlo sample
         z = mean + std * jax.lax.stop_gradient(
             jax.random.normal(self.rng(), mean.shape)
         )

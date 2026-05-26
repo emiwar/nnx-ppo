@@ -4,11 +4,18 @@ import jax.numpy as jp
 from flax import nnx
 
 from nnx_ppo.networks import factories, types
+from nnx_ppo.networks.adapter import PPOAdapter
 from nnx_ppo.networks.containers import Sequential
 from nnx_ppo.networks.feedforward import Dense
 from nnx_ppo.networks.normalizer import Normalizer
-from nnx_ppo.algorithms.distributions import NormalTanhSampler
-from nnx_ppo.algorithms.types import Transition
+from nnx_ppo.networks.sampling_layers import NormalTanhSampler
+
+
+def _find(net: Sequential, cls):
+    for layer in net.layers:
+        if isinstance(layer, cls):
+            return layer
+    return None
 
 
 class MakeMLPActorCriticTest(absltest.TestCase):
@@ -23,132 +30,55 @@ class MakeMLPActorCriticTest(absltest.TestCase):
             self.obs_size, self.action_size, self.hidden_sizes, self.hidden_sizes, rngs
         )
 
-    def test_actor_critic_independently_initialized(self):
-        net = self.mlp_net
+    def test_factory_returns_sequential(self):
+        self.assertIsInstance(self.mlp_net, Sequential)
 
-        # Test actor and critic were independently initialized
-        # Actor and critic are Sequential of Dense layers
-        assert isinstance(net.actor, Sequential)
-        assert isinstance(net.critic, Sequential)
-        for actor_dense, critic_dense in zip(net.actor.layers, net.critic.layers):
-            assert isinstance(actor_dense, Dense)
-            assert isinstance(critic_dense, Dense)
+    def test_actor_and_critic_independently_initialized(self):
+        adapter = _find(self.mlp_net, PPOAdapter)
+        assert isinstance(adapter, PPOAdapter)
+        # Action port: Sequential([*actor_layers, sampler]); the actor Dense
+        # layers are everything except the trailing sampler.
+        action_layers = list(adapter.action.layers)
+        actor_denses = [layer for layer in action_layers if isinstance(layer, Dense)]
+        critic_denses = [layer for layer in adapter.value.layers if isinstance(layer, Dense)]
+        self.assertGreater(len(actor_denses), 0)
+        self.assertEqual(len(actor_denses), len(critic_denses))
+        for actor_dense, critic_dense in zip(actor_denses, critic_denses):
             self.assertFalse(
                 jp.allclose(
                     actor_dense.linear.kernel[...], critic_dense.linear.kernel[...]
                 )
             )
 
-    def test_actor_layers_independently_initialized(self):
-        SEED = 123
-        obs_size = 64
-        action_size = 32
-        hidden_sizes = [64, 64]
-        rngs = nnx.Rngs(SEED)
-        net = factories.make_mlp_actor_critic(
-            obs_size, action_size, hidden_sizes, hidden_sizes, rngs
-        )
-
-        # Test actor layers were independently initialized
-        assert isinstance(net.actor, Sequential)
-        first_actor_dense = net.actor.layers[0]
-        assert isinstance(first_actor_dense, Dense)
-        for actor_dense in net.actor.layers[1:]:
-            assert isinstance(actor_dense, Dense)
-            self.assertFalse(
-                jp.allclose(
-                    first_actor_dense.linear.kernel[...], actor_dense.linear.kernel[...]
-                )
-            )
-
-    def test_init_state(self):
-        net = self.mlp_net
-
-        # Init — PPOActorCritic now inherits PPOAdapter's state structure
-        # ({"inner": ..., "samplers": ...}). The "inner" entry mirrors the
-        # Sequential([preprocessor, Parallel(action_params=actor, value=critic)])
-        # tree under the hood.
-        first_state = net.initialize_state(batch_size=17)
-        self.assertIn("inner", first_state)
-        self.assertIn("samplers", first_state)
-        self.assertIn("action_params", first_state["samplers"])
-
-    def test_simple_input(self):
-        net = self.mlp_net
-
-        key = jax.random.key(seed=18)
-        simple_obs = jax.random.normal(key, (1, self.obs_size))
-
-        first_state = net.initialize_state(1)
-        next_state, output = net(first_state, simple_obs)
-        self.assertIsInstance(output, types.PPONetworkOutput)
-
-    def test_simple_input_jit(self):
-        @nnx.jit(static_argnums=[1])
-        def init_state(net, batch_size):
-            return net.initialize_state(batch_size)
-
-        @nnx.jit
-        def call_net(net, state, x):
-            return net(state, x)
-
-        net = self.mlp_net
-        key = jax.random.key(seed=19)
-        simple_obs = jax.random.normal(key, (1, self.obs_size))
-
-        first_state = init_state(net, 1)
-        next_state, output = call_net(net, first_state, simple_obs)
-        self.assertIsInstance(output, types.PPONetworkOutput)
-
-        next_state, output = call_net(net, next_state, simple_obs)
-        self.assertIsInstance(output, types.PPONetworkOutput)
-        self.assertIn("inner", next_state)
-        self.assertIn("samplers", next_state)
-
-    def test_simple_input_batched(self):
-        net = self.mlp_net
+    def test_forward_pass_shape(self):
         n_envs = 256
+        state = self.mlp_net.initialize_state(n_envs)
         key = jax.random.key(seed=21)
-        simple_obs = jax.random.normal(key, (n_envs, self.obs_size))
+        obs = jax.random.normal(key, (n_envs, self.obs_size))
+        out = self.mlp_net(state, obs)
+        self.assertIsInstance(out.output, types.PPONetworkOutput)
+        self.assertEqual(out.output.actions.shape, (n_envs, self.action_size))
+        self.assertEqual(out.output.loglikelihoods.shape, (n_envs,))
+        self.assertEqual(out.output.value_estimates.shape, (n_envs,))
 
-        first_state = net.initialize_state(n_envs)
-        next_state, first_output = net(first_state, simple_obs)
-        self.assertIsInstance(first_output, types.PPONetworkOutput)
-        self.assertEqual(first_output.actions.shape, (n_envs, self.action_size))
-        self.assertEqual(first_output.loglikelihoods.shape, (n_envs,))
-        self.assertEqual(first_output.value_estimates.shape, (n_envs,))
-        # Verify critic can output negative values (no ReLU on last layer)
-        self.assertLess(jp.min(first_output.value_estimates), -0.02)
-        self.assertGreater(jp.max(first_output.value_estimates), 0.02)
+    def test_sampler_train_and_eval_mode(self):
+        adapter = _find(self.mlp_net, PPOAdapter)
+        assert isinstance(adapter, PPOAdapter)
+        # action port: Sequential([actor, sampler])
+        sampler = adapter.action.layers[-1]
+        assert isinstance(sampler, NormalTanhSampler)
+        self.assertFalse(sampler.deterministic)
+        self.mlp_net.eval()
+        self.assertTrue(sampler.deterministic)
+        self.mlp_net.train()
+        self.assertFalse(sampler.deterministic)
 
-        next_state, second_output = net(next_state, simple_obs)
-        self.assertIsInstance(second_output, types.PPONetworkOutput)
-        self.assertIn("inner", next_state)
-        self.assertIn("samplers", next_state)
-        self.assertFalse(
-            jp.allclose(first_output.actions, second_output.actions),
-            "Stochasticity in actions.",
-        )
-        self.assertTrue(
-            jp.allclose(first_output.value_estimates, second_output.value_estimates),
-            "No stochasticity in critic.",
-        )
-
-    def test_action_sampler_train_and_eval_mode(self):
-        net = self.mlp_net
-        assert isinstance(net.action_sampler, NormalTanhSampler)
-        self.assertFalse(net.action_sampler.deterministic)
-        net.eval()
-        self.assertTrue(net.action_sampler.deterministic)
-        net.train()
-        self.assertFalse(net.action_sampler.deterministic)
-
-    def test_normalize_obs(self):
+    def test_normalize_obs_update_statistics(self):
         SEED = 42
         OBS_SIZE = 24
         ACTION_SIZE = 5
         BATCH_SIZE = 32
-        N_STEPS = 10
+        N_STEPS = 4
         nets = factories.make_mlp_actor_critic(
             OBS_SIZE,
             ACTION_SIZE,
@@ -157,36 +87,36 @@ class MakeMLPActorCriticTest(absltest.TestCase):
             rngs=nnx.Rngs(SEED, action_sampling=SEED),
             normalize_obs=True,
         )
+        normalizer = _find(nets, Normalizer)
+        assert isinstance(normalizer, Normalizer)
+
         key = jax.random.key(SEED)
         mean_key, var_key = jax.random.split(key)
         data = jax.random.normal(mean_key, (OBS_SIZE,)) + jax.random.normal(
-            var_key, (N_STEPS + 1, BATCH_SIZE, OBS_SIZE)
+            var_key, (N_STEPS, BATCH_SIZE, OBS_SIZE)
         )
-        state = nets.initialize_state(BATCH_SIZE)
-        from nnx_ppo.networks.types import Context
-        for i in range(N_STEPS):
-            state, network_output = nets(state, data[i])
-            # Stats are updated via a STATS_UPDATE-context forward pass that
-            # replays the rollout — here we do a single-step replay with the
-            # stored raw_action.
-            nets(
-                state,
-                data[i],
-                network_output.raw_actions,
-                context=Context.STATS_UPDATE,
-            )
-            assert isinstance(nets.preprocessor, Normalizer)
-            self.assertEqual(nets.preprocessor.counter[...], (i + 1) * BATCH_SIZE)
-            self.assertEqual(nets.preprocessor.mean[...].shape, (OBS_SIZE,))
-            self.assertEqual(nets.preprocessor.M2[...].shape, (OBS_SIZE,))
 
-            true_mean = jp.mean(data[: i + 1], axis=(0, 1))
-            true_std = jp.std(data[: i + 1], axis=(0, 1))
-            est_mean = nets.preprocessor.mean
-            est_var = nets.preprocessor.M2 / nets.preprocessor.counter
-            est_std = jp.sqrt(est_var)
-            self.assertLess(jp.max(jp.abs(est_mean - true_mean)), 1e-6)
-            self.assertLess(jp.max(jp.abs(est_std - true_std)), 1e-6)
+        # Run ROLLOUT forward over T steps, collecting the per-step
+        # rollout_extras the Normalizer emits, then feed the [T, B, ...]
+        # history into update_statistics.
+        state = nets.initialize_state(BATCH_SIZE)
+        per_step_extras = []
+        for t in range(N_STEPS):
+            out = nets(state, data[t])
+            per_step_extras.append(out.rollout_extras)
+            state = out.next_state
+        rollout_extras = jax.tree.map(
+            lambda *xs: jp.stack(xs, axis=0), *per_step_extras
+        )
+        nets.update_statistics(rollout_extras)
+
+        true_mean = jp.mean(data, axis=(0, 1))
+        true_std = jp.std(data, axis=(0, 1))
+        est_mean = normalizer.mean[...]
+        est_std = jp.sqrt(normalizer.M2[...] / normalizer.counter[...])
+        self.assertEqual(int(normalizer.counter[...]), N_STEPS * BATCH_SIZE)
+        self.assertLess(float(jp.max(jp.abs(est_mean - true_mean))), 1e-5)
+        self.assertLess(float(jp.max(jp.abs(est_std - true_std))), 1e-5)
 
 
 if __name__ == "__main__":

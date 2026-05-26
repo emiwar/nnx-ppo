@@ -9,7 +9,7 @@ import jax.numpy as jp
 from flax import nnx
 from jaxtyping import Array, Float, PyTree
 
-from nnx_ppo.networks.types import PPONetwork
+from nnx_ppo.networks.types import StatefulModule
 from nnx_ppo.algorithms.types import LoggingLevel
 from nnx_ppo.algorithms.rollout import Transition
 
@@ -107,28 +107,20 @@ def _log_metric(
 
 def log_weight_stats(
     metrics: dict[str, Any],
-    networks: PPONetwork,
+    networks: StatefulModule,
     percentile_levels: Optional[tuple[int, ...]] = None,
 ) -> None:
-    """Log weight statistics for actor and critic networks separately.
+    """Log weight statistics over all of the network's parameters.
 
     Args:
         metrics: Dictionary to add metrics to (mutated in place).
         networks: The PPO network to extract weights from.
         percentile_levels: Percentiles to compute. If None, uses mean/std.
     """
-    if not (hasattr(networks, "actor") and hasattr(networks, "critic")):
-        warnings.warn("Weight logging only defined for separate actor/critic networks. Skipping.")
+    params = nnx.state(networks, nnx.Param)
+    leaves = jax.tree.leaves(params)
+    if not leaves:
+        warnings.warn("Network has no nnx.Param leaves; skipping weight logging.")
         return None
-    # Extract parameters using nnx.state
-    actor_params = nnx.state(networks.actor, nnx.Param) # type: ignore
-    critic_params = nnx.state(networks.critic, nnx.Param) # type: ignore
-
-    # Flatten all actor weights into single array
-    actor_weights = jp.concatenate([p.flatten() for p in jax.tree.leaves(actor_params)])
-    critic_weights = jp.concatenate(
-        [p.flatten() for p in jax.tree.leaves(critic_params)]
-    )
-
-    _log_metric(metrics, "weights/actor", actor_weights, percentile_levels)
-    _log_metric(metrics, "weights/critic", critic_weights, percentile_levels)
+    weights = jp.concatenate([p.flatten() for p in leaves])
+    _log_metric(metrics, "weights", weights, percentile_levels)

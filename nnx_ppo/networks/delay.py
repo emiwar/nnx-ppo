@@ -12,7 +12,7 @@ from typing import Any
 import jax
 import jax.numpy as jp
 
-from nnx_ppo.networks.types import Context, StatefulModule, StatefulModuleOutput
+from nnx_ppo.networks.types import StatefulModule, StatefulModuleOutput
 
 
 class Delay(StatefulModule):
@@ -58,8 +58,7 @@ class Delay(StatefulModule):
         self,
         state: dict,
         x: Any,
-        *,
-        context: Context = Context.INFERENCE,
+        rollout_extras: Any = None,
     ) -> StatefulModuleOutput:
         idx = state["idx"]
         batch_size = idx.shape[0]
@@ -76,6 +75,7 @@ class Delay(StatefulModule):
             output=delayed,
             regularization_loss=jp.zeros(batch_size),
             metrics={},
+            rollout_extras=None,
         )
 
     def initialize_state(self, batch_size: int) -> dict:

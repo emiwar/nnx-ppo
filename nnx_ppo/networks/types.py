@@ -1,6 +1,5 @@
 import dataclasses
-import enum
-from typing import Optional, Any, Union
+from typing import Any, Union
 import abc
 import jax
 from flax import nnx
@@ -9,113 +8,22 @@ from jaxtyping import Array, Float, PyTree
 from nnx_ppo.jax_dataclass import JaxDataclass
 
 
-class Context(enum.Enum):
-    """The lifecycle context in which a network forward pass is being made.
-
-    Threaded through every ``StatefulModule.__call__`` as a keyword-only
-    argument. Each module is free to behave differently per context.
-
-    - ``ROLLOUT``: collecting training data by driving the environment.
-      Action samplers sample stochastically.
-    - ``LOSS_REPLAY``: re-running the rollout to compute gradients. Action
-      samplers use the stored ``raw_action``. Forward output must be
-      deterministic with respect to rollout's RNG state.
-    - ``INFERENCE``: evaluation, distillation teacher, ad-hoc forward
-      passes. Sampler's per-instance ``deterministic`` flag decides
-      stochastic-vs-mean behaviour.
-    - ``STATS_UPDATE``: post-loss replay of the rollout. The only context
-      in which modules may write to NNX variables that affect future
-      forward output (e.g. ``Normalizer`` mean/M2/counter).
-
-    Default for ``__call__`` is ``INFERENCE`` — the safe choice. If a
-    caller forgets to pass ``context=``, nothing surprising happens.
-    """
-    ROLLOUT = "rollout"
-    LOSS_REPLAY = "loss_replay"
-    INFERENCE = "inference"
-    STATS_UPDATE = "stats_update"
+ModuleState = PyTree  # Any JAX pytree: (), (h, c), dict, etc.
 
 
 @jax.tree_util.register_pytree_node_class
 @dataclasses.dataclass(frozen=True)
 class PPONetworkOutput(JaxDataclass):
-    # actions and raw_actions are Any (not Float[Array, ...]) to support dict/PyTree
-    # actions for multi-agent or modular networks. See PPONetwork.__call__ docstring.
+    """PPO-specific forward output. Produced by :class:`PPOAdapter`.
+
+    Lives inside the ``output`` field of a :class:`StatefulModuleOutput`.
+    ``regularization_loss`` and ``metrics`` flow through the enclosing
+    ``StatefulModuleOutput`` — they are not duplicated here.
+    """
+
     actions: Any
-    raw_actions: Any
     loglikelihoods: PyTree[Float[Array, "*time batch"]]
-    regularization_loss: Float[Array, "..."]  # Scalar or batch-sized; broadcastable
-    value_estimates: Any  # Float[Array, "*time batch"] or dict thereof for multi-reward networks
-    metrics: dict[str, Any]
-    # Pre-sampling distribution parameters keyed by action name. Populated by
-    # adapters (e.g. PPOAdapter) so distillation losses can read student and
-    # teacher distribution params without re-running the network. None when
-    # the network is not wrapped in a distribution-aware adapter.
-    distribution_params: Any = None
-
-
-ModuleState = PyTree  # Any JAX pytree: (), (h, c), dict, etc.
-
-
-class PPONetwork(nnx.Module, abc.ABC):
-
-    @abc.abstractmethod
-    def __call__(
-        self,
-        network_state: ModuleState,
-        obs: PyTree,
-        raw_action: Optional[Any] = None,
-        *,
-        context: Context = Context.INFERENCE,
-    ) -> tuple[ModuleState, PPONetworkOutput]:
-        """Apply both actor and critic networks to the environment observation `obs`.
-
-        Calling the critic on rollouts might be somewhat inefficient, but by grouping
-        them into the same method, the interface is well-defined even if the actor and
-        critic share stateful layers.
-
-        Args:
-          network_state (ModuleState): The activation state of the network plus any RNG keys
-                                       used for stochastic layers.
-          obs (PyTree): Observation of an environment state. It is a PyTree with the same
-                        structure as env.step(...).obs
-          raw_action (jax.Array): If specified, compute likelihoods using these actions
-                                  than sampling a new action. `raw_action` referes to
-                                  the sampled action before clamping (e.g., by tanh).
-          context (Context): The lifecycle context. Threaded to all child modules.
-
-        Returns: (new_state, network_output)
-          new_state (PyTree): An updated network state, including split RNG keys.
-          network_output (PPONetworkOutput):
-            actions (PyTree): The actions to be sent back to the env
-            raw_actions (PyTree): The raw output of the sampler before applying clamping
-            loglikelihood (float): The log-likelihood for taking the action
-            regularization_loss (float): Sum of all other regularizer terms. This will be added
-                                 to the RL loss target during training.
-            value_estimates (float): The estimated value of `obs` by the critic network.
-            metrics (dict): A dictionary with any intermediate values to log
-
-        Note: for multi-agent / modular networks, the returned action, log likelihood, and
-              and value estimate may be arbitrary PyTrees instead of floats.
-        """
-
-    @abc.abstractmethod
-    def initialize_state(self, batch_size: int) -> ModuleState:
-        """Create an initial state for the network, including RNG keys for any
-        stochastic layers.
-
-        Args:
-          batch_size (int): The batch size of the returned state.
-        """
-
-    def reset_state(self, prev_state: ModuleState) -> ModuleState:
-        """Specifies how the network should be transformed when the corresponding
-        environment is reset.
-
-        Args:
-          prev_state: The state of the network before the environment was reset
-        """
-        return prev_state
+    value_estimates: Any
 
 
 @jax.tree_util.register_pytree_node_class
@@ -124,9 +32,8 @@ class StatefulModuleOutput(JaxDataclass):
     next_state: ModuleState
     output: Any
     regularization_loss: Float[Array, "*batch"]  # Scalar or batch-sized
-    metrics: dict[
-        Union[str, int], Any
-    ]  # Keys can be str or int, values are arrays or nested dicts
+    metrics: dict[Union[str, int], Any]
+    rollout_extras: Any = None
 
 
 class StatefulModule(abc.ABC, nnx.Module):
@@ -137,17 +44,25 @@ class StatefulModule(abc.ABC, nnx.Module):
     There are two types of module state. First, there is the state of the `nnx.Module`
     which follows the common NNX patterns. This state stores trainable parameters
     (of type `nnx.Param`) as well as any `RNGStreams` and other variables. This state
-    is _not_ reset when the RL environment is reset.
+    is _not_ reset when the RL environment is reset, and **may not be written from
+    inside** ``__call__`` if those writes affect the forward output.
+
+    Stats-bearing modules (e.g. :class:`~nnx_ppo.networks.normalizer.Normalizer`)
+    accumulate state by overriding :meth:`update_statistics`, which is called
+    once per training step after the loss / gradient update.
 
     Second, there is an explicit carry state that is intended for stateful network
     layers, e.g. the hidden activations of RNNs. This state _is_ reset when the RL
     environment is reset.
 
-    ``__call__`` takes a keyword-only ``context: Context`` argument. Modules whose
-    behavior varies by context (``Normalizer``, ``ActionSampler``, ...) read this
-    argument; containers thread it to children. The default is ``Context.INFERENCE``,
-    which is the safe choice — no NNX variable writes that affect forward output.
-    Writes to such variables are only permitted when ``context == Context.STATS_UPDATE``.
+    ``__call__`` takes ``rollout_extras`` as a third positional argument
+    (default ``None``). It is a pytree shaped like the module's own contribution
+    to the network's ROLLOUT → LOSS_REPLAY communication channel. In ROLLOUT the
+    module emits its contribution as part of the returned ``StatefulModuleOutput``;
+    in LOSS_REPLAY the same value is fed back in via this argument. Modules that
+    don't need replay information leave it ``None``. The phase a module is in is
+    derivable from this argument: ``None`` means ROLLOUT or INFERENCE
+    (sample fresh / emit); a non-``None`` value means LOSS_REPLAY (consume).
     """
 
     @abc.abstractmethod
@@ -155,49 +70,44 @@ class StatefulModule(abc.ABC, nnx.Module):
         self,
         module_state: ModuleState,
         obs: PyTree,
-        *,
-        context: Context = Context.INFERENCE,
+        rollout_extras: Any = None,
     ) -> StatefulModuleOutput:
         """Args:
-          module_state (ModuleState):
-            The current state of the module.
-          obs (PyTree):
-            Observation(s) to process. Leading dimension is batch.
-          context (Context):
-            Lifecycle context. Containers thread this to children; modules that
-            care key off of it.
-        Returns (StatefulModuleOutput):
-          next_state (ModuleState):
-            The updated module state after processing `obs`. Should have the same
-            structure as `module_state`.
-          output (PyTree):
-            The output of the network module. Should have batch as leading dimension.
-          regularization_loss (float):
-            A floating-point value that is added to the total loss. Useful for
-            adding regularization or co-objectives to the networks.
-          metrics (Dict[str, jax.Array]):
-            Any logging metrics.
+          module_state: The current state of the module.
+          obs: Observation(s) to process. Leading dimension is batch.
+          rollout_extras: Replay snapshots for this module (and, via container
+            routing, its descendants). ``None`` in ROLLOUT / INFERENCE; the
+            stored value from ``Transition.rollout_extras`` in LOSS_REPLAY.
+
+        Returns ``StatefulModuleOutput`` with ``next_state``, ``output``,
+        ``regularization_loss``, ``metrics``, and ``rollout_extras`` (the
+        snapshot to be stored on the transition for later replay).
         """
 
     def initialize_state(self, batch_size: int) -> ModuleState:
         """Create a new state for this module.
 
         Args:
-        batch_size (int): The batch size
+          batch_size: Batch size (leading dimension on any returned arrays).
 
         Returns:
-        A `ModuleState` with `batch_size` as the leading dimension on any
-        arrays in the tree. The default is an empty tuple, representing a
-        stateless module.
-
-        Notes:
-        As JAX does not allow parallellized conditional evaluation, this
-        method will be called on every step. For environments where `done=True`,
-        the corresponding network state will be replaced with the return value of
-        this method.
+          A ``ModuleState`` with ``batch_size`` as the leading dimension.
+          Default is an empty tuple (stateless module).
         """
         return ()
 
     def reset_state(self, prev_state: ModuleState) -> ModuleState:
         return prev_state
 
+    def update_statistics(self, rollout_extras: Any) -> None:
+        """Fold the rollout's worth of replay snapshots into any running
+        statistics this module owns. Called once per training step after
+        the loss / gradient update.
+
+        Containers override this to route ``rollout_extras`` per child the
+        same way they route state. Stats-bearing leaves (e.g.
+        :class:`Normalizer`) consume their ``[T, B, *feat]`` history slice
+        and update their NNX variables in place. Default is a no-op.
+        """
+        del rollout_extras
+        return None

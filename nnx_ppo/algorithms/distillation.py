@@ -30,7 +30,9 @@ import jax.numpy as jp
 from jaxtyping import Array, Float, Integer, PRNGKeyArray
 import optax
 
-from nnx_ppo.networks.types import PPONetwork, ModuleState
+from typing import Any as PPONetwork  # Deferred for Phase B; see plan.
+
+from nnx_ppo.networks.types import ModuleState
 from nnx_ppo.algorithms import rollout
 from nnx_ppo.algorithms.rollout import tree_where
 from nnx_ppo.algorithms.types import (

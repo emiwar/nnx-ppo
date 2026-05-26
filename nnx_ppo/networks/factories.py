@@ -2,12 +2,13 @@ from typing import Union
 from collections.abc import Callable
 
 from flax import nnx
-from jaxtyping import Array
 
-from nnx_ppo.algorithms.distributions import NormalTanhSampler
-from nnx_ppo.networks.containers import PPOActorCritic, Sequential
+from nnx_ppo.networks.adapter import PPOAdapter
+from nnx_ppo.networks.containers import Sequential
 from nnx_ppo.networks.feedforward import Dense
 from nnx_ppo.networks.normalizer import Normalizer
+from nnx_ppo.networks.sampling_layers import NormalTanhSampler
+from nnx_ppo.networks.types import StatefulModule
 
 
 def make_mlp_layers(
@@ -81,24 +82,27 @@ def make_mlp_actor_critic(
     entropy_weight: float = 1e-2,
     min_std: float = 1e-1,
     std_scale: float = 1.0,
-) -> PPOActorCritic:
-    """Create a simple MLP-based actor-critic network.
+) -> StatefulModule:
+    """Build a standard one-actor / one-critic PPO network.
 
-    Args:
-        obs_size: Size of observation vector.
-        action_size: Size of action vector.
-        actor_hidden_sizes: List of hidden layer sizes for actor.
-        critic_hidden_sizes: List of hidden layer sizes for critic.
-        rngs: NNX random number generators.
-        activation: Activation function.
-        normalize_obs: Whether to normalize observations.
-        initializer_scale: Scale for variance scaling initializer.
-        entropy_weight: Entropy bonus weight for the action sampler.
-        min_std: Minimum standard deviation for action distribution.
-        std_scale: Scale factor for action standard deviation.
+    Returns a ``Sequential`` whose forward output is a
+    :class:`~nnx_ppo.networks.types.PPONetworkOutput`. Pass it straight to
+    :func:`~nnx_ppo.algorithms.ppo.train_ppo`.
 
-    Returns:
-        A PPOActorCritic network.
+    The constructed pipeline is::
+
+        Sequential([
+            Normalizer(obs_size)?,        # if normalize_obs
+            PPOAdapter(
+                action=Sequential([actor, NormalTanhSampler(...)]),
+                value=critic,
+            ),
+        ])
+
+    Both adapter ports receive the same upstream input (the normalised obs),
+    so there is no shared trunk; the actor and critic each run independently.
+    Insert a shared trunk by prepending it to the Sequential and pointing the
+    ports at it.
     """
     if isinstance(activation, str):
         activation = {"swish": nnx.swish, "tanh": nnx.tanh, "relu": nnx.relu}[
@@ -109,36 +113,34 @@ def make_mlp_actor_critic(
         initializer_scale, "fan_in", "uniform"
     )
 
-    actor_sizes = [obs_size] + actor_hidden_sizes + [action_size * 2]
-    actor = make_mlp(
-        actor_sizes,
+    actor_layers = make_mlp_layers(
+        [obs_size] + actor_hidden_sizes + [action_size * 2],
         rngs,
         activation,  # type: ignore[arg-type]
         activation_last_layer=False,
         kernel_init=kernel_init,
     )
 
-    critic_sizes = [obs_size] + critic_hidden_sizes + [1]
     critic = make_mlp(
-        critic_sizes,
+        [obs_size] + critic_hidden_sizes + [1],
         rngs,
         activation,  # type: ignore[arg-type]
         activation_last_layer=False,
         kernel_init=kernel_init,
     )
 
-    action_sampler = NormalTanhSampler(
+    sampler = NormalTanhSampler(
         rngs,
         entropy_weight=entropy_weight,
         min_std=min_std,
         std_scale=std_scale,
     )
 
-    preprocessor = Normalizer(obs_size) if normalize_obs else None
-
-    return PPOActorCritic(
-        actor=actor,
-        critic=critic,
-        action_sampler=action_sampler,
-        preprocessor=preprocessor,
+    # Sampler is just the last layer of the actor chain.
+    adapter = PPOAdapter(
+        action=Sequential([*actor_layers, sampler]),
+        value=critic,
     )
+    if normalize_obs:
+        return Sequential([Normalizer(obs_size), adapter])
+    return adapter

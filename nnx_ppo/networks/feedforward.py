@@ -1,13 +1,13 @@
 """Feedforward network layers."""
 
-from typing import Optional
+from typing import Any, Optional
 from collections.abc import Callable
 import jax
 import jax.numpy as jp
 from flax import nnx
 from jaxtyping import Array, Float
 
-from nnx_ppo.networks.types import Context, StatefulModule, StatefulModuleOutput
+from nnx_ppo.networks.types import StatefulModule, StatefulModuleOutput
 
 
 class Dense(StatefulModule):
@@ -43,10 +43,9 @@ class Dense(StatefulModule):
         self,
         state: tuple[()],
         x: Float[Array, "batch {self.in_features}"],
-        *,
-        context: Context = Context.INFERENCE,
+        rollout_extras: Any = None,
     ) -> StatefulModuleOutput:
         y = self.linear(x)
         if self.activation is not None:
             y = self.activation(y)
-        return StatefulModuleOutput(state, y, jp.array(0.0), {})
+        return StatefulModuleOutput(state, y, jp.array(0.0), {}, None)

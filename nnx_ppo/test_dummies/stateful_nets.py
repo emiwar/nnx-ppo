@@ -1,5 +1,4 @@
 from typing import Any
-import jax
 import jax.numpy as jp
 from flax import nnx
 
@@ -10,7 +9,7 @@ class Count(nnx.Variable):
     pass
 
 
-class RepeatAndCountNet(types.PPONetwork, nnx.Module):
+class RepeatAndCountNet(types.StatefulModule):
     """Dummy stateful network that outputs its input as action, and counts
     how many times it has been called."""
 
@@ -21,19 +20,20 @@ class RepeatAndCountNet(types.PPONetwork, nnx.Module):
         self,
         state,
         obs,
-        raw_action=None,
-        *,
-        context: types.Context = types.Context.INFERENCE,
-    ) -> tuple[Any, types.PPONetworkOutput]:
+        rollout_extras: Any = None,
+    ) -> types.StatefulModuleOutput:
         batch_size = obs.shape[0]
         self.n_calls[...] += batch_size
-        return (), types.PPONetworkOutput(
-            actions=obs,
-            raw_actions=obs,
-            loglikelihoods=jp.ones(batch_size),
+        return types.StatefulModuleOutput(
+            next_state=(),
+            output=types.PPONetworkOutput(
+                actions=obs,
+                loglikelihoods=jp.ones(batch_size),
+                value_estimates=jp.ones(batch_size),
+            ),
             regularization_loss=jp.array(0.0),
-            value_estimates=jp.ones(batch_size),
             metrics={},
+            rollout_extras=None,
         )
 
     def initialize_state(self, batch_size: int) -> tuple:

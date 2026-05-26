@@ -10,9 +10,10 @@ import mujoco_playground
 from flax import nnx
 
 from nnx_ppo.networks import factories
-from nnx_ppo.networks.containers import PPOActorCritic, Sequential
+from nnx_ppo.networks.adapter import PPOAdapter
+from nnx_ppo.networks.containers import Sequential
 from nnx_ppo.networks.feedforward import Dense
-from nnx_ppo.algorithms.distributions import NormalTanhSampler
+from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 from nnx_ppo.networks.variational import AR1VariationalBottleneck
 from nnx_ppo.algorithms import ppo
 from nnx_ppo.algorithms.checkpointing import make_checkpoint_fn, load_checkpoint
@@ -57,6 +58,7 @@ def _make_ar1vb_nets(env, seed: int = 17):
             Dense(obs_size, _LATENT_SIZE * 2, rngs, activation=nnx.relu),
             AR1VariationalBottleneck(_LATENT_SIZE, rng=rngs.params),
             Dense(_LATENT_SIZE, action_size * 2, rngs),
+            NormalTanhSampler(rngs, entropy_weight=1e-2),
         ]
     )
     critic = Sequential(
@@ -65,8 +67,10 @@ def _make_ar1vb_nets(env, seed: int = 17):
             Dense(8, 1, rngs),
         ]
     )
-    action_sampler = NormalTanhSampler(rngs, entropy_weight=1e-2)
-    return PPOActorCritic(actor=actor, critic=critic, action_sampler=action_sampler)
+    return PPOAdapter(
+        action=actor,
+        value=critic,
+    )
 
 
 class TrainConfigCheckpointTest(absltest.TestCase):
@@ -209,8 +213,8 @@ class MakeCheckpointFnTest(absltest.TestCase):
 
             # Run a forward pass with original and loaded networks; outputs must match.
             obs = jp.zeros((4, self.env.observation_size))
-            _, out_orig = state.networks(state.network_states, obs)
-            _, out_loaded = loaded.networks(loaded.network_states, obs)
+            out_orig = state.networks(state.network_states, obs).output
+            out_loaded = loaded.networks(loaded.network_states, obs).output
             self.assertTrue(
                 jp.allclose(out_orig.value_estimates, out_loaded.value_estimates),
                 "Value estimates differ after checkpoint round-trip.",
@@ -261,9 +265,9 @@ class NormalizerCheckpointTest(absltest.TestCase):
 
             # Set known, non-zero normalizer statistics.
             obs_size = self.env.observation_size
-            state.networks.preprocessor.mean[...] = jp.ones(obs_size) * 3.14
-            state.networks.preprocessor.M2[...] = jp.ones(obs_size) * 2.0
-            state.networks.preprocessor.counter[...] = jp.array(1000.0)
+            state.networks.layers[0].mean[...] = jp.ones(obs_size) * 3.14
+            state.networks.layers[0].M2[...] = jp.ones(obs_size) * 2.0
+            state.networks.layers[0].counter[...] = jp.array(1000.0)
 
             fn = make_checkpoint_fn(tmpdir)
             fn(state, step=100)
@@ -278,20 +282,20 @@ class NormalizerCheckpointTest(absltest.TestCase):
 
             self.assertTrue(
                 jp.allclose(
-                    loaded.networks.preprocessor.mean[...],
-                    state.networks.preprocessor.mean[...],
+                    loaded.networks.layers[0].mean[...],
+                    state.networks.layers[0].mean[...],
                 ),
                 "Normalizer mean not preserved after checkpoint.",
             )
             self.assertTrue(
                 jp.allclose(
-                    loaded.networks.preprocessor.M2[...],
-                    state.networks.preprocessor.M2[...],
+                    loaded.networks.layers[0].M2[...],
+                    state.networks.layers[0].M2[...],
                 ),
                 "Normalizer M2 not preserved after checkpoint.",
             )
             self.assertAlmostEqual(
-                float(loaded.networks.preprocessor.counter[...]),
+                float(loaded.networks.layers[0].counter[...]),
                 1000.0,
                 msg="Normalizer counter not preserved after checkpoint.",
             )
@@ -321,23 +325,22 @@ class AR1VBCheckpointTest(absltest.TestCase):
         try:
             state = self._make_training_state(n_envs=n_envs)
 
-            # Under PPOAdapter the state is {"inner": <inner>, "samplers": {...}}.
-            # PPOActorCritic with no preprocessor uses inner = Parallel(action_params=actor, value=critic),
-            # so inner state is {"action_params": [...], "value": [...]}.
-            # AR1VB is layer index 1 of the actor Sequential.
-            inner_state = state.network_states["inner"]
-            actor_state = inner_state["action_params"]
+            # _make_ar1vb_nets returns a bare PPOAdapter. Its state is a
+            # dict `{"action": <action port state>, "value": <critic state>}`.
+            # The action port is a Sequential of [Dense, AR1VB, Dense, Sampler],
+            # so its state is a list of per-layer states. AR1VB is at index 1.
+            adapter_state = state.network_states
+            action_state = adapter_state["action"]
             known_last_z = jp.ones((n_envs, _LATENT_SIZE)) * 7.77
-            new_ar1vb_state = {"keys": actor_state[1]["keys"], "last_z": known_last_z}
-            new_inner_state = dict(inner_state)
-            new_inner_state["action_params"] = [
-                actor_state[0],
+            new_ar1vb_state = {"keys": action_state[1]["keys"], "last_z": known_last_z}
+            new_action_state = [
+                action_state[0],
                 new_ar1vb_state,
-                actor_state[2],
+                action_state[2],
+                action_state[3],
             ]
-            new_network_states = dict(state.network_states)
-            new_network_states["inner"] = new_inner_state
-            state = state.replace(network_states=new_network_states)
+            new_adapter_state = {**adapter_state, "action": new_action_state}
+            state = state.replace(network_states=new_adapter_state)
 
             fn = make_checkpoint_fn(tmpdir)
             fn(state, step=200)
@@ -351,7 +354,7 @@ class AR1VBCheckpointTest(absltest.TestCase):
             loaded = ckpt["training_state"]
 
             loaded_last_z = (
-                loaded.network_states["inner"]["action_params"][1]["last_z"]
+                loaded.network_states["action"][1]["last_z"]
             )
             self.assertTrue(
                 jp.allclose(loaded_last_z, known_last_z),
@@ -366,12 +369,8 @@ class AR1VBCheckpointTest(absltest.TestCase):
         tmpdir = tempfile.mkdtemp()
         try:
             state = self._make_training_state(n_envs=n_envs)
-            # Under PPOAdapter, the actor Sequential's state lives at
-            # state.network_states["inner"]["action_params"] (no preprocessor
-            # in this test, so inner is Parallel directly, not wrapped in
-            # Sequential).
             initial_last_z = (
-                state.network_states["inner"]["action_params"][1]["last_z"]
+                state.network_states["action"][1]["last_z"]
             )
             self.assertTrue(
                 jp.all(jp.isnan(initial_last_z)),
@@ -390,7 +389,7 @@ class AR1VBCheckpointTest(absltest.TestCase):
             loaded = ckpt["training_state"]
 
             loaded_last_z = (
-                loaded.network_states["inner"]["action_params"][1]["last_z"]
+                loaded.network_states["action"][1]["last_z"]
             )
             self.assertTrue(
                 jp.all(jp.isnan(loaded_last_z)),

@@ -6,7 +6,6 @@ import jax.numpy as jp
 from flax import nnx
 
 from nnx_ppo.networks.types import (
-    Context,
     StatefulModule,
     StatefulModuleOutput,
 )
@@ -38,21 +37,16 @@ class Normalizer(StatefulModule):
 
     Forward pass standardises ``x`` using the running ``mean`` and standard
     deviation derived from ``M2`` and ``counter``. The running statistics
-    are updated *only* when ``__call__`` is invoked with
-    ``context=Context.STATS_UPDATE``; in all other contexts the live params
-    are read-only.
+    are read-only in ``__call__`` — never written from the forward path.
 
-    The ``STATS_UPDATE`` pass is invoked by ``ppo_step`` after the gradient
-    phase: the rollout is replayed through the network once more (using
-    stored ``raw_action`` for samplers, just like ``LOSS_REPLAY``), and on
-    that pass each Normalizer sees the exact same activations it saw during
-    rollout and incrementally accumulates them into ``mean``/``M2``/
-    ``counter``. The forward output of this pass is discarded.
-
-    Placing a Normalizer anywhere in the network — behind a ``Delay``,
-    inside a population of a graph, after an encoder — works automatically:
-    the input ``x`` it receives during STATS_UPDATE is, by construction,
-    the same as during rollout.
+    Stats are updated once per training step via :meth:`update_statistics`,
+    which receives the rollout's history of normalizer inputs (one
+    ``[T, B, *feat]`` slice per leaf) and folds it in with a single batched
+    Welford merge. The values it sees are exactly the activations the
+    Normalizer received during ROLLOUT (the forward pass emits them as
+    ``rollout_extras``), so placing the Normalizer anywhere — behind a
+    ``Delay``, inside a graph population, after an encoder — works
+    automatically.
     """
 
     def __init__(self, shape):
@@ -70,14 +64,11 @@ class Normalizer(StatefulModule):
         self,
         state: tuple[()],
         x: Any,
-        *,
-        context: Context = Context.INFERENCE,
+        rollout_extras: Any = None,
     ) -> StatefulModuleOutput:
         # Canonicalise any incoming Mapping (OrderedDict, FrozenDict, ...)
         # to plain dict so jax.tree.map aligns with self.mean / self.M2.
         x = _canonicalize(x)
-        if context == Context.STATS_UPDATE:
-            self._welford_step(x)
         std = jax.lax.cond(
             self.counter.get_value() > 0,
             self._M2_to_std,
@@ -87,8 +78,15 @@ class Normalizer(StatefulModule):
         output = jax.tree.map(
             lambda x, m, s: (x - m) / s, x, self.mean.get_value(), std
         )
+        # Always emit the normalised input as rollout_extras; update_statistics
+        # will fold the [T, B, ...] history into running stats after the loss
+        # step. The eval/inference path discards the emission.
         return StatefulModuleOutput(
-            next_state=(), output=output, regularization_loss=jp.array(0.0), metrics={}
+            next_state=(),
+            output=output,
+            regularization_loss=jp.array(0.0),
+            metrics={},
+            rollout_extras=x,
         )
 
     def _M2_to_std(self, M2):
@@ -97,41 +95,42 @@ class Normalizer(StatefulModule):
             M2,
         )
 
-    def _welford_step(self, x: Any) -> None:
-        """Per-step batched Welford update.
+    def update_statistics(self, rollout_extras: Any) -> None:
+        """Fold the rollout's worth of normalizer inputs into running stats.
 
-        ``x`` is a single timestep slice with shape ``[B, *feat]`` per leaf.
-        Updates ``self.mean``, ``self.M2``, ``self.counter`` in place. The
-        update is mathematically associative across steps, so applying it
-        once per timestep over a rollout produces the same end state as
-        applying it once on the whole rollout.
+        ``rollout_extras`` is a pytree matching the structure the Normalizer
+        emitted on each step, with an additional leading time dimension —
+        leaves have shape ``[T, B, *feat]``. We flatten T*B and apply one
+        batched Welford merge.
         """
-        leaves = jax.tree.leaves(x)
-        if not leaves:
-            return
-        # Leaves are [B, *feat] in a single-step call.
-        batch_count = leaves[0].shape[0]
-        new_count = self.counter.get_value() + batch_count
-        frac = batch_count / new_count
-
-        batch_mean = jax.tree.map(lambda v: jp.mean(v, axis=0), x)
-        old_mean = self.mean.get_value()
-        delta_old = jax.tree.map(lambda bm, m: bm - m, batch_mean, old_mean)
-        new_mean = jax.tree.map(lambda m, d: m + d * frac, old_mean, delta_old)
-        self.mean.set_value(new_mean)
-
-        delta_new = jax.tree.map(lambda bm, m: bm - m, batch_mean, new_mean)
-        batch_var = jax.tree.map(lambda v: jp.var(v, axis=0), x)
-        old_M2 = self.M2.get_value()
-        new_M2 = jax.tree.map(
-            lambda m2, bv, d_old, d_new: m2
-            + batch_count * bv
-            + batch_count * d_old * d_new,
-            old_M2,
-            batch_var,
-            delta_old,
-            delta_new,
+        leaves = jax.tree.leaves(rollout_extras)
+        # Flatten time and batch axes into a single sample axis [N, *feat].
+        flat = jax.tree.map(
+            lambda v: v.reshape((-1,) + v.shape[2:]), rollout_extras
         )
+        n = leaves[0].shape[0] * leaves[0].shape[1]
+        new_count = self.counter.get_value() + n
+        frac = n / new_count
+
+        batch_mean = jax.tree.map(lambda v: jp.mean(v, axis=0), flat)
+        batch_M2 = jax.tree.map(
+            lambda v, bm: jp.sum(jp.square(v - bm), axis=0), flat, batch_mean
+        )
+
+        old_mean = self.mean.get_value()
+        delta = jax.tree.map(lambda bm, m: bm - m, batch_mean, old_mean)
+        new_mean = jax.tree.map(lambda m, d: m + d * frac, old_mean, delta)
+
+        old_M2 = self.M2.get_value()
+        # Standard batched Welford merge: M2_combined = M2_a + M2_b + d^2 * n_a * n_b / (n_a + n_b)
+        new_M2 = jax.tree.map(
+            lambda m2, bm2, d: m2
+            + bm2
+            + (d * d) * self.counter.get_value() * n / new_count,
+            old_M2,
+            batch_M2,
+            delta,
+        )
+        self.mean.set_value(new_mean)
         self.M2.set_value(new_M2)
         self.counter.set_value(new_count)
-

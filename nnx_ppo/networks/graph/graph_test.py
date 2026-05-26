@@ -8,7 +8,6 @@ from flax import nnx
 
 from nnx_ppo.networks.graph import PopulationGraph
 from nnx_ppo.networks.types import (
-    Context,
     StatefulModule,
     StatefulModuleOutput,
 )
@@ -19,8 +18,8 @@ class _Passthrough(StatefulModule):
     transform in tests so we can assert on raw arithmetic without the
     learned-Dense complication."""
 
-    def __call__(self, s, x, *, context=Context.INFERENCE):
-        return StatefulModuleOutput(s, x, jp.array(0.0), {})
+    def __call__(self, s, x, rollout_extras=None):
+        return StatefulModuleOutput(s, x, jp.array(0.0), {}, None)
 
 
 class BuildAPITest(absltest.TestCase):
@@ -116,7 +115,7 @@ class ForwardPassTest(absltest.TestCase):
 
         state = g.initialize_state(batch_size=2)
         obs = {"x": jp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])}
-        out = g(state, obs, context=Context.INFERENCE)
+        out = g(state, obs)
         np.testing.assert_array_equal(out.output["o"], obs["x"])
 
     def test_sum_integration_two_inputs(self):

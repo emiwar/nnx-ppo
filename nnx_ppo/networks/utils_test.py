@@ -7,7 +7,6 @@ import numpy as np
 from flax import nnx
 
 from nnx_ppo.networks.types import (
-    Context,
     StatefulModule,
     StatefulModuleOutput,
 )
@@ -154,9 +153,9 @@ class MergeTest(absltest.TestCase):
         def __init__(self, keys):
             self._keys = tuple(keys)
 
-        def __call__(self, state, x, *, context: Context = Context.INFERENCE):
+        def __call__(self, state, x, rollout_extras=None):
             return StatefulModuleOutput(
-                state, {k: x for k in self._keys}, jp.array(0.0), {}
+                state, {k: x for k in self._keys}, jp.array(0.0), {}, None
             )
 
     def test_basic_merge(self):
@@ -181,8 +180,8 @@ class MergeTest(absltest.TestCase):
 
     def test_non_dict_component_raises(self):
         class _ArrayModule(StatefulModule):
-            def __call__(self, state, x, *, context: Context = Context.INFERENCE):
-                return StatefulModuleOutput(state, x, jp.array(0.0), {})
+            def __call__(self, state, x, rollout_extras=None):
+                return StatefulModuleOutput(state, x, jp.array(0.0), {}, None)
 
         m = Merge(bad=_ArrayModule())
         state = m.initialize_state(2)
@@ -196,9 +195,9 @@ class MergeTest(absltest.TestCase):
     def test_state_threading(self):
         # Each component sees its own carry slot.
         class _CountingModule(StatefulModule):
-            def __call__(self, state, x, *, context: Context = Context.INFERENCE):
+            def __call__(self, state, x, rollout_extras=None):
                 return StatefulModuleOutput(
-                    state + 1, {self._key: x}, jp.array(0.0), {}
+                    state + 1, {self._key: x}, jp.array(0.0), {}, None
                 )
 
             def __init__(self, key):
@@ -217,8 +216,8 @@ class MergeTest(absltest.TestCase):
 class MapTest(absltest.TestCase):
 
     class _AddOne(StatefulModule):
-        def __call__(self, s, x, *, context: Context = Context.INFERENCE):
-            return StatefulModuleOutput(s, x + 1.0, jp.array(0.0), {})
+        def __call__(self, s, x, rollout_extras=None):
+            return StatefulModuleOutput(s, x + 1.0, jp.array(0.0), {}, None)
 
     def test_basic_per_key_dispatch(self):
         m = Map(a=MapTest._AddOne(), b=MapTest._AddOne())
@@ -288,48 +287,29 @@ class ParallelDictCtorTest(absltest.TestCase):
 
 
 class ComposesWithPPOAdapterTest(absltest.TestCase):
-    """End-to-end: Flattener(preserve_levels=1) + Filter + Merge feeding PPOAdapter."""
+    """End-to-end: dict obs -> Flattener -> PPOAdapter with separate ports."""
 
-    def test_merge_feeds_adapter_flat_dict(self):
-        from nnx_ppo.algorithms.adapter import PPOAdapter
-        from nnx_ppo.algorithms.distributions import NormalTanhSampler
+    def test_flattener_feeds_adapter(self):
+        from nnx_ppo.networks.adapter import PPOAdapter
+        from nnx_ppo.networks.sampling_layers import NormalTanhSampler
         from nnx_ppo.networks.containers import Sequential
         from nnx_ppo.networks.feedforward import Dense
+        from nnx_ppo.networks.types import PPONetworkOutput
 
         rngs = nnx.Rngs(0, action_sampling=1)
-
-        # Two independent stacks, each emitting a dict of named heads.
-        actor_stack = Sequential([
-            Flattener(),
-            Dense(7, 4, rngs),
-        ])
-
-        class _RenameAsAction(StatefulModule):
-            def __call__(self, s, x, *, context=Context.INFERENCE):
-                return StatefulModuleOutput(s, {"action_params": x}, jp.array(0.0), {})
-
-        class _RenameAsValue(StatefulModule):
-            def __call__(self, s, x, *, context=Context.INFERENCE):
-                return StatefulModuleOutput(s, {"value": x}, jp.array(0.0), {})
-
-        actor_branch = Sequential([actor_stack, _RenameAsAction()])
-        critic_branch = Sequential([
-            Flattener(),
-            Dense(7, 1, rngs),
-            _RenameAsValue(),
-        ])
-        trunk = Merge(actor=actor_branch, critic=critic_branch)
-
-        nets = PPOAdapter(
-            inner=trunk,
-            action_specs={"action_params": NormalTanhSampler(rngs, entropy_weight=1e-2)},
-            value_specs="value",
+        actor = Sequential([Flattener(), Dense(7, 4, rngs)])
+        critic = Sequential([Flattener(), Dense(7, 1, rngs)])
+        sampler = NormalTanhSampler(rngs, entropy_weight=1e-2)
+        adapter = PPOAdapter(
+            action=Sequential([actor, sampler]),
+            value=critic,
         )
-        state = nets.initialize_state(3)
+        state = adapter.initialize_state(3)
         obs = {"x": jp.ones((3, 4)), "y": jp.ones((3, 3))}
-        state, out = nets(state, obs)
-        self.assertEqual(out.actions.shape, (3, 2))
-        self.assertEqual(out.value_estimates.shape, (3,))
+        out = adapter(state, obs)
+        self.assertIsInstance(out.output, PPONetworkOutput)
+        self.assertEqual(out.output.actions.shape, (3, 2))
+        self.assertEqual(out.output.value_estimates.shape, (3,))
 
 
 if __name__ == "__main__":
