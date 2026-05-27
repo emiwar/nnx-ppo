@@ -91,13 +91,19 @@ class DistillationTransition(JaxDataclass):
     """
 
     obs: PyTree[Float[Array, "..."]]
-    student_output: PPONetworkOutput  # drives env; used in student time-scan replay
-    teacher_output: PPONetworkOutput  # frozen reference; raw_actions = teacher mean (eval mode)
+    student_output: PPONetworkOutput  # drives env; used for logging only
     rewards: PyTree[Float[Array, "*time batch"]]
     done: Bool[Array, "*time batch"]
     truncated: Bool[Array, "*time batch"]
     next_obs: PyTree[Float[Array, "..."]]
     metrics: dict[str, Any]
+    # Student's emitted rollout_extras — mirrors student state tree.
+    # Fed to student.update_statistics after the gradient phase.
+    student_rollout_extras: Any = None
+    # Teacher's emitted rollout_extras — sampler positions hold the
+    # teacher mean (teacher runs in eval mode). Fed back to the student
+    # in distillation_loss to drive log p_student(mu_teacher | obs).
+    teacher_rollout_extras: Any = None
 
 
 @jax.tree_util.register_pytree_node_class

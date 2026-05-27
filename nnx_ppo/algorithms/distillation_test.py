@@ -14,13 +14,16 @@ def _make_env_and_nets(seed=17):
     env = mujoco_playground.registry.load("CartpoleBalance")
     rngs_teacher = nnx.Rngs(seed, action_sampling=seed)
     rngs_student = nnx.Rngs(seed + 1, action_sampling=seed + 1)
+    # Teacher and student must have isomorphic state trees so that the
+    # teacher's rollout_extras can be fed directly to the student's
+    # sampler during loss replay. Easiest way: same factory settings.
     teacher = factories.make_mlp_actor_critic(
         env.observation_size,
         env.action_size,
         actor_hidden_sizes=[16, 16],
         critic_hidden_sizes=[16, 16],
         rngs=rngs_teacher,
-        normalize_obs=False,
+        normalize_obs=True,
     )
     student = factories.make_mlp_actor_critic(
         env.observation_size,

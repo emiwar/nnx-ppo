@@ -1,20 +1,29 @@
 """Policy distillation training algorithm.
 
-Trains a student PPONetwork to imitate a frozen teacher PPONetwork.
+Trains a student StatefulModule (whose forward output is a
+StatefulModuleOutput) to imitate a frozen teacher.
 
 The algorithm (Policy Distillation, Rusu et al. 2015):
   1. Roll out the environment using student actions.
-  2. During rollout, also run the teacher to collect its action distributions.
-  3. Train the student to maximise log p_student(mu_teacher | obs), i.e. minimise
-     the NLL of the teacher's action mean under the student's distribution.
-     This is equivalent to minimising KL(teacher || student) up to the constant
-     H(teacher).
+  2. During rollout, also run the teacher to collect its rollout_extras
+     (which, with the teacher in eval mode, contains its action mean at
+     the sampler positions).
+  3. Train the student to maximise log p_student(mu_teacher | obs), i.e.
+     minimise the NLL of the teacher's action mean under the student's
+     distribution. Equivalent to minimising KL(teacher || student) up to
+     the constant H(teacher).
   4. Repeat for n_epochs * n_minibatches gradient updates per rollout.
 
-The teacher is run in deterministic (eval) mode so that raw_actions = mu_teacher.
-Teacher parameters are never updated; no stop_gradient hacks are needed because
-the teacher is not passed to the loss function at all — only its pre-computed
-outputs (stored in DistillationTransition) are used there.
+The teacher is run in eval (deterministic) mode so that the sampler's
+emitted raw_action equals the mean. Teacher parameters are never
+updated; the teacher is not passed to the loss function — only its
+pre-computed rollout_extras (stored in DistillationTransition) is used
+there as the student's loss-replay channel.
+
+Constraint: teacher and student must have isomorphic state / rollout_extras
+trees (i.e. the same architectural skeleton with samplers at matching
+positions), because the teacher's rollout_extras is fed directly into the
+student's __call__ during loss replay.
 """
 
 from typing import Any, Optional
@@ -30,9 +39,7 @@ import jax.numpy as jp
 from jaxtyping import Array, Float, Integer, PRNGKeyArray
 import optax
 
-from typing import Any as PPONetwork  # Deferred for Phase B; see plan.
-
-from nnx_ppo.networks.types import ModuleState
+from nnx_ppo.networks.types import ModuleState, StatefulModule
 from nnx_ppo.algorithms import rollout
 from nnx_ppo.algorithms.rollout import tree_where
 from nnx_ppo.algorithms.types import (
@@ -40,7 +47,6 @@ from nnx_ppo.algorithms.types import (
     DistillationState,
     LoggingLevel,
     RLEnv,
-    Transition,
 )
 from nnx_ppo.algorithms.config import (
     DistillationTrainConfig,
@@ -60,8 +66,8 @@ def default_distillation_config() -> DistillationTrainConfig:
 
 def distillation_single_transition(
     env: RLEnv,
-    teacher: PPONetwork,
-    student: PPONetwork,
+    teacher: StatefulModule,
+    student: StatefulModule,
     carry: tuple[ModuleState, ModuleState, Any],
     rng_keys_for_env_reset: Any,
 ) -> tuple[tuple[ModuleState, ModuleState, Any], DistillationTransition]:
@@ -73,15 +79,17 @@ def distillation_single_transition(
     """
     student_state, teacher_state, env_state = carry
 
-    next_student_state, student_output = student(student_state, env_state.obs)
-    next_teacher_state, teacher_output = teacher(teacher_state, env_state.obs)
+    student_out = student(student_state, env_state.obs)
+    teacher_out = teacher(teacher_state, env_state.obs)
+    next_student_state = student_out.next_state
+    next_teacher_state = teacher_out.next_state
+    student_output = student_out.output
 
     next_env_state = jax.vmap(env.step)(env_state, student_output.actions)
 
     transition = DistillationTransition(
         obs=env_state.obs,
         student_output=student_output,
-        teacher_output=teacher_output,
         rewards=next_env_state.reward,
         done=next_env_state.done.astype(bool),
         truncated=next_env_state.info.get(
@@ -90,8 +98,10 @@ def distillation_single_transition(
         next_obs=next_env_state.obs,
         metrics={
             "env": next_env_state.metrics,
-            "student": student_output.metrics,
+            "student": student_out.metrics,
         },
+        student_rollout_extras=student_out.rollout_extras,
+        teacher_rollout_extras=teacher_out.rollout_extras,
     )
 
     done = transition.done
@@ -110,8 +120,8 @@ def distillation_single_transition(
 def distillation_unroll_env(
     env: RLEnv,
     env_state: Any,
-    teacher: PPONetwork,
-    student: PPONetwork,
+    teacher: StatefulModule,
+    student: StatefulModule,
     student_state: ModuleState,
     teacher_state: ModuleState,
     unroll_length: int,
@@ -148,7 +158,7 @@ def distillation_unroll_env(
 
 
 def distillation_loss(
-    student: PPONetwork,
+    student: StatefulModule,
     student_state: ModuleState,
     rollout_data: DistillationTransition,
     logging_level: LoggingLevel,
@@ -160,13 +170,15 @@ def distillation_loss(
     distribution. This is equivalent to minimising KL(teacher || student) up
     to the constant H(teacher).
 
-    The teacher was run in eval (deterministic) mode during rollout, so
-    rollout_data.teacher_output.raw_actions == mu_teacher at every step.
+    The teacher was run in eval (deterministic) mode during rollout, so its
+    emitted rollout_extras carries the teacher mean at every sampler position.
+    Passing it as the student's `rollout_extras` makes the student's sampler
+    compute `log p_student(mu_teacher | obs)`.
 
     Args:
         student: Student network (gradient target).
         student_state: Student carry state at the start of the minibatch rollout.
-        rollout_data: Pre-computed rollout including teacher outputs.
+        rollout_data: Pre-computed rollout including teacher rollout_extras.
                       Treated as stop-gradient constants.
         logging_level: Controls which metrics are returned.
 
@@ -179,12 +191,10 @@ def distillation_loss(
     def reset_net_state(done, state):
         return jax.lax.cond(done, student.reset_state, lambda x: x, state)
 
-    def step_network(student, net_state, obs, done, teacher_raw_action):
-        # Pass teacher's raw action (= mu_teacher in eval mode) to student so
-        # that the student evaluates log p_student(mu_teacher | obs).
-        net_state, student_output = student(net_state, obs, teacher_raw_action)
-        net_state = reset_net_state(done, net_state)
-        return net_state, student_output
+    def step_network(student, net_state, obs, done, teacher_rollout_extras):
+        out = student(net_state, obs, teacher_rollout_extras)
+        net_state = reset_net_state(done, out.next_state)
+        return net_state, out
 
     time_scan = nnx.scan(
         step_network,
@@ -192,21 +202,25 @@ def distillation_loss(
         out_axes=(nnx.Carry, 0),
     )
 
-    _, student_output = time_scan(
+    _, student_outs = time_scan(
         student,
         student_state,
         rollout_data.obs,
         rollout_data.done,
-        rollout_data.teacher_output.raw_actions,
+        rollout_data.teacher_rollout_extras,
     )
 
-    # student_output.loglikelihoods = log p_student(mu_teacher | obs)
-    # shape: [rollout_length, minibatch_size]
-    nll_loss = -jp.mean(student_output.loglikelihoods)
+    # student_outs.output.loglikelihoods = log p_student(mu_teacher | obs).
+    # Either a single array (single-head) or a dict (multi-head); use
+    # tree ops to handle both.
+    per_head_nll = jax.tree.map(
+        lambda ll: -jp.mean(ll), student_outs.output.loglikelihoods
+    )
+    nll_loss = jax.tree.reduce(jp.add, per_head_nll)
 
     # Student regularization (entropy bonus, AR1 smoothness, etc.) is preserved.
     # Teacher's regularization_loss is intentionally ignored.
-    regularization_losses = jax.tree.map(jp.mean, student_output.regularization_loss)
+    regularization_losses = jax.tree.map(jp.mean, student_outs.regularization_loss)
     regularization_loss = jax.tree.reduce(jp.add, regularization_losses)
 
     total_loss = nll_loss + regularization_loss
@@ -221,7 +235,7 @@ def distillation_loss(
 
 def distillation_step(
     env: RLEnv,
-    teacher: PPONetwork,
+    teacher: StatefulModule,
     distillation_state: DistillationState,
     n_envs: int,
     rollout_length: int,
@@ -278,7 +292,7 @@ def distillation_step(
     all_indices = all_indices.reshape(total_iterations, minibatch_size)
 
     def update_step(
-        student: PPONetwork,
+        student: StatefulModule,
         optimizer: nnx.Optimizer,
         inds: Integer[Array, "minibatch"],
     ):
@@ -307,25 +321,9 @@ def distillation_step(
 
     total_steps = distillation_state.steps_taken + rollout_length * n_envs
 
-    # Phase 3: STATS_UPDATE replay — re-runs the rollout through the student
-    # with stored raw_actions so any embedded Normalizer (or other
-    # stats-bearing module) folds the exact rollout activations into its
-    # running statistics. Forward output is discarded.
-    stats_transition = Transition(
-        obs=rollout_data.obs,
-        network_output=rollout_data.student_output,
-        rewards=rollout_data.rewards,
-        done=rollout_data.done,
-        truncated=rollout_data.truncated,
-        next_obs=rollout_data.next_obs,
-        metrics=rollout_data.metrics,
-    )
-    from nnx_ppo.algorithms.ppo import _replay_rollout_for_stats
-    _replay_rollout_for_stats(
-        distillation_state.student,
-        distillation_state.student_states,
-        stats_transition,
-    )
+    # Phase 3: fold the student's rollout_extras into any stats-bearing
+    # modules (Normalizer, ...). Mirrors ppo.py's post-update call.
+    distillation_state.student.update_statistics(rollout_data.student_rollout_extras)
 
     # Build metrics dict
     metrics: dict[str, Any] = {}
@@ -364,8 +362,8 @@ def distillation_step(
 
 def new_distillation_state(
     env: RLEnv,
-    teacher: PPONetwork,
-    student: PPONetwork,
+    teacher: StatefulModule,
+    student: StatefulModule,
     n_envs: int,
     seed: int,
     learning_rate: float = 1e-4,
@@ -423,8 +421,8 @@ def new_distillation_state(
 
 def train_distillation(
     env: RLEnv,
-    teacher: PPONetwork,
-    student: PPONetwork,
+    teacher: StatefulModule,
+    student: StatefulModule,
     config: Optional[DistillationTrainConfig] = None,
     *,
     total_steps: Optional[int] = None,
