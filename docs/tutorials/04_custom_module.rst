@@ -20,13 +20,12 @@ will also give it a running global mean across all observed inputs —
 not because the layer needs it, but to show how a layer can update
 NNX-tracked statistics safely.
 
-The four things to learn
-------------------------
+The three things to learn
+-------------------------
 
 1. **Carry state vs. NNX state.**
-2. **The ``context`` keyword.**
+2. **The ``rollout_extras`` argument and the ``update_statistics`` hook.**
 3. **NNX containers for variable-size children.**
-4. **Where the four ``Context`` values come from.**
 
 Carry state vs. NNX state
 -------------------------
@@ -69,7 +68,6 @@ A first cut: forward pass and carry state
     from flax import nnx
 
     from nnx_ppo.networks.types import (
-        Context,
         StatefulModule,
         StatefulModuleOutput,
     )
@@ -82,7 +80,7 @@ A first cut: forward pass and carry state
             self.feature_size = feature_size
             self.k = k
 
-        def __call__(self, state, x, *, context: Context = Context.INFERENCE):
+        def __call__(self, state, x, rollout_extras=None):
             # state["buffer"] : (B, k, feature_size)
             # state["idx"]    : (B,)  circular write pointer
             idx = state["idx"]
@@ -97,6 +95,7 @@ A first cut: forward pass and carry state
                 output=mean,
                 regularization_loss=jp.array(0.0),
                 metrics={},
+                rollout_extras=None,
             )
 
         def initialize_state(self, batch_size: int):
@@ -124,23 +123,31 @@ Some things to notice:
   :func:`~nnx_ppo.algorithms.rollout.unroll_env`). It must preserve
   shapes, since it runs under ``vmap``.
 
-The ``context`` keyword
------------------------
+The ``rollout_extras`` argument
+-------------------------------
 
-Every :class:`StatefulModule` ``__call__`` takes a keyword-only
-``context: Context`` argument. Containers thread it through; modules
-read it when their behaviour depends on the lifecycle phase.
+Every :class:`StatefulModule` ``__call__`` takes a third positional
+argument, ``rollout_extras``. It is a pytree shaped like ``state``,
+threaded through every container. Modules that need to communicate
+information from the rollout pass back to a later loss-replay pass
+emit a value in the returned
+:class:`StatefulModuleOutput.rollout_extras` and consume one via the
+argument. The three phases:
 
-The four contexts:
+- **Rollout** — caller passes ``rollout_extras=None``. Each module
+  emits its replay snapshot (action samplers store the sampled raw
+  action; normalizers store the input they just normalised). The
+  rollout scan stacks these over T into
+  :attr:`Transition.rollout_extras`.
+- **Loss replay** — caller passes the stored slice back in. Modules
+  that need replay info (notably action samplers) consume it to
+  reproduce the actually-taken action's log-likelihood under the
+  updated policy.
+- **Inference** — caller passes nothing. Modules still emit but the
+  caller drops the emission on the floor.
 
-- ``Context.ROLLOUT`` — collecting data by driving the environment.
-- ``Context.LOSS_REPLAY`` — replaying the rollout to compute the PPO
-  loss / gradients. Stored ``raw_action``\s are fed back to samplers
-  so the replay reproduces rollout activations exactly.
-- ``Context.INFERENCE`` — evaluation, distillation teacher, ad-hoc.
-- ``Context.STATS_UPDATE`` — a second replay of the rollout, run
-  after the gradient phase, whose only purpose is to fold the
-  rollout's activations into running statistics.
+A module that needs to switch behaviour between "fresh sample" and
+"use stored value" checks ``if rollout_extras is None``.
 
 For the full per-module behaviour table see
 :doc:`../reference/contexts`.
@@ -148,22 +155,22 @@ For the full per-module behaviour table see
 The library is built on one rule about what ``__call__`` is allowed
 to do to NNX variables:
 
-    **No writes to NNX variables that affect the forward output,
-    unless** ``context == Context.STATS_UPDATE``.
+    **No writes to NNX variables that affect the forward output in
+    ``__call__``, ever.**
 
-In other words: a forward pass is pure unless we are explicitly in
-the stats-update phase. This makes the gradient-phase replay produce
-the same activations as the rollout — the property the PPO loss
-relies on. Pure read-only access to NNX variables is fine in any
-context; pure scratch writes that do not affect the next forward
-output are fine; writes that *change* the output of subsequent calls
-are restricted.
+Stats-bearing modules accumulate state by overriding
+:meth:`update_statistics`, which is called once per training step
+*after* the loss / gradient update, with the full rollout's
+``[T, B, ...]`` slice of ``rollout_extras``. This keeps every
+``__call__`` pure and the rollout / loss-replay numerically
+identical.
 
-Adding a context-aware running mean
------------------------------------
+Adding a running mean via ``update_statistics``
+-----------------------------------------------
 
-Extend ``MovingAverage`` to also track a global running mean. It
-should update only under ``STATS_UPDATE``:
+Extend ``MovingAverage`` to also track a global running mean. The
+forward pass stays pure; the update is folded in by overriding
+:meth:`update_statistics`:
 
 .. code-block:: python
 
@@ -177,31 +184,32 @@ should update only under ``STATS_UPDATE``:
             self.mean = GlobalMeanStats(jp.zeros(feature_size))
             self.count = GlobalMeanStats(jp.zeros((), jp.int32))
 
-        def __call__(self, state, x, *, context: Context = Context.INFERENCE):
-            if context == Context.STATS_UPDATE:
-                # Welford-style update: incorporate this batch's mean.
-                batch_count = x.shape[0]
-                new_count = self.count[...] + batch_count
-                delta = jp.mean(x, axis=0) - self.mean[...]
-                self.mean[...] = self.mean[...] + delta * (batch_count / new_count)
-                self.count[...] = new_count
+        def __call__(self, state, x, rollout_extras=None):
+            # Forward stays pure; always emit `x` so update_statistics
+            # can see it. Eval-only callers drop the emission on the floor.
+            out = super().__call__(state, x)
+            return out.replace(rollout_extras=x)
 
-            return super().__call__(state, x, context=context)
+        def update_statistics(self, rollout_extras):
+            # rollout_extras: [T, B, feature_size]
+            flat = rollout_extras.reshape((-1,) + rollout_extras.shape[2:])
+            batch_count = flat.shape[0]
+            new_count = self.count[...] + batch_count
+            delta = jp.mean(flat, axis=0) - self.mean[...]
+            self.mean[...] = self.mean[...] + delta * (batch_count / new_count)
+            self.count[...] = new_count
 
 A few things to call out:
 
 - :class:`nnx.Variable` (as opposed to :class:`nnx.Param`) is the
   right base for running statistics: NNX tracks it but it does not
   receive gradients.
-- The ``if context == Context.STATS_UPDATE`` branch is the only
-  place writes happen to ``self.mean`` / ``self.count``. Under any
-  other context the layer is a pure forward.
-- The training loop arranges for the rollout to be replayed once,
-  after the gradient phase, with ``context=STATS_UPDATE`` and the
-  stored ``raw_action``\s. So the values your stats branch sees are
-  exactly the values the layer saw during the rollout.
-  :class:`~nnx_ppo.networks.normalizer.Normalizer` uses this same
-  pattern in production.
+- The :meth:`update_statistics` override is the *only* place writes
+  happen to ``self.mean`` / ``self.count``. Forward stays pure.
+- The training loop calls ``network.update_statistics(rollout.rollout_extras)``
+  once per step, after the gradient update. Containers route per
+  child. :class:`~nnx_ppo.networks.normalizer.Normalizer` uses this
+  same pattern in production.
 
 Containers for variable-size children
 -------------------------------------
@@ -234,31 +242,23 @@ will silently disappear from the trainable set:
 :class:`~nnx_ppo.networks.containers.Sequential` is itself written
 exactly this way — it stores its layers in an :class:`nnx.List`.
 
-Where the four contexts come from
----------------------------------
+Where ``rollout_extras`` comes from
+-----------------------------------
 
-You will almost never set ``context`` yourself. The library wires it
-in at three places:
+You will almost never pass ``rollout_extras`` by hand. The library
+wires it in at three places:
 
-- :func:`~nnx_ppo.algorithms.rollout.unroll_env` defaults to
-  ``Context.ROLLOUT`` for data collection;
-- :func:`~nnx_ppo.algorithms.rollout.eval_rollout` uses
-  ``Context.INFERENCE``;
-- :func:`~nnx_ppo.algorithms.ppo.ppo_loss` threads
-  ``Context.LOSS_REPLAY`` into the gradient phase;
-- the post-gradient stats replay inside
-  :func:`~nnx_ppo.algorithms.ppo.ppo_step` runs with
-  ``Context.STATS_UPDATE``.
+- :func:`~nnx_ppo.algorithms.rollout.unroll_env` (data collection)
+  calls the network with ``rollout_extras=None`` and stores each
+  module's emission into ``Transition.rollout_extras``;
+- :func:`~nnx_ppo.algorithms.rollout.eval_rollout` (evaluation) also
+  passes ``rollout_extras=None`` and discards the emissions;
+- :func:`~nnx_ppo.algorithms.ppo.ppo_loss` (the gradient phase) feeds
+  each per-step slice of the stored extras back into the network.
 
-The default for ``__call__``'s ``context`` is
-``Context.INFERENCE``, which is the conservative choice — no
-implicit stats updates, no behaviour you did not ask for.
-
-If you are calling your network outside of the training loop (a
-distillation teacher, ad-hoc inference, a debugging script), pass
-``context=Context.INFERENCE`` explicitly. If you want deterministic
-actions in evaluation, that is a separate knob on the action sampler
-(``nets.eval()`` flips it; see :doc:`../reference/ppo_adapter`).
+If you want deterministic actions in evaluation, that is a separate
+knob on the action sampler (``nets.eval()`` flips it; see
+:doc:`../reference/ppo_adapter`).
 
 Recap
 -----
@@ -267,12 +267,14 @@ To write a :class:`StatefulModule`:
 
 1. Decide what is carry state (per-batch, reset on episode boundary)
    and what is NNX state (per-network, persistent).
-2. Implement ``__init__``, ``__call__(state, x, *, context=...)``,
+2. Implement ``__init__``, ``__call__(state, x, rollout_extras=None)``,
    ``initialize_state(batch_size)``, and — if your carry state needs
    episode resets — ``reset_state(prev_state)``.
-3. Read ``context`` only if your behaviour depends on the lifecycle
-   phase. Respect the "no writes to NNX variables that affect
-   forward output unless STATS_UPDATE" rule.
+3. Read ``rollout_extras`` only if your behaviour depends on it
+   (consume the stored value when non-``None``; sample fresh when
+   ``None``). Respect the "no writes to NNX variables that affect
+   forward output in ``__call__``, ever" rule; defer accumulation to
+   :meth:`update_statistics`.
 4. Wrap variable-size lists/dicts of sub-modules in
    :class:`nnx.List` / :class:`nnx.Dict`.
 

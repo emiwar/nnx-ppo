@@ -1,160 +1,121 @@
-The ``Context`` enum
-====================
+The ``rollout_extras`` channel
+==============================
 
-:class:`~nnx_ppo.networks.types.Context` is the lifecycle marker
-threaded as a keyword-only argument through every
-:class:`~nnx_ppo.networks.types.StatefulModule` ``__call__``. Each
-forward pass declares "what phase of training am I in", and the few
-modules whose behaviour depends on the phase (samplers, normalizers,
-variational layers) read this argument to decide.
+PPO runs the network twice per training iteration: once during *rollout*
+to drive the environment and collect data, then once per minibatch
+during *loss replay* to compute gradients on the recorded observations.
+A handful of modules (action samplers, normalizers) need to communicate
+between these two passes — the sampler needs to recompute the
+log-likelihood of the actually-taken action under updated weights; the
+normalizer needs the rollout's activations to fold into its running
+statistics.
 
-The four contexts
------------------
+``rollout_extras`` is the channel that carries this communication. It
+is a pytree shaped exactly like the network's ``state`` tree. Each
+container routes children's extras the same way it routes their state.
 
-``Context.ROLLOUT``
+The three phases
+----------------
+
+Rollout
     Driving the environment to collect data.
-    :func:`~nnx_ppo.algorithms.rollout.unroll_env` uses this by
-    default.
+    :func:`~nnx_ppo.algorithms.rollout.unroll_env` is the entry point.
+    Callers pass ``rollout_extras=None``. Each module *emits* its
+    replay snapshot into the returned
+    ``StatefulModuleOutput.rollout_extras``. The rollout scan stacks
+    these over T into ``Transition.rollout_extras``.
 
-``Context.LOSS_REPLAY``
+Loss replay
     Re-running the rollout to compute the PPO loss and its gradient.
     Threaded into the scan body of
-    :func:`~nnx_ppo.algorithms.ppo.ppo_loss`. Action samplers receive
-    the stored ``raw_action`` from the rollout so the replay
-    reproduces exactly the activations produced during data
-    collection.
+    :func:`~nnx_ppo.algorithms.ppo.ppo_loss`. The per-step
+    ``rollout_extras`` slice from the stored ``Transition`` is fed back
+    in. Modules that need it (notably action samplers) consume it to
+    reproduce the actually-taken action's log-likelihood under the
+    current (updated) policy.
 
-``Context.INFERENCE``
+Inference
     Anything outside of data collection or training:
-    :func:`~nnx_ppo.algorithms.rollout.eval_rollout`,
-    distillation teacher calls, debugging, ad-hoc forward passes.
-    This is also the default value of ``context`` for
-    :meth:`StatefulModule.__call__`, so forgetting to pass
-    ``context=...`` never accidentally collects training data or
-    updates statistics.
+    :func:`~nnx_ppo.algorithms.rollout.eval_rollout`, debugging,
+    ad-hoc forward passes. Callers pass nothing. Modules still emit
+    extras but the caller drops them on the floor.
 
-``Context.STATS_UPDATE``
-    A post-loss replay of the rollout whose only purpose is to fold
-    rollout activations into running statistics
-    (:class:`~nnx_ppo.networks.normalizer.Normalizer` is the canonical
-    consumer). Set by
-    :func:`~nnx_ppo.algorithms.ppo._replay_rollout_for_stats` and
-    discarded as soon as the replay finishes.
+A module that needs to distinguish "fresh sample" from "use stored
+value" reads ``if rollout_extras is None``. There is no ``Context``
+enum.
 
-Threading rule
---------------
+How containers route ``rollout_extras``
+---------------------------------------
 
 Every container in :mod:`nnx_ppo.networks.containers`
 (``Sequential``, ``Parallel``, ``Concat``, ``Splitter``) and
 :mod:`nnx_ppo.networks.utils` (``Flattener``, ``Filter``, ``Scale``,
-``Merge``) plus :class:`~nnx_ppo.networks.delay.Delay`,
+``Merge``, ``Map``) plus :class:`~nnx_ppo.networks.delay.Delay`,
 :class:`~nnx_ppo.networks.graph.PopulationGraph`, and
-:class:`~nnx_ppo.algorithms.adapter.PPOAdapter`
-takes ``context`` as a keyword-only argument and passes it through to
-every child it calls. If you write your own container, do the same.
+:class:`~nnx_ppo.networks.adapter.PPOAdapter` accepts ``rollout_extras``
+as the third positional argument. Each container slices its incoming
+``rollout_extras`` per child the same way it slices ``state``, calls
+each child, and reassembles the emitted extras into a tree mirroring
+``state``.
 
 Leaf modules either:
 
-- ignore ``context`` (most layers — Dense, LSTM, ...), or
-- read it to switch behaviour (Normalizer, ActionSampler,
-  VariationalBottleneck).
+- ignore ``rollout_extras`` and emit ``None`` (most layers — Dense,
+  LSTM, Filter, Flattener, Scale, Splitter, Delay, VariationalBottleneck),
+- or use it (Normalizer, ActionSampler).
+
+Sampler replay rule
+-------------------
+
+A module that produces a *sample whose log-likelihood will be
+evaluated under updated weights* — i.e. an action sampler in PPO —
+**must** store the sample in ``rollout_extras``. RNG-in-state is wrong
+because the same RNG under updated weights would produce a *different*
+sample, but PPO needs the log-likelihood of the *actually-taken*
+action under the new policy.
+
+RNG-in-state is only valid for modules whose sample is consumed as a
+forward activation (reparameterised gradient), like
+:class:`~nnx_ppo.networks.variational.VariationalBottleneck`. See
+:doc:`randomness` for the per-env-RNG-in-carry-state pattern.
 
 The write rule
 --------------
 
-The library guarantees that a forward pass is reproducible across
-rollout and loss replay — gradients computed in ``LOSS_REPLAY`` are
-gradients for the activations that drove the environment in
-``ROLLOUT``. Concretely:
+A forward pass through any :class:`StatefulModule` must be fully
+reproducible — gradients computed during loss replay are gradients for
+the activations that drove the environment during rollout. Concretely:
 
-    **No writes to NNX variables that affect the forward output,
-    unless** ``context == Context.STATS_UPDATE``.
+    **No writes to NNX variables that affect the forward output in
+    ``__call__``, ever.**
 
-What counts as a write that affects forward output:
-
-- Mutating an :class:`nnx.Param` (would change a future
-  ``LOSS_REPLAY`` relative to the matching ``ROLLOUT``).
-- Mutating an :class:`nnx.Variable` whose value is read in
-  ``__call__``'s return path.
-
-What does *not* count:
-
-- Pure read access to NNX variables.
-- Advancing an :class:`nnx.Rngs` stream during ``__init__`` for
-  parameter initialisation. That happens once, before any forward
-  pass, and is unaffected by context.
-
-A common pitfall — advancing an RNG inside :meth:`__call__` by
-reading a class-level :class:`nnx.Variable` key — *does* count as a
-forbidden write, and silently produces wrong gradients. See
-:doc:`randomness` for the correct pattern (one RNG per env, carried
-in the module's carry state).
+Stats-bearing modules accumulate state by overriding
+:meth:`update_statistics`, called once per training step *after* the
+gradient update with the full rollout's stacked ``rollout_extras``
+history.
 
 Per-module behaviour table
 --------------------------
 
 .. list-table::
    :header-rows: 1
-   :widths: 18 22 22 22 22
+   :widths: 18 38 38
 
    * - Module
-     - ROLLOUT
-     - LOSS_REPLAY
-     - INFERENCE
-     - STATS_UPDATE
+     - rollout_extras passed in
+     - rollout_extras emitted
    * - ``Normalizer``
-     - normalize using live ``mean`` / ``M2`` / ``counter``;
-       no writes
-     - same as ROLLOUT
-     - same as ROLLOUT
-     - normalize, **and** update ``mean`` / ``M2`` / ``counter``
-       with a per-step Welford step
+     - ignored — normalise with live ``mean`` / ``M2`` / ``counter``
+     - the input ``x`` (every call) — consumed by
+       :meth:`update_statistics`
    * - ``ActionSampler`` (e.g. ``NormalTanhSampler``)
-     - sample stochastically (or use mean if ``deterministic``)
-     - use stored ``raw_action``; RNG is still advanced so any
-       downstream stochastic layers stay in lockstep
-     - per-instance ``deterministic`` flag decides
-     - use stored ``raw_action`` (same as LOSS_REPLAY)
+     - if not ``None``: use as ``raw_action`` and compute the
+       log-likelihood under current policy
+     - the freshly-sampled ``raw_action`` (every call)
    * - ``VariationalBottleneck`` / ``AR1VariationalBottleneck``
-     - sample using the carried per-env RNG (advances carry)
-     - sample using the carried per-env RNG (reproduces rollout
-       because the carry starts at the same value and operations are
-       deterministic)
-     - sample using the carried per-env RNG
-     - sample using the carried per-env RNG
+     - ignored — RNG is in carry state; reparameterised gradient
+     - ``None``
    * - everything else (``Dense``, ``LSTM``, containers, ``Delay``,
        ``PopulationGraph``)
-     - no context-dependent behaviour
-     -
-     -
-     -
-
-Where each context is set
--------------------------
-
-- :func:`~nnx_ppo.algorithms.rollout.unroll_env` —
-  ``Context.ROLLOUT``.
-- :func:`~nnx_ppo.algorithms.rollout.eval_rollout` and
-  :func:`~nnx_ppo.algorithms.rollout.eval_rollout_for_render_scan` —
-  ``Context.INFERENCE``.
-- :func:`~nnx_ppo.algorithms.ppo.ppo_loss` —
-  ``Context.LOSS_REPLAY``.
-- :func:`~nnx_ppo.algorithms.ppo._replay_rollout_for_stats`, called
-  by :func:`~nnx_ppo.algorithms.ppo.ppo_step` after the gradient
-  phase — ``Context.STATS_UPDATE``.
-
-A network that you call yourself (a distillation teacher, an
-analysis script, the inference path of a deployed agent) should pass
-``Context.INFERENCE`` — that is what the default lands on if you
-forget.
-
-Stochastic layers
------------------
-
-The rule-of-writes above keeps deterministic operations consistent
-across ROLLOUT and LOSS_REPLAY, but stochastic operations need an
-RNG that is also consistent across the two passes. The pattern that
-guarantees this — one RNG per env, carried in the module's carry
-state rather than held as a class-level variable — is documented in
-:doc:`randomness`. The ``ActionSampler`` and ``VariationalBottleneck``
-rows of the table above are the canonical examples.
+     - threaded to children
+     - ``None`` at leaves; assembled tree at containers

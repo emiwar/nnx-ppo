@@ -30,14 +30,15 @@ The rollout / loss-replay split
 
 Each training iteration runs the network twice:
 
-- In ``Context.ROLLOUT`` to drive the environment and collect data.
-- Then in ``Context.LOSS_REPLAY`` to recompute activations on the
-  recorded observations so the PPO loss can be differentiated.
+- A rollout pass to drive the environment and collect data.
+- A loss-replay pass that recomputes activations on the recorded
+  observations so the PPO loss can be differentiated.
 
 The library is built on a guarantee that the second pass reproduces
 exactly the activations of the first (see :doc:`contexts` for the
-write rule that enforces this). Stored ``raw_action``\s feed the
-samplers; deterministic forward operations behave identically.
+write rule that enforces this). Stored ``rollout_extras`` (in
+particular the raw actions captured by action samplers) feed the
+LOSS_REPLAY pass; deterministic forward operations behave identically.
 
 If you advance an ``nnx.Variable`` RNG inside :meth:`__call__`, the
 rollout pass will leave that variable in its post-rollout state. The
@@ -90,7 +91,7 @@ canonical worked example::
             # at construction time from the module's class-level RNG.
             return jax.random.split(self.rng(), batch_size)
 
-        def __call__(self, key, x, *, context=Context.INFERENCE):
+        def __call__(self, key, x, rollout_extras=None):
             # `key` has shape [B]. Each env's key is split locally; the
             # new keys become the next carry. No class-level RNG is read
             # inside __call__.
@@ -125,9 +126,29 @@ If your module's only randomness is in **parameter initialisation**
 to ``__init__`` and use it there. That falls outside the rule: init
 isn't called in the forward path.
 
-The :class:`~nnx_ppo.algorithms.distributions.ActionSampler` family
+The :class:`~nnx_ppo.networks.sampling_layers.ActionSampler` family
 is the one place where module-internal RNG advancement is OK —
-because the loss-replay pass receives the stored ``raw_action`` and
-**ignores** the freshly-sampled value. Even there, the RNG is
-advanced consistently across contexts so downstream stochastic
-layers stay in lockstep.
+because the loss-replay pass receives the stored raw action via
+``rollout_extras`` and uses it instead of the freshly-sampled value.
+Even there, the RNG is advanced consistently across contexts so
+downstream stochastic layers stay in lockstep.
+
+Why not RNG-in-state for action samplers
+----------------------------------------
+
+You might wonder: can the action sampler use the per-env-RNG pattern
+above instead of stashing ``raw_action`` in ``rollout_extras``? No —
+and the reason is a subtle but load-bearing one.
+
+After the gradient phase, the network's parameters have changed.
+Even with the same per-env RNG, the sampler under updated weights
+samples a *different* action than during rollout (same noise, new
+mean/std). But PPO needs the log-likelihood of the action that was
+*actually taken* under the new policy, not a hypothetical new action.
+
+For modules whose sample is consumed as a *forward activation*
+through reparameterised gradients (i.e.
+:class:`VariationalBottleneck`), "same noise, new mean/std, new
+sample" is the right behaviour — that's how reparameterised
+gradients work. For action samplers in PPO it isn't, because the
+sample needs to be locked to the rollout value. Hence ``rollout_extras``.

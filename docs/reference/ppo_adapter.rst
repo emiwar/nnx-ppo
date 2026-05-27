@@ -1,213 +1,146 @@
 :class:`PPOAdapter` reference
 =============================
 
-:class:`~nnx_ppo.algorithms.adapter.PPOAdapter` is the general-purpose
-:class:`~nnx_ppo.networks.types.PPONetwork`. It wraps any
-:class:`~nnx_ppo.networks.types.StatefulModule` whose forward output
-is a **dict of named heads**, and it knows how to:
+:class:`~nnx_ppo.networks.adapter.PPOAdapter` is the canonical leaf
+that turns a network's forward output into a
+:class:`~nnx_ppo.networks.types.PPONetworkOutput`. It is a regular
+:class:`~nnx_ppo.networks.types.StatefulModule` that lives inside a
+``Sequential`` (or any other container) like any other layer. Its
+forward output's ``output`` field is the ``PPONetworkOutput``.
 
-- run a named subset of those heads through declared action
-  samplers,
-- read another named subset as value estimates,
-- assemble a :class:`~nnx_ppo.networks.types.PPONetworkOutput`
-  bundling the actions, raw actions, log-likelihoods, value
-  estimates, regularization loss, metrics, and pre-sampling
-  distribution parameters.
+Two-port router
+---------------
 
-Minimal by design
------------------
-
-The adapter knows about samplers and value heads; everything else
-(observation filtering, detached critics, multi-head trunks,
-per-head scaling) is a **composition** concern handled by containers
-in front of ``inner``. Reach for these patterns instead of asking
-the adapter for more:
-
-- **Detached or parallel critic** — combine a graph emitting
-  ``{motor_*}`` with a separate MLP critic emitting ``{value_*}``
-  through :class:`~nnx_ppo.networks.utils.Merge`.
-- **Privileged critic** — let actor and critic branches consume
-  different obs slices via two
-  :class:`~nnx_ppo.networks.utils.Filter` s inside a :class:`Merge`.
-- **Per-head scaling** — wrap a head in
-  :class:`~nnx_ppo.networks.utils.Scale` rather than baking the
-  factor into a Dense initializer.
-
-See :doc:`../tutorials/02_composition` for worked examples.
-
-Constructor
------------
+``PPOAdapter`` has two ports — ``action`` and ``value`` — and both
+receive the **same upstream input**. The action port emits a tree of
+*sampler dicts* (each ``{"action", "log_likelihood"}``); the value
+port emits whatever value-shape your critic produces. The adapter
+walks the action port's output to assemble ``PPONetworkOutput.actions``
+and ``loglikelihoods``, takes the value port's output as
+``value_estimates`` (trailing singleton axis squeezed), and packages
+everything.
 
 .. code-block:: python
 
-    PPOAdapter(
-        inner: StatefulModule,
-        action_specs: dict[str, ActionSampler],
-        value_specs: str | Sequence[str] | dict[str, Any],
-    )
+    PPOAdapter(action: StatefulModule, value: StatefulModule)
 
-``inner``
-    A :class:`StatefulModule`. ``inner(state, obs, context=...)``
-    must return a :class:`StatefulModuleOutput` whose ``.output`` is
-    a dict containing every key in ``action_specs`` and every name
-    in ``value_specs``. Other keys in the dict are allowed and
-    ignored.
+Minimal one-actor / one-critic
+------------------------------
 
-``action_specs``
-    Maps inner-output name → :class:`ActionSampler`. The sampler is
-    called on ``inner_output[name]``. For a typical Gaussian-tanh
-    policy this is a ``(B, 2A)`` ``[mean | log_std]`` tensor.
+Each port owns its full chain. Both run on the same upstream tensor.
 
-``value_specs``
-    Either a single string (one value head), a sequence of strings
-    (multiple named value heads), or a dict whose keys name the
-    value heads. The adapter reads each named head and squeezes a
-    trailing length-1 axis if present, so a ``(B, 1)`` value head
-    becomes a ``(B,)`` value estimate.
+.. code-block:: python
 
-The inner-dict contract
+    network = Sequential([
+        Normalizer(obs_size),
+        PPOAdapter(
+            action=Sequential([actor_mlp, NormalTanhSampler(rngs, entropy_weight=1e-2)]),
+            value=critic_mlp,
+        ),
+    ])
+
+The factory :func:`~nnx_ppo.networks.factories.make_mlp_actor_critic`
+builds exactly this shape.
+
+Multi-head with per-key dispatch
+--------------------------------
+
+When the trunk emits a dict of named action-params and named values,
+the adapter ports use :class:`~nnx_ppo.networks.utils.Filter` (to
+extract / rename) and :class:`~nnx_ppo.networks.utils.Map` (to
+dispatch per key):
+
+.. code-block:: python
+
+    network = Sequential([
+        Normalizer(obs_size),
+        graph,                                   # emits {"action_a": ..., "action_b": ...,
+                                                 #         "value_a": ...,  "value_b": ...}
+        PPOAdapter(
+            action=Sequential([
+                Filter({"a": "action_a", "b": "action_b"}),   # rename
+                Map({"a": sampler_a, "b": sampler_b}),         # per-key dispatch
+            ]),
+            value=Filter({"a": "value_a", "b": "value_b"}),
+        ),
+    ])
+
+``out.actions`` is then ``{"a": ..., "b": ...}``, matching the env's
+per-key action spec.
+
+Shared trunk
+------------
+
+To share computation between the action and value pathways, prepend
+the trunk to the outer ``Sequential`` and let both ports consume its
+output:
+
+.. code-block:: python
+
+    Sequential([
+        Normalizer(obs_size),
+        shared_trunk,                            # heavy computation
+        PPOAdapter(
+            action=Sequential([actor_head, sampler]),
+            value=critic_head,
+        ),
+    ])
+
+Action port output shape
+------------------------
+
+The action port's output should be a tree of *sampler dicts*. A
+sampler dict is a leaf-position
+``{"action": ..., "log_likelihood": ...}`` (the standard shape that
+:class:`~nnx_ppo.networks.sampling_layers.ActionSampler` emits). The
+adapter walks the tree with ``jax.tree.map(..., is_leaf=...)`` so:
+
+- A bare sampler dict → ``out.actions`` is a bare array,
+  ``out.loglikelihoods`` is a bare array.
+- ``Map({k: sampler})`` → ``{k: sampler_dict}`` →
+  ``out.actions = {k: array}``, ``out.loglikelihoods = {k: array}``.
+
+Value port output shape
 -----------------------
 
-The adapter does no per-key processing besides sampler dispatch and
-value squeeze. ``inner``'s output dict needs the right keys with the
-right shapes:
-
-- For an entry ``"action_params" -> sampler`` in ``action_specs``,
-  ``inner_output["action_params"]`` should be the input the sampler
-  expects (``(B, 2A)`` for ``NormalTanhSampler``).
-- For an entry ``"value"`` in ``value_specs``,
-  ``inner_output["value"]`` should be ``(B,)`` or ``(B, 1)``.
-
-How you produce that dict is up to you:
-:class:`~nnx_ppo.networks.containers.Parallel` (run separate
-sub-modules on the same input → dict),
-:class:`~nnx_ppo.networks.containers.Splitter` (slice a flat tensor
-into named pieces → dict),
-:class:`~nnx_ppo.networks.graph.PopulationGraph` (each
-:meth:`add_output` declaration becomes a dict key) — or a custom
-:class:`StatefulModule` that emits the dict directly.
-
-Single-head dict-unwrap
------------------------
-
-If ``action_specs`` has exactly one entry, the resulting
-``PPONetworkOutput.actions`` / ``raw_actions`` / ``loglikelihoods``
-fields are the bare sampler outputs rather than single-key dicts.
-Same for ``value_estimates`` if ``value_specs`` is a string (or a
-single-entry sequence/dict).
-
-This means a one-actor / one-critic network produces the same
-``PPONetworkOutput`` shape as the legacy ``PPOActorCritic``:
-
-.. code-block:: python
-
-    nets = PPOAdapter(inner, action_specs={"action_params": sampler},
-                      value_specs="value")
-    state = nets.initialize_state(B)
-    state, out = nets(state, obs)
-    out.actions.shape          # (B, A)        — bare array
-    out.value_estimates.shape  # (B,)          — bare array
-
-With multiple action heads:
-
-.. code-block:: python
-
-    nets = PPOAdapter(
-        inner=trunk,
-        action_specs={"arm": sampler_arm, "leg": sampler_leg},
-        value_specs=["arm_value", "leg_value"],
-    )
-    state, out = nets(state, obs)
-    out.actions                # {"arm": (B, A_arm), "leg": (B, A_leg)}
-    out.value_estimates        # {"arm_value": (B,), "leg_value": (B,)}
-
-The PPO loss accepts either shape — it computes GAE per reward key
-independently.
-
-Distribution parameters
------------------------
-
-:class:`~nnx_ppo.networks.types.PPONetworkOutput` carries a
-``distribution_params`` field keyed by action-sampler name. Each
-entry is the sampler's metrics dict — for
-:class:`~nnx_ppo.algorithms.distributions.NormalTanhSampler` this is
-``{"mu": ..., "sigma": ...}``.
-
-This is what distillation losses read from. Typical pattern:
-
-.. code-block:: python
-
-    # Teacher in INFERENCE, deterministic samplers (use the mean).
-    teacher.eval()
-    _, teacher_out = teacher(state, obs, context=Context.INFERENCE)
-    teacher_mu = teacher_out.distribution_params["action_params"]["mu"]
-
-    # Student in LOSS_REPLAY for gradients.
-    _, student_out = student(state, obs, raw_action=stored_raw,
-                              context=Context.LOSS_REPLAY)
-    student_mu = student_out.distribution_params["action_params"]["mu"]
-
-    loss = jp.mean((student_mu - teacher_mu) ** 2)
-
-No second forward pass through either network is needed — the
-distribution parameters are populated as a side product of the
-sampler call.
+The value port's output is used as-is for
+``PPONetworkOutput.value_estimates``, with each leaf squeezed if it
+has a trailing length-1 axis. So a critic emitting ``(B, 1)`` lands
+as a ``(B,)`` value estimate; a dict of critics emitting
+``{k: (B, 1)}`` lands as ``{k: (B,)}``.
 
 Carry state
 -----------
 
 The adapter's carry state is::
 
-    {"inner": <inner's carry state>,
-     "samplers": {name: <each sampler's carry state>}}
+    {"action": <action port's carry>,
+     "value":  <value port's carry>}
 
-Most samplers (including ``NormalTanhSampler``) are stateless, so
-the ``samplers`` dict carries empty tuples in practice. The training
-loop manages the carry state opaquely.
+``initialize_state`` and ``reset_state`` route per port.
 
-The ``PPOActorCritic`` shortcut
--------------------------------
+``rollout_extras`` and ``update_statistics``
+--------------------------------------------
 
-:class:`~nnx_ppo.networks.containers.PPOActorCritic` is a thin
-convenience subclass of :class:`PPOAdapter` for the standard
-one-actor / one-critic case::
-
-    PPOActorCritic(actor, critic, action_sampler, preprocessor=None)
-
-is equivalent to::
-
-    PPOAdapter(
-        inner=Sequential([preprocessor, Parallel(action_params=actor, value=critic)])
-              if preprocessor is not None
-              else Parallel(action_params=actor, value=critic),
-        action_specs={"action_params": action_sampler},
-        value_specs="value",
-    )
-
-The subclass also exposes ``self.actor`` / ``self.critic`` /
-``self.action_sampler`` / ``self.preprocessor`` as direct attributes
-so parameter logging and inspection code can find them by name.
-
-Use :class:`PPOActorCritic` when you have one actor and one critic.
-Drop down to :class:`PPOAdapter` whenever you have multiple action
-heads, multiple value heads, or a non-trivial trunk producing the
-dict output.
+The adapter routes both ports' ``rollout_extras`` analogously to
+state: ``rollout_extras["action"]`` to the action port,
+``rollout_extras["value"]`` to the value port. The same routing is
+used by :meth:`update_statistics`.
 
 ``train()`` / ``eval()``
 ------------------------
 
 :meth:`nnx.Module.eval` and :meth:`nnx.Module.train` set the
 ``deterministic`` attribute recursively across the module tree. The
-action sampler reads it under ``Context.INFERENCE`` to decide
-between sampling and using the mean. Conventional usage:
+action sampler reads it to decide between sampling and returning the
+mean. Conventional usage:
 
-- Default: ``nets.train()`` — samples stochastically (this is what
+- Default: ``network.train()`` — samples stochastically (this is what
   the training loop does between rollouts).
-- For deterministic eval / video / deployment: ``nets.eval()``
-  before the inference call.
+- For deterministic eval / video / deployment: ``network.eval()``
+  before the inference call; the PPO training loop already does this
+  bookend around eval rollouts and restores ``train()`` afterwards.
 
-Under ``Context.ROLLOUT``, the sampler always samples
-stochastically (training requires exploration regardless of the
-``deterministic`` flag). Under ``Context.LOSS_REPLAY`` and
-``Context.STATS_UPDATE``, the stored ``raw_action`` is used. So
-``train()`` / ``eval()`` only affect ``Context.INFERENCE`` calls.
+During loss replay, the stored raw action from ``rollout_extras`` is
+used and the sampler's fresh draw is discarded, so ``train()`` /
+``eval()`` only affect calls that pass ``rollout_extras=None``.

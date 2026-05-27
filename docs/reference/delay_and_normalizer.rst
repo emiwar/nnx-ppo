@@ -70,9 +70,10 @@ tensor) or a pytree of shapes (for structured observations). Stats
 are stored as :class:`nnx.Variable` s; they do *not* receive
 gradients.
 
-The forward pass standardises in every context. The running stats
-update only in ``Context.STATS_UPDATE`` — see
-:doc:`contexts`.
+The forward pass standardises every call. The running stats only
+update when :meth:`update_statistics` is called explicitly by the PPO
+training loop (after the gradient phase), with the rollout's
+``rollout_extras`` history — see :doc:`contexts`.
 
 Top-level placement (typical)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -83,12 +84,13 @@ normalizer, and the stats it tracks are the raw observations.
 
 .. code-block:: python
 
-    inner = Sequential([
+    nets = Sequential([
         Normalizer(env.observation_size),
-        Parallel(action_params=actor, value=critic),
+        PPOAdapter(
+            action=Sequential([actor, sampler]),
+            value=critic,
+        ),
     ])
-    nets = PPOAdapter(inner, action_specs={"action_params": sampler},
-                      value_specs="value")
 
 This is what
 :func:`~nnx_ppo.networks.factories.make_mlp_actor_critic` does
@@ -109,34 +111,29 @@ observations.
 
 The normalizer here tracks delayed observations, not fresh ones.
 
-The STATS_UPDATE replay model
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The ``update_statistics`` model
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-How can an embedded normalizer see the right inputs? Because of how
-statistics get updated.
+How can an embedded normalizer see the right inputs? Because on every
+forward pass, :class:`Normalizer` emits the input it just standardised
+as its ``rollout_extras`` slot. The rollout scan stacks these over T
+into ``Transition.rollout_extras``, with structure matching the
+network's state tree.
 
 After the gradient phase of each PPO step,
 :func:`~nnx_ppo.algorithms.ppo.ppo_step` calls
-:func:`~nnx_ppo.algorithms.ppo._replay_rollout_for_stats`. This
-re-runs the rollout one more time — same starting carry state, same
-stored ``raw_action``\s, same per-step env reset on ``done`` — but
-with ``context=Context.STATS_UPDATE``.
-
-Because every other module is deterministic under the stored RNG /
-``raw_action``\s, the activations seen by every layer during this
-replay are byte-identical to the activations seen during the
-original rollout. So whatever a :class:`Normalizer` saw as its input
-during data collection, it sees again — and only *now* does it
-update its running stats. By construction, the embedded normalizer
-tracks the right distribution.
-
-(The forward output of the stats replay is discarded; only the
-NNX-variable side effects are kept.)
+``network.update_statistics(rollout.rollout_extras)``. The containers
+route per child the same way they routed state; each
+:class:`Normalizer` receives a ``[T, B, *feat]`` slice of exactly the
+inputs it saw during rollout, and folds the batch into its running
+mean / M2 / counter via one batched Welford merge. No replay forward
+pass is required.
 
 This is why the "no writes to NNX variables that affect the forward
-output unless ``STATS_UPDATE``" rule from :doc:`contexts` is
-important: it is what makes the rollout / loss-replay agree, and
-makes the stats-replay reproduce the rollout exactly.
+output in ``__call__``, ever" rule from :doc:`contexts` is load-bearing:
+it keeps the rollout / loss-replay agreement, and lets statistics flow
+through the explicit :meth:`update_statistics` channel rather than as
+hidden side effects of a forward pass.
 
 Pytree shapes
 ^^^^^^^^^^^^^

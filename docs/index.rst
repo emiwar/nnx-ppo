@@ -39,12 +39,9 @@ This is supported through a set of features:
 Status
 ------
 
-nnx-ppo is **experimental** — the API may change without notice. It requires
-Python ≥ 3.11 and is currently exercised on Linux with NVIDIA GPUs. There is
-no PyPI release yet; install from source with ``pip install -e .`` from the
-repository root.
+nnx-ppo is **experimental** — the API may change without notice.
 
-Start with :doc:`tutorials/01_quickstart` if you are new to nnx-ppo.
+Start with :doc:`tutorials/01_quickstart` if you just want to start training.
 
 .. toctree::
    :maxdepth: 1
@@ -63,7 +60,10 @@ Start with :doc:`tutorials/01_quickstart` if you are new to nnx-ppo.
    reference/logging
    reference/checkpointing
    reference/contexts
-   reference/randomness   
+   reference/batching
+   reference/randomness
+   reference/containers
+   reference/utils
    reference/delay_and_normalizer
    reference/ppo_adapter
 

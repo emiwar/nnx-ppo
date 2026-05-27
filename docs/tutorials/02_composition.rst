@@ -13,7 +13,7 @@ Mental model
 
 Every layer in ``nnx-ppo`` implements :class:`~nnx_ppo.networks.types.StatefulModule`.
 A :class:`StatefulModule` is anything callable as
-``module(state, x, *, context=...) -> StatefulModuleOutput``. Containers
+``module(state, x, rollout_extras=None) -> StatefulModuleOutput``. Containers
 themselves are :class:`StatefulModule` s — they just compose children.
 
 Two kinds of state are tracked separately:
@@ -39,136 +39,107 @@ factory produces:
 .. code-block:: python
 
     from flax import nnx
-    from nnx_ppo.networks.containers import PPOActorCritic
-    from nnx_ppo.networks.factories import make_mlp
+    from nnx_ppo.networks.adapter import PPOAdapter
+    from nnx_ppo.networks.containers import Sequential
+    from nnx_ppo.networks.feedforward import Dense
     from nnx_ppo.networks.normalizer import Normalizer
-    from nnx_ppo.algorithms.distributions import NormalTanhSampler
+    from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 
     rngs = nnx.Rngs(0)
     obs_size = 8       # example
     action_size = 2
 
-    actor = make_mlp(
-        [obs_size, 64, 64, 2 * action_size],
-        rngs, activation=nnx.swish, activation_last_layer=False,
-    )
-    critic = make_mlp(
-        [obs_size, 64, 64, 1],
-        rngs, activation=nnx.swish, activation_last_layer=False,
-    )
-    sampler = NormalTanhSampler(rngs, entropy_weight=1e-2, min_std=0.1)
+    actor = Sequential([
+        Dense(obs_size, 64, rngs, activation=nnx.swish),
+        Dense(64, 64, rngs, activation=nnx.swish),
+        Dense(64, 2*action_size, rngs),
+        NormalTanhSampler(rngs, entropy_weight=1e-2, min_std=0.1),
+    ])
+    critic = Sequential([
+        Dense(obs_size, 64, rngs, activation=nnx.swish),
+        Dense(64, 64, rngs, activation=nnx.swish),
+        Dense(64, 1, rngs),
+    ])
+    nets = Sequential([
+        Normalizer(obs_size),
+        PPOAdapter(
+            action=actor,
+            value=critic,
+        ),
+    ])
 
-    nets = PPOActorCritic(
-        actor=actor,
-        critic=critic,
-        action_sampler=sampler,
-        preprocessor=Normalizer(obs_size),
-    )
+This is exactly what :func:`~nnx_ppo.networks.factories.make_mlp_actor_critic`
+produces. The :class:`PPOAdapter` is a regular layer in the
+:class:`Sequential`; its two ports (``action=`` and ``value=``) both
+receive the same input and run their own chains independently. Here,
+we have placed a :class:`Normalizer` in sequence with the PPOAdapter,
+so that the normalization becomes shared between the actor and critic.
+In principle, we could also have given the actor and critic their own
+normalizers, but that would have lead to doubling the total compute 
+and memory required by normalization.
 
-:class:`~nnx_ppo.networks.containers.PPOActorCritic` is the convenience
-wrapper for "one actor, one critic, one sampler, optional preprocessor".
-Internally it builds a small graph that we are about to construct
-explicitly when we need anything more flexible.
-
-Note the actor's output size: ``2 * action_size``. The action sampler
+Finally, note the actor's output size: ``2 * action_size``. The action sampler
 expects ``[mean | log_std]`` concatenated along the last axis. For a
 Gaussian-tanh policy the actor produces both; the sampler splits and
 samples.
 
-The containers
---------------
+The essential containers
+------------------------
+
+The worked examples below use a handful of containers. Each is a
+:class:`StatefulModule` that composes others. Here are the ones you
+will reach for first; the rest live in
+:doc:`../reference/containers` and :doc:`../reference/utils`.
 
 :class:`~nnx_ppo.networks.containers.Sequential`
-    Chain layers. ``Sequential([a, b, c])`` runs ``a → b → c`` and
-    routes each layer's carry state through a list keyed by position.
-
-:class:`~nnx_ppo.networks.containers.Parallel`
-    Run several named sub-modules on the **same** input. Returns a
-    dict keyed by sub-module name. ``Parallel(action_params=actor,
-    value=critic)`` produces ``{"action_params": ..., "value": ...}``
-    from a single input.
+    Chain layers. ``Sequential([a, b, c])`` runs ``a → b → c``.
 
 :class:`~nnx_ppo.networks.containers.Concat`
-    Pytree input → concatenate. Takes a dict ``{k: sub_input}``,
-    runs each named sub-module on its own slice, and concatenates the
-    outputs along the last axis. Used at the *start* of a stack when
-    the observation is structured.
-
-:class:`~nnx_ppo.networks.containers.Splitter`
-    Inverse of :class:`Concat`. Takes a flat tensor and splits it into
-    named slices: ``Splitter(action_params=2*A, value=1)`` turns a
-    ``(B, 2A+1)`` tensor into ``{"action_params": (B, 2A), "value":
-    (B, 1)}``. Used at the *end* of a stack to produce the dict
-    output that an adapter consumes.
+    Per-stream encoder for structured (dict) observations. Runs each
+    named sub-module on its own slice of the input dict and
+    concatenates the outputs along the last axis.
 
 :class:`~nnx_ppo.networks.utils.Flattener`
-    Pytree input → flat tensor (or dict-of-flat-tensors). With
-    ``Flattener()`` every leaf is reshaped to ``(B, -1)`` and
-    concatenated along the last axis. With
-    ``Flattener(preserve_levels=N)`` the top ``N`` levels of
-    ``dict`` / ``list`` / ``tuple`` structure are preserved and only
-    the sub-trees below them are flattened — useful before a
-    per-key consumer like :class:`Normalizer` or
-    :class:`PopulationGraph` when each top-level value is itself a
-    small pytree.
+    Reshape a pytree to a single ``(B, D)`` tensor. With
+    ``preserve_levels=N`` the top ``N`` levels of dict/list/tuple
+    structure are preserved.
 
 :class:`~nnx_ppo.networks.utils.Filter`
     Declarative pytree extraction / projection. Takes a dict
-    ``{output_key: spec}``; each spec is a string (top-level key),
-    a tuple of strings/ints (nested path), or a callable applied to
-    the full input. Use it to ablate obs streams, give the critic
-    privileged info, or reshape structured observations for a
-    downstream consumer.
+    ``{output_key: spec}`` where each spec is a string (top-level
+    key), a tuple of strings/ints (nested path), or a callable
+    applied to the full input. Use it to ablate obs streams or give
+    the critic privileged info.
 
-:class:`~nnx_ppo.networks.utils.Merge`
-    Like :class:`Parallel`, but each sub-module must return a
-    ``dict`` and :class:`Merge` flattens them into one combined
-    dict (duplicate keys are an error). The natural complement when
-    you have two independent stacks each emitting their own named
-    heads, and the downstream consumer wants a single flat dict —
-    for example a population graph that emits ``{motor_*}`` paired
-    with a detached MLP critic that emits ``{value_*}``.
+:class:`~nnx_ppo.networks.utils.Map`
+    Per-key dispatch: dict input, dict output, with a different
+    sub-module per key. ``Map({k: f for k in keys})`` applies each
+    ``f`` to the upstream's same-named entry.
 
-:class:`~nnx_ppo.networks.utils.Scale`
-    Multiply by a fixed scalar. Use it on the output of a head
-    when you want to scale action means / value estimates without
-    baking the factor into a Dense initialiser.
+For Parallel, Splitter, Merge, Scale, and the full per-container
+contracts (carry state shapes, construction forms, etc.) see the
+reference pages.
 
 The adapter
 -----------
 
-:class:`~nnx_ppo.algorithms.adapter.PPOAdapter` is the general-purpose
-:class:`~nnx_ppo.networks.types.PPONetwork`. It wraps any
-:class:`StatefulModule` whose forward output is a dict of named heads,
-and it knows how to:
+:class:`~nnx_ppo.networks.adapter.PPOAdapter` is the canonical leaf
+that turns a network's forward output into a
+:class:`~nnx_ppo.networks.types.PPONetworkOutput`. It is a regular
+:class:`StatefulModule` and lives inside a :class:`Sequential` like
+any other layer.
 
-- run named action heads through declared samplers, and
-- read named value heads into ``value_estimates``.
+It has two ports — ``action`` and ``value`` — and both receive the
+same upstream input. Each port runs its own chain. The action port
+must emit a tree of *sampler dicts* (``{"action", "log_likelihood"}``
+leaves, the standard
+:class:`~nnx_ppo.networks.sampling_layers.ActionSampler` output);
+the value port emits whatever value tensor your critic produces.
 
-In the actor-critic shape, ``PPOActorCritic`` is literally the
-following four-liner:
+Both the ``action`` and ``value`` ports also accept (nested)
+dictionaries of tensors  — see the multi-head example below.
 
-.. code-block:: python
-
-    from nnx_ppo.algorithms.adapter import PPOAdapter
-    from nnx_ppo.networks.containers import Sequential, Parallel
-
-    inner = Sequential([
-        Normalizer(obs_size),
-        Parallel(action_params=actor, value=critic),
-    ])
-    nets = PPOAdapter(
-        inner=inner,
-        action_specs={"action_params": sampler},
-        value_specs="value",
-    )
-
-If there is exactly one action head and one value head the adapter
-unwraps the resulting single-key dicts back into bare arrays — so
-``PPONetworkOutput.actions`` is an ``Array``, not ``{"action_params":
-Array}``. With multiple heads it stays as a dict; you address each
-head by its name. See :doc:`../reference/ppo_adapter` for the full
-contract.
+See :doc:`../reference/ppo_adapter` for the full contract.
 
 Worked example: encoder-decoder actor + shared-trunk critic
 -----------------------------------------------------------
@@ -181,12 +152,11 @@ the env exposes an obs dict::
     obs = {"proprio": (B, P), "goal": (B, G)}
 
 Encode each stream with its own MLP, concatenate, then run a shared
-trunk that produces action params and value through a final
-:class:`Splitter`:
+trunk; the adapter's two ports each own a small head on top:
 
 .. code-block:: python
 
-    from nnx_ppo.networks.containers import Concat, Sequential, Splitter
+    from nnx_ppo.networks.containers import Concat, Sequential
     from nnx_ppo.networks.factories import make_mlp
 
     rngs = nnx.Rngs(0)
@@ -200,24 +170,30 @@ trunk that produces action params and value through a final
         [G, H, H], rngs, activation=nnx.swish, activation_last_layer=True,
     )
 
-    trunk = Sequential([
+    shared_trunk = Sequential([
         # Per-stream encoders → concat along last axis.
         Concat(proprio=proprio_encoder, goal=goal_encoder),
         # Shared body.
         make_mlp([2 * H, H, H], rngs, activation=nnx.swish,
                  activation_last_layer=True),
-        # Split the body's output into the action head and the value head.
-        make_mlp([H, 2 * action_size + 1], rngs, activation=nnx.swish,
-                 activation_last_layer=False),
-        Splitter(action_params=2 * action_size, value=1),
     ])
 
-    sampler = NormalTanhSampler(rngs, entropy_weight=1e-2, min_std=0.1)
-    nets = PPOAdapter(
-        inner=trunk,
-        action_specs={"action_params": sampler},
-        value_specs="value",
+    actor_head = make_mlp(
+        [H, 2 * action_size], rngs, activation=nnx.swish,
+        activation_last_layer=False,
     )
+    critic_head = make_mlp(
+        [H, 1], rngs, activation=nnx.swish, activation_last_layer=False,
+    )
+    sampler = NormalTanhSampler(rngs, entropy_weight=1e-2, min_std=0.1)
+
+    nets = Sequential([
+        shared_trunk,
+        PPOAdapter(
+            action=Sequential([actor_head, sampler]),
+            value=critic_head,
+        ),
+    ])
 
 What this network does, top-to-bottom:
 
@@ -225,14 +201,16 @@ What this network does, top-to-bottom:
    ``proprio_encoder`` on ``obs["proprio"]`` and ``goal_encoder`` on
    ``obs["goal"]``, then concatenates their outputs to a ``(B, 2H)``
    vector.
-2. The next ``make_mlp`` is the shared body.
-3. The third ``make_mlp`` produces the combined action / value head as
-   a flat ``(B, 2A + 1)`` tensor.
-4. :class:`Splitter` turns that into ``{"action_params": (B, 2A),
-   "value": (B, 1)}``.
-5. :class:`PPOAdapter` runs the sampler on ``action_params``,
-   squeezes ``value``'s trailing axis, and packages everything into
-   the standard :class:`~nnx_ppo.networks.types.PPONetworkOutput`.
+2. The shared body MLP reduces it to ``(B, H)``.
+3. The :class:`PPOAdapter`'s ``action`` port feeds the ``(B, H)``
+   trunk output through ``actor_head`` (emits ``(B, 2A)``
+   ``[mean | log_std]``) and then through the sampler (emits the
+   sampler dict). The ``value`` port feeds the same ``(B, H)`` through
+   ``critic_head`` (emits ``(B, 1)``).
+4. The adapter walks the action port's output to pull out
+   ``actions`` and ``loglikelihoods``, squeezes the value port's
+   trailing axis, and packages everything into a
+   :class:`~nnx_ppo.networks.types.PPONetworkOutput`.
 
 Multi-head actor / critic
 -------------------------
@@ -243,43 +221,51 @@ than one action sampler or value head:
 
 .. code-block:: python
 
-    nets = PPOAdapter(
-        inner=trunk_emitting_arm_and_leg_heads,
-        action_specs={
-            "arm": NormalTanhSampler(rngs, entropy_weight=1e-2),
-            "leg": NormalTanhSampler(rngs, entropy_weight=1e-2),
-        },
-        value_specs=["arm_value", "leg_value"],
-    )
+    from nnx_ppo.networks.utils import Filter, Map
 
-With multiple heads ``PPONetworkOutput.actions`` becomes ``{"arm":
-..., "leg": ...}`` and ``value_estimates`` becomes
-``{"arm_value": ..., "leg_value": ...}``. The PPO loss accepts either
-shape — it computes GAE per reward key independently.
+    # Trunk emits {"action_arm": ..., "action_leg": ..., "value_arm": ..., "value_leg": ...}.
+    nets = Sequential([
+        shared_trunk_emitting_named_heads,
+        PPOAdapter(
+            action=Sequential([
+                Filter({"arm": "action_arm", "leg": "action_leg"}),  # rename
+                Map({                                                # per-key dispatch
+                    "arm": NormalTanhSampler(rngs, entropy_weight=1e-2),
+                    "leg": NormalTanhSampler(rngs, entropy_weight=1e-2),
+                }),
+            ]),
+            value=Filter({"arm": "value_arm", "leg": "value_leg"}),
+        ),
+    ])
 
-Privileged critic via ``Filter`` + ``Merge``
---------------------------------------------
+With multiple heads ``PPONetworkOutput.actions`` becomes
+``{"arm": ..., "leg": ...}`` and ``value_estimates`` becomes
+``{"arm": ..., "leg": ...}``. The PPO loss accepts either shape — it
+computes GAE per reward key independently.
+
+Privileged critic via per-port ``Filter``
+-----------------------------------------
 
 Sometimes the critic should see strictly *more* than the actor — full
 goal information, ground-truth distances, anything the actor must
-infer at deployment. Express this with two parallel branches
-operating on the same obs, each pulling out the subset they're
-allowed to use, and :class:`~nnx_ppo.networks.utils.Merge` combining
-their outputs:
+infer at deployment. Because the :class:`PPOAdapter`'s two ports are
+already independent chains operating on the same upstream input, each
+port can just :class:`Filter` the obs to the subset it's allowed to
+use:
 
 .. code-block:: python
 
-    from nnx_ppo.networks.utils import Filter, Merge
+    from nnx_ppo.networks.utils import Filter, Flattener
 
-    actor_branch = Sequential([
+    actor_chain = Sequential([
         Filter({                                   # actor sees proprio only
             "proprio": ("proprio",),
         }),
         Flattener(),
         actor_mlp,
-        Splitter(action_params=2 * action_size),
+        sampler,
     ])
-    critic_branch = Sequential([
+    critic_chain = Sequential([
         Filter({                                   # critic sees everything
             "proprio": ("proprio",),
             "goal":    ("goal",),
@@ -287,23 +273,16 @@ their outputs:
         }),
         Flattener(),
         critic_mlp,
-        Splitter(value=1),
     ])
 
-    inner = Sequential([
+    nets = Sequential([
         Normalizer(obs_size),
-        Merge(actor=actor_branch, critic=critic_branch),
+        PPOAdapter(action=actor_chain, value=critic_chain),
     ])
-    nets = PPOAdapter(
-        inner=inner,
-        action_specs={"action_params": sampler},
-        value_specs="value",
-    )
 
-The two branches are completely independent: different obs slices,
-different parameter sets, different depths. :class:`Merge` flattens
-their dict outputs into ``{"action_params": ..., "value": ...}``
-which feeds the adapter exactly as in the shared-trunk case.
+The two ports are completely independent: different obs slices,
+different parameter sets, different depths. Each port owns its full
+chain from upstream input through to its respective output shape.
 
 What's next
 -----------

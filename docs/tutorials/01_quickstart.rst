@@ -36,9 +36,10 @@ Build the network
 -----------------
 
 :func:`~nnx_ppo.networks.factories.make_mlp_actor_critic` returns a
-:class:`~nnx_ppo.networks.containers.PPOActorCritic` — a standard
-actor / critic network with an optional observation normalizer on the
-front.
+:class:`~nnx_ppo.networks.containers.Sequential` — an optional
+observation normalizer followed by a
+:class:`~nnx_ppo.networks.adapter.PPOAdapter` whose two ports own the
+actor + sampler chain and the critic chain respectively.
 
 .. code-block:: python
 
