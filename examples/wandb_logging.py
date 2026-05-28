@@ -95,7 +95,7 @@ wandb.init(
     },
     name=exp_name,
     tags=(env_name,),
-    notes="Test multi-agent refactor on single-agent env.",
+    notes="Regression test refactor.",
 )
 
 # Train with wandb callbacks

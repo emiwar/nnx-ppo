@@ -152,6 +152,9 @@ class SlimData(NamedTuple):
     qpos: Any
     qvel: Any
     time: Any
+    mocap_pos: Any
+    mocap_quat: Any
+    xfrc_applied: Any
 
 
 class SlimState(NamedTuple):
@@ -172,6 +175,9 @@ def _slim(env_state: EnvState) -> SlimState:
             qpos=env_state.data.qpos,
             qvel=env_state.data.qvel,
             time=env_state.data.time,
+            mocap_pos=env_state.data.mocap_pos,
+            mocap_quat=env_state.data.mocap_quat,
+            xfrc_applied=env_state.data.xfrc_applied,
         ),
         done=env_state.done,
         info=env_state.info,
