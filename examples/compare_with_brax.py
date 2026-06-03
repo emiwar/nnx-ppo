@@ -34,7 +34,13 @@ SEED = 1234
 config = TrainConfig(
     ppo=PPOConfig(
         n_envs=ppo_params.num_envs,
-        rollout_length=ppo_params.unroll_length,
+        # Brax effectively rolls out batch_size * num_minibatches environments
+        # of length unroll_length per training step, looping the actual
+        # num_envs parallel envs (batch_size * num_minibatches // num_envs)
+        # times. Match that by scaling rollout_length so each nnx-ppo
+        # iteration consumes the same number of env steps before optimizing.
+        rollout_length=ppo_params.unroll_length
+        * (ppo_params.batch_size * ppo_params.num_minibatches // ppo_params.num_envs),
         total_steps=ppo_params.num_timesteps,
         gae_lambda=0.95,
         discounting_factor=ppo_params.discounting,
@@ -43,6 +49,9 @@ config = TrainConfig(
         n_epochs=ppo_params.num_updates_per_batch,
         learning_rate=ppo_params.learning_rate,
         n_minibatches=ppo_params.num_minibatches,
+        # Brax's value loss is 0.5 * 0.5 * MSE; nnx-ppo's is 0.5 * MSE * weight.
+        # Use 0.5 to match brax's effective 0.25 * MSE.
+        critic_loss_weight=0.5,
         logging_level=LoggingLevel.NONE,
     ),
     eval=EvalConfig(

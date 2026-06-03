@@ -1,29 +1,60 @@
 [project]
 name = "nnx_ppo"
-version = "0.1.0"
-description = "Implementation of PPO for recurrent/stateful networks using JAX and flax.nnx."
+version = "0.2.0"
+description = "PPO for stateful/recurrent networks in JAX and flax.nnx."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
 authors = [
-    { name="Emil Wärnberg", email="ewarnberg@fas.harvard.edu" }
+    { name = "Emil Wärnberg", email = "ewarnberg@fas.harvard.edu" },
+]
+keywords = ["reinforcement-learning", "ppo", "jax", "flax", "rl", "neuroscience"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
 dependencies = [
+    "jax",
     "flax>=0.12.4",
-    "jax[cuda12]",
-    "ml_collections",
+    "optax",
     "orbax-checkpoint",
     "jaxtyping",
+    "numpy",
 ]
 
 [project.optional-dependencies]
-dev = ["beartype", "pytest", "pyright", "brax", "playground"]
+dev = ["pytest", "pyright", "beartype", "absl-py"]
+examples = ["brax", "wandb", "playground"]
+playground = ["playground"]
 docs = [
     "sphinx>=7.0",
     "sphinx-rtd-theme",
 ]
 
+[project.urls]
+Homepage = "https://github.com/emiwar/nnx-ppo"
+Documentation = "https://nnx-ppo.readthedocs.io"
+Repository = "https://github.com/emiwar/nnx-ppo"
+Issues = "https://github.com/emiwar/nnx-ppo/issues"
+
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["nnx_ppo*"]
+exclude = ["nnx_ppo.*tests*", "*_test"]
+
+[tool.setuptools.package-data]
+nnx_ppo = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["nnx_ppo"]

@@ -1,9 +1,6 @@
-import mujoco_playground
-
-
 class RewardScalingWrapper:
 
-    def __init__(self, env: mujoco_playground.MjxEnv, reward_scale: float) -> None:
+    def __init__(self, env: "mujoco_playground.MjxEnv", reward_scale: float) -> None:  # noqa: F821
         self.env = env
         self.reward_scale = reward_scale
 

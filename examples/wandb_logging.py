@@ -19,7 +19,7 @@ import nnx_ppo.test_dummies.move_to_center_env
 import nnx_ppo.test_dummies.move_from_center_env
 
 SEED = 40
-env_name = "CartpoleSwingup"
+env_name = "CartpoleBalance"
 
 # Setup environment
 if env_name == "ParrotEnv":
@@ -63,7 +63,7 @@ config = TrainConfig(
         normalize_advantages=True,
         n_epochs=4,
         n_minibatches=4,
-        logging_level=LoggingLevel.ALL,
+        logging_level=LoggingLevel.BASIC,
         logging_percentiles=(0, 25, 50, 75, 100),
     ),
     eval=EvalConfig(
@@ -95,7 +95,7 @@ wandb.init(
     },
     name=exp_name,
     tags=(env_name,),
-    notes="Regression test refactor.",
+    notes="Example training of CartpoleBalance.",
 )
 
 # Train with wandb callbacks
@@ -104,7 +104,7 @@ result = ppo.train_ppo(
     nets,
     config,
     log_fn=wandb.log,
-    video_fn=wandb_video_fn(fps=30),
+    video_fn=wandb_video_fn(fps=int(round(1 / eval_env.dt))),
     eval_env=eval_env,
 )
 

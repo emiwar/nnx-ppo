@@ -6,13 +6,15 @@ import sys
 # Make the package importable without installation.
 sys.path.insert(0, os.path.abspath(".."))
 
+import nnx_ppo  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Project information
 # ---------------------------------------------------------------------------
 project = "nnx-ppo"
 author = "Emil Wärnberg"
-copyright = "2024, Emil Wärnberg"
-release = "0.1.0"
+copyright = "2026, Emil Wärnberg"
+release = nnx_ppo.__version__
 
 # ---------------------------------------------------------------------------
 # General configuration
