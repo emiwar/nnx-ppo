@@ -284,9 +284,14 @@ class PopulationGraph(StatefulModule):
             if pop.output_to is not None
         )
 
-        # Promote to nnx-tracked containers.
+        # Promote to nnx-tracked containers. Drop the underscore-prefixed
+        # build registries afterwards: newer flax reflects through plain
+        # dicts/lists, so leaving them in place would expose every Param
+        # twice and trip nnx.jit's consistent-aliasing check.
         self.populations = nnx.Dict(self._pops)
         self.connections = nnx.List(self._conns)
+        del self._pops
+        del self._conns
 
         self._finalized = True
 

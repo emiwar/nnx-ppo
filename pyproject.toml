@@ -23,7 +23,7 @@ classifiers = [
 
 dependencies = [
     "jax",
-    "flax>=0.12.4",
+    "flax>=0.12.7",
     "optax",
     "orbax-checkpoint",
     "jaxtyping",
