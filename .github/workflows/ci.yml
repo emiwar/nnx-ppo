@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+        include:
+          # Smoke test on macOS with the latest supported Python only —
+          # JAX wheels exist for macOS but the test suite is slow, so we
+          # don't run the full Python matrix there.
+          - os: macos-latest
+            python-version: "3.13"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install nnx-ppo with test extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,playground]"
+
+      - name: Show JAX backend
+        run: python -c "import jax; print('jax', jax.__version__, 'devices:', jax.devices())"
+
+      - name: Run tests
+        run: pytest -v --durations=20
