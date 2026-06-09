@@ -26,10 +26,9 @@ extensions = [
     "sphinx.ext.intersphinx",
 ]
 
-# reward_scaling_wrapper.py imports mujoco_playground at the top level;
-# mock it so the Sphinx build doesn't require the package to be installed.
+# Mock optional/example-only dependencies so the Sphinx build doesn't
+# require them to be installed.
 autodoc_mock_imports = [
-    "mujoco_playground",
     "brax",
     "wandb",
     "orbax",

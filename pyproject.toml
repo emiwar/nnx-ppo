@@ -31,9 +31,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pyright", "beartype", "absl-py"]
+dev = ["pytest", "pyright", "beartype", "absl-py", "playground>=0.2.0", "warp-lang<1.13"]
 examples = ["brax", "wandb", "playground>=0.2.0", "warp-lang<1.13"]
-playground = ["playground>=0.2.0", "warp-lang<1.13"]
 docs = [
     "sphinx>=7.0",
     "sphinx-rtd-theme",

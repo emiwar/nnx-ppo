@@ -35,13 +35,11 @@ pip install nnx_ppo "jax[cuda12]"
 
 Optional extras:
 
-- `nnx_ppo[playground]` — pulls the [`playground`](https://pypi.org/project/playground/)
-  distribution (import name `mujoco_playground`), needed for
-  `RewardScalingWrapper` and any of the MuJoCo Playground environments.
-- `nnx_ppo[examples]` — `brax`, `wandb`, and `playground` for the scripts in
-  [examples/](examples/).
-- `nnx_ppo[dev]` — `pytest`, `pyright`, `beartype`, `absl-py` for running the
-  test suite.
+- `nnx_ppo[examples]` — `brax`, `wandb`, and
+  [`playground`](https://pypi.org/project/playground/) (import name
+  `mujoco_playground`) for the scripts in [examples/](examples/).
+- `nnx_ppo[dev]` — test-suite dependencies (`pytest`, `pyright`, `beartype`,
+  `absl-py`, plus `playground` for the env-driven tests).
 
 ## Quick example
 

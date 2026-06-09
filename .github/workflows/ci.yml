@@ -40,7 +40,7 @@ jobs:
       - name: Install nnx-ppo with test extras
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,playground]"
+          pip install -e ".[dev]"
 
       - name: Show JAX backend
         run: python -c "import jax; print('jax', jax.__version__, 'devices:', jax.devices())"
