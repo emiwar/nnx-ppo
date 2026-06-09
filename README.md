@@ -24,13 +24,13 @@ recurrent/stateful networks. Networks are built with
 ## Installation
 
 ```bash
-pip install nnx_ppo
+pip install nnx-ppo
 ```
 
 `nnx-ppo` installs the CPU build of JAX by default. For a CUDA 12 GPU build:
 
 ```bash
-pip install nnx_ppo "jax[cuda12]"
+pip install nnx-ppo "jax[cuda12]"
 ```
 
 Optional extras:
