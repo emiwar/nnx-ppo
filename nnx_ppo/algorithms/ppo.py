@@ -2,6 +2,7 @@ from typing import Any, Optional
 from collections.abc import Callable
 import dataclasses
 import functools
+import time
 
 import numpy as np
 
@@ -114,10 +115,12 @@ def train_ppo(
     last_checkpoint_step = -config.checkpoint_every_steps  # Ensure checkpoint at step 0
     metrics: dict[str, Any] = {}
     n_iterations = 0
+    measure_throughput = LoggingLevel.THROUGHPUT in config.ppo.logging_level
 
     # Helper for running eval
     def run_eval(steps: int) -> dict[str, Any]:
         networks.eval()
+        t0 = time.perf_counter() if measure_throughput else None
         eval_metrics = eval_rollout_jit(
             eval_env,
             networks,
@@ -126,14 +129,22 @@ def train_ppo(
             jax.random.key(config.seed),
             config.eval.logging_percentiles,
         )
+        if measure_throughput:
+            jax.block_until_ready(eval_metrics)
+            elapsed = time.perf_counter() - t0
+            eval_metrics = dict(eval_metrics)
+            eval_metrics["throughput/eval_sps"] = (
+                config.eval.n_envs * config.eval.max_episode_length / elapsed
+            )
         networks.train()
         return dict(eval_metrics)
 
     # Helper for running video
-    def run_video(steps: int, iteration: int) -> None:
+    def run_video(steps: int, iteration: int) -> dict[str, Any]:
         if video_fn is None or not hasattr(eval_env, "render"):
-            return
+            return {}
         networks.eval()
+        t0 = time.perf_counter() if measure_throughput else None
         render_key = jax.random.fold_in(jax.random.key(config.seed), iteration)
         stacked_states, final_state, episode_reward = eval_rollout_render_jit(
             eval_env, networks, config.video.episode_length, render_key
@@ -150,6 +161,10 @@ def train_ppo(
         )
         video_fn(video_data)
         networks.train()
+        if measure_throughput:
+            elapsed = time.perf_counter() - t0
+            return {"throughput/video_sps": config.video.episode_length / elapsed}
+        return {}
 
     # Initial eval/video/checkpoint at step 0
     steps = int(training_state.steps_taken)
@@ -159,7 +174,8 @@ def train_ppo(
         eval_history.append({"step": steps, **eval_metrics})
         last_eval_step = steps
     if config.video.enabled:
-        run_video(steps, n_iterations)
+        video_metrics = run_video(steps, n_iterations)
+        metrics.update(video_metrics)
         last_video_step = steps
     if checkpoint_fn is not None and _should_run(
         steps, last_checkpoint_step, config.checkpoint_every_steps
@@ -172,6 +188,7 @@ def train_ppo(
     # Main training loop
     while int(training_state.steps_taken) < config.ppo.total_steps:
         # PPO step
+        t0 = time.perf_counter() if measure_throughput else None
         training_state, metrics = ppo_step_jit(
             env,
             training_state,
@@ -189,7 +206,12 @@ def train_ppo(
             config.ppo.logging_percentiles,
         )
         n_iterations += 1
-        steps = int(training_state.steps_taken)
+        steps = int(training_state.steps_taken)  # host-sync barrier
+        if measure_throughput:
+            elapsed = time.perf_counter() - t0
+            metrics["throughput/train_sps"] = (
+                config.ppo.n_envs * config.ppo.rollout_length / elapsed
+            )
 
         # Eval rollout
         if config.eval.enabled and _should_run(
@@ -204,7 +226,8 @@ def train_ppo(
         if config.video.enabled and _should_run(
             steps, last_video_step, config.video.every_steps
         ):
-            run_video(steps, n_iterations)
+            video_metrics = run_video(steps, n_iterations)
+            metrics.update(video_metrics)
             last_video_step = steps
 
         # Checkpointing

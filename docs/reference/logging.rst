@@ -66,10 +66,12 @@ combine families with the ``|`` operator
 ``WEIGHTS``
     Adds parameter statistics per layer (mean / std / percentiles of
     each ``nnx.Param``).
+``THROUGHPUT``
+    Adds wall-clock steps-per-second metrics (``throughput/train_sps``).
 ``ALL``
     Equivalent to ``LOSSES | CRITIC_EXTRA | ACTOR_EXTRA |
     TRAIN_ROLLOUT_STATS | TRAINING_ENV_METRICS | GRAD_NORM |
-    WEIGHTS | ROLLOUT_OBS``.
+    WEIGHTS | ROLLOUT_OBS | THROUGHPUT``.
 ``NONE``
     No metrics. ``log_fn`` is still called with an empty dict.
 

@@ -134,6 +134,7 @@ class LoggingLevel(enum.Flag):
     TRAINING_ENV_METRICS = enum.auto()
     GRAD_NORM = enum.auto()
     WEIGHTS = enum.auto()
+    THROUGHPUT = enum.auto()
     BASIC = LOSSES
     ALL = (
         LOSSES
@@ -144,5 +145,6 @@ class LoggingLevel(enum.Flag):
         | GRAD_NORM
         | WEIGHTS
         | ROLLOUT_OBS
+        | THROUGHPUT
     )
     NONE = 0
