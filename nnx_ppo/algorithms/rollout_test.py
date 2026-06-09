@@ -17,7 +17,9 @@ class RolloutTest(absltest.TestCase):
     def setUp(self):
         SEED = 17
 
-        self.env = mujoco_playground.registry.load("CartpoleSwingup")
+        self.env = mujoco_playground.registry.load(
+            "CartpoleSwingup", config_overrides={"impl": "jax"}
+        )
         self.nets = factories.make_mlp_actor_critic(
             self.env.observation_size,  # type: ignore[arg-type]
             self.env.action_size,

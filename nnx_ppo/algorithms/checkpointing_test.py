@@ -87,7 +87,9 @@ class TrainConfigCheckpointTest(absltest.TestCase):
 class MakeCheckpointFnTest(absltest.TestCase):
 
     def setUp(self):
-        self.env = mujoco_playground.registry.load("CartpoleBalance")
+        self.env = mujoco_playground.registry.load(
+            "CartpoleBalance", config_overrides={"impl": "jax"}
+        )
         self.nets = _make_nets(self.env, seed=17)
 
     def _make_training_state(self, n_envs: int = 4, seed: int = 42) -> TrainingState:
@@ -247,7 +249,9 @@ class NormalizerCheckpointTest(absltest.TestCase):
     earlier (param-only) split strategy would silently drop them."""
 
     def setUp(self):
-        self.env = mujoco_playground.registry.load("CartpoleBalance")
+        self.env = mujoco_playground.registry.load(
+            "CartpoleBalance", config_overrides={"impl": "jax"}
+        )
         self.nets = _make_norm_nets(self.env, seed=17)
 
     def _make_training_state(self, n_envs: int = 4, seed: int = 42) -> TrainingState:
@@ -308,7 +312,9 @@ class AR1VBCheckpointTest(absltest.TestCase):
     network_states is correctly preserved across a checkpoint round-trip."""
 
     def setUp(self):
-        self.env = mujoco_playground.registry.load("CartpoleBalance")
+        self.env = mujoco_playground.registry.load(
+            "CartpoleBalance", config_overrides={"impl": "jax"}
+        )
         self.nets = _make_ar1vb_nets(self.env, seed=17)
 
     def _make_training_state(self, n_envs: int = 4, seed: int = 42) -> TrainingState:
@@ -406,7 +412,9 @@ class CheckpointFnInvocationTest(absltest.TestCase):
     """
 
     def setUp(self):
-        self.env = mujoco_playground.registry.load("CartpoleBalance")
+        self.env = mujoco_playground.registry.load(
+            "CartpoleBalance", config_overrides={"impl": "jax"}
+        )
         self.nets = _make_nets(self.env, seed=17)
 
     def _tiny_config(

@@ -45,5 +45,5 @@ jobs:
       - name: Show JAX backend
         run: python -c "import jax; print('jax', jax.__version__, 'devices:', jax.devices())"
 
-      - name: Run tests
-        run: pytest -v --durations=20
+      - name: Run tests (skip warp / GPU-only)
+        run: pytest -v --durations=20 -m "not warp"

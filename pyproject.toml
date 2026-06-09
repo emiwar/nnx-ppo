@@ -32,8 +32,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pyright", "beartype", "absl-py"]
-examples = ["brax", "wandb", "playground"]
-playground = ["playground"]
+examples = ["brax", "wandb", "playground>=0.2.0", "warp-lang<1.13"]
+playground = ["playground>=0.2.0", "warp-lang<1.13"]
 docs = [
     "sphinx>=7.0",
     "sphinx-rtd-theme",
@@ -58,3 +58,6 @@ nnx_ppo = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["nnx_ppo"]
+markers = [
+    "warp: requires the MuJoCo Warp (CUDA-only) MJX backend; skip on CPU-only CI via `-m 'not warp'`.",
+]

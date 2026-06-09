@@ -1,6 +1,7 @@
 from absl.testing import absltest
 import jax.numpy as jp
 import numpy as np
+import pytest
 from flax import nnx
 import mujoco_playground
 
@@ -22,7 +23,9 @@ class PPOTest(absltest.TestCase):
 
     def setUp(self):
         SEED = 17
-        self.env = mujoco_playground.registry.load("CartpoleBalance")
+        self.env = mujoco_playground.registry.load(
+            "CartpoleBalance", config_overrides={"impl": "jax"}
+        )
         self.nets = factories.make_mlp_actor_critic(
             self.env.observation_size,  # type: ignore[arg-type]
             self.env.action_size,
@@ -441,3 +444,45 @@ class DictObsActTest(absltest.TestCase):
         )
         for k, v in metrics.items():
             self.assertTrue(jp.all(jp.isfinite(v)), f"metrics[{k}] not finite.")
+
+
+@pytest.mark.parametrize(
+    "impl", ["jax", pytest.param("warp", marks=pytest.mark.warp)]
+)
+def test_ppo_step_impl(impl):
+    """Single PPO step against a playground env, parametrized over the MJX
+    backend. The ``warp`` variant requires a CUDA-capable GPU and is skipped
+    on CPU-only CI via ``pytest -m "not warp"``.
+    """
+    SEED = 18
+    env = mujoco_playground.registry.load(
+        "CartpoleBalance", config_overrides={"impl": impl}
+    )
+    nets = factories.make_mlp_actor_critic(
+        env.observation_size,  # type: ignore[arg-type]
+        env.action_size,
+        actor_hidden_sizes=[16, 16],
+        critic_hidden_sizes=[16, 16],
+        rngs=nnx.Rngs(SEED),
+        normalize_obs=True,
+    )
+    config = PPOConfig(n_envs=8, rollout_length=4, n_epochs=2, n_minibatches=2)
+    training_state = ppo.new_training_state(env, nets, config.n_envs, SEED)
+    training_state, metrics = ppo.ppo_step(
+        env,
+        training_state,
+        config.n_envs,
+        config.rollout_length,
+        config.gae_lambda,
+        config.discounting_factor,
+        config.clip_range,
+        config.normalize_advantages,
+        config.combine_advantages,
+        config.n_epochs,
+        config.n_minibatches,
+        config.critic_loss_weight,
+        LoggingLevel.LOSSES,
+    )
+    assert training_state.steps_taken == config.n_envs * config.rollout_length
+    for k, v in metrics.items():
+        assert jp.all(jp.isfinite(v)), f"metrics[{k}] not finite."

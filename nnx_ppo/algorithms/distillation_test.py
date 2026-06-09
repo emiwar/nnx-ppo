@@ -11,7 +11,9 @@ from nnx_ppo.algorithms.config import DistillationConfig, DistillationTrainConfi
 
 
 def _make_env_and_nets(seed=17):
-    env = mujoco_playground.registry.load("CartpoleBalance")
+    env = mujoco_playground.registry.load(
+        "CartpoleBalance", config_overrides={"impl": "jax"}
+    )
     rngs_teacher = nnx.Rngs(seed, action_sampling=seed)
     rngs_student = nnx.Rngs(seed + 1, action_sampling=seed + 1)
     # Teacher and student must have isomorphic state trees so that the
