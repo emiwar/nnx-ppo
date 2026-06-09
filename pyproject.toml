@@ -1,10 +1,11 @@
 [project]
-name = "nnx_ppo"
+name = "nnx-ppo"
 version = "0.2.0"
 description = "PPO for stateful/recurrent networks in JAX and flax.nnx."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
 authors = [
     { name = "Emil Wärnberg", email = "ewarnberg@fas.harvard.edu" },
 ]
@@ -12,7 +13,6 @@ keywords = ["reinforcement-learning", "ppo", "jax", "flax", "rl", "neuroscience"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: BSD License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
@@ -45,7 +45,7 @@ Repository = "https://github.com/emiwar/nnx-ppo"
 Issues = "https://github.com/emiwar/nnx-ppo/issues"
 
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
