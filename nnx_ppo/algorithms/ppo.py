@@ -511,48 +511,22 @@ def ppo_loss(
         loss_metrics["losses/actor"] = actor_losses
         loss_metrics["losses/critic"] = critic_losses
         loss_metrics["losses/regularization"] = regularization_losses
-    """
     if LoggingLevel.ACTOR_EXTRA in logging_level:
-        loss_metrics["correlations/ll_advantage"] = jp.corrcoef(
-            rollout_data.network_output.loglikelihoods.flatten(), advantages.flatten()
-        )[0, 1]
-        loss_metrics["losses/likelihood_ratios"] = likelihood_ratios
-        loss_metrics["losses/likelihood_ratios_mean"] = jp.mean(likelihood_ratios)
-        loss_metrics["losses/clipping_fraction"] = jp.mean(
-            jp.logical_or(
-                likelihood_ratios < 1 - clip_range, likelihood_ratios > 1 + clip_range
-            )
+        loss_metrics["losses/clipping_fraction"] = jax.tree.map(
+            lambda new_ll, old_ll: jp.mean(
+                jp.abs(jp.exp(new_ll - old_ll) - 1.0) > clip_range
+            ),
+            network_output.loglikelihoods,
+            rollout_data.network_output.loglikelihoods,
         )
-        loss_metrics["losses/new_loglikelihoods"] = network_output.loglikelihoods
-        loss_metrics["losses/loglikelihood_diff"] = (
-            network_output.loglikelihoods - old_loglikelihoods
-        )
-        loss_metrics["losses/new_mu"] = network_output.metrics["action_sampler"]["mu"]
-        loss_metrics["losses/new_sigma"] = network_output.metrics["action_sampler"][
-            "sigma"
-        ]
-        loss_metrics["losses/mu_diff"] = (
-            network_output.metrics["action_sampler"]["mu"]
-            - rollout_data.network_output.metrics["action_sampler"]["mu"]
-        )
-        loss_metrics["losses/sigma_diff"] = (
-            network_output.metrics["action_sampler"]["sigma"]
-            - rollout_data.network_output.metrics["action_sampler"]["sigma"]
-        )
-        loss_metrics["losses/sigma_ratio"] = (
-            network_output.metrics["action_sampler"]["sigma"]
-            / rollout_data.network_output.metrics["action_sampler"]["sigma"]
-        )
-    """
     if LoggingLevel.CRITIC_EXTRA in logging_level:
-        # loss_metrics["losses/predicted_value"] = values_excl_last
         loss_metrics["losses/advantages"] = advantages
-        # loss_metrics["losses/advantages_NaN"] = 1.0 - jp.isfinite(advantages).mean()
-        loss_metrics["losses/critic_R^2"] = jax.tree.map(lambda l, tv: 1.0 - 2*l/(jp.var(tv)+1e-8), critic_losses, target_values)
-        # loss_metrics["losses/critic_R^2"] = 1.0 - 2 * critic_loss / (
-        #    jp.var(target_values) + 1e-8
-        # )
-    total_loss = actor_loss + critic_loss_weight*critic_loss + regularization_loss
+        loss_metrics["losses/critic_R^2"] = jax.tree.map(
+            lambda l, tv: 1.0 - 2 * l / (jp.var(tv) + 1e-8),
+            critic_losses,
+            target_values,
+        )
+    total_loss = actor_loss + critic_loss_weight * critic_loss + regularization_loss
 
     return total_loss, loss_metrics
 

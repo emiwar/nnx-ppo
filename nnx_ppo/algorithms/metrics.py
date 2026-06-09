@@ -59,11 +59,6 @@ def compute_metrics(
             rollout_data.network_output.loglikelihoods,
             percentile_levels,
         )
-        if rollout_data.network_output.actions.shape[-1] == 1:
-            metrics["correlations/action_ll"] = jp.corrcoef(
-                rollout_data.network_output.loglikelihoods.flatten(),
-                rollout_data.network_output.actions.flatten(),
-            )[0, 1]
     if LoggingLevel.CRITIC_EXTRA in logging_level:
         _log_metric(
             metrics,

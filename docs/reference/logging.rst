@@ -49,8 +49,8 @@ combine families with the ``|`` operator
     Adds ``losses/predicted_value`` — the critic's value estimates
     for the rollout obs (mean/std or percentiles).
 ``ACTOR_EXTRA``
-    Adds the rollout-action log-likelihoods, and (for 1-D actions) a
-    Pearson correlation between log-likelihood and action.
+    Adds the rollout-action log-likelihoods, and
+    ``losses/clipping_fraction``.
 ``TRAIN_ROLLOUT_STATS``
     Adds ``rollout_batch/reward``, ``rollout_batch/action``,
     ``rollout_batch/done_rate``, ``rollout_batch/truncation_rate``.

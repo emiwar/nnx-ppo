@@ -376,9 +376,7 @@ class DictObsActTest(absltest.TestCase):
             config.n_epochs,
             config.n_minibatches,
             config.critic_loss_weight,
-            # Avoid LoggingLevel.ACTOR_EXTRA: it accesses metrics["action_sampler"]
-            # which is not provided by DictObsActNet.
-            LoggingLevel.LOSSES,
+            LoggingLevel.LOSSES | LoggingLevel.ACTOR_EXTRA,
         )
         self.assertEqual(
             training_state.steps_taken, config.n_envs * config.rollout_length
