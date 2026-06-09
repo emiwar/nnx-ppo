@@ -1,6 +1,6 @@
 [project]
 name = "nnx-ppo"
-version = "0.2.0"
+version = "0.2.1"
 description = "PPO for stateful/recurrent networks in JAX and flax.nnx."
 readme = "README.md"
 requires-python = ">=3.11"
