@@ -7,9 +7,11 @@ from flax import nnx
 import mujoco_playground
 
 from nnx_ppo.networks import factories
-from nnx_ppo.algorithms.rollout import unroll_env
+from nnx_ppo.algorithms.rollout import unroll_env, eval_rollout
+from nnx_ppo.algorithms.types import LoggingLevel
 from nnx_ppo.test_dummies import dummy_counter
 from nnx_ppo.test_dummies import stateful_nets, parrot_env, move_to_center_env
+from nnx_ppo.test_dummies.dict_obs_act_env import TwoArmEnv, TwoArmNet
 
 
 class RolloutTest(absltest.TestCase):
@@ -220,3 +222,64 @@ class RolloutTest(absltest.TestCase):
             env, env_state, net, net_state, N_STEPS, reset_key
         )
         self.assertEqual(net.n_calls[...], N_STEPS * N_ENVS)
+
+    def test_eval_rollout_basic_omits_net_metrics(self):
+        metrics = eval_rollout(
+            self.env, self.nets, n_envs=4, max_episode_length=10,
+            key=jax.random.key(0), logging_level=LoggingLevel.BASIC,
+        )
+        self.assertIn("eval/episode_reward/mean", metrics)
+        self.assertIn("eval/episode_reward/std", metrics)
+        self.assertIn("eval/lifespan/mean", metrics)
+        self.assertIn("eval/lifespan/std", metrics)
+        # Every eval metric is eval/-prefixed.
+        self.assertTrue(all(k.startswith("eval/") for k in metrics))
+        self.assertFalse(any(k.startswith("eval/net") for k in metrics))
+        self.assertFalse(any(k.startswith("eval/env") for k in metrics))
+
+    def test_eval_rollout_logs_net_metrics(self):
+        metrics = eval_rollout(
+            self.env, self.nets, n_envs=4, max_episode_length=10,
+            key=jax.random.key(0),
+            logging_level=LoggingLevel.BASIC | LoggingLevel.NETWORK_METRICS,
+        )
+        net_keys = [k for k in metrics if k.startswith("eval/net")]
+        self.assertTrue(net_keys, "expected eval/net/* network metrics")
+        # NormalTanhSampler emits mu/sigma; they must reach the eval log.
+        self.assertTrue(any("mu" in k for k in net_keys))
+        for k in net_keys:
+            self.assertEqual(jp.asarray(metrics[k]).shape, ())
+        # NETWORK_METRICS alone must not pull in env metrics.
+        self.assertFalse(any(k.startswith("eval/env") for k in metrics))
+
+    def test_eval_rollout_logs_env_metrics(self):
+        metrics = eval_rollout(
+            self.env, self.nets, n_envs=4, max_episode_length=10,
+            key=jax.random.key(0),
+            logging_level=LoggingLevel.BASIC | LoggingLevel.ENV_METRICS,
+        )
+        env_keys = [k for k in metrics if k.startswith("eval/env")]
+        self.assertTrue(env_keys, "expected eval/env/* env metrics")
+        self.assertFalse(any(k.startswith("eval/net") for k in metrics))
+
+    def test_eval_rollout_sums_dict_rewards(self):
+        """For a dict-reward env the headline is the sum across reward keys,
+        and each term also gets its own subtree."""
+        env = TwoArmEnv()
+        nets = TwoArmNet(nnx.Rngs(0))
+        metrics = eval_rollout(
+            env, nets, n_envs=4, max_episode_length=8,
+            key=jax.random.key(0), logging_level=LoggingLevel.BASIC,
+        )
+        # Headline aggregate is always present...
+        self.assertIn("eval/episode_reward/mean", metrics)
+        # ...and each reward term expands to its own subtree.
+        self.assertIn("eval/episode_reward/arm1/mean", metrics)
+        self.assertIn("eval/episode_reward/arm2/mean", metrics)
+        # mean of the summed return == sum of the per-term means.
+        self.assertAlmostEqual(
+            float(metrics["eval/episode_reward/mean"]),
+            float(metrics["eval/episode_reward/arm1/mean"])
+            + float(metrics["eval/episode_reward/arm2/mean"]),
+            places=4,
+        )

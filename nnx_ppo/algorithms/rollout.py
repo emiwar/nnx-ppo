@@ -1,4 +1,5 @@
 from typing import Any, NamedTuple, Optional
+from collections.abc import Mapping
 import functools
 
 from flax import nnx
@@ -6,7 +7,7 @@ import jax
 import jax.numpy as jp
 from jaxtyping import Array, Float, Key, Shaped, PRNGKeyArray
 from nnx_ppo.networks.types import ModuleState, StatefulModule
-from nnx_ppo.algorithms.types import Transition, RLEnv, EnvState
+from nnx_ppo.algorithms.types import Transition, RLEnv, EnvState, LoggingLevel
 
 def single_transition(
     env: RLEnv,
@@ -73,25 +74,33 @@ def unroll_env(
     return final_network_state, final_env_state, rollout
 
 
-def _add_reward_metrics(
+def _add_distribution_metrics(
     out: dict,
     name: str,
-    reward: Any,
+    value: Any,
     percentile_levels: Optional[tuple[int, ...]],
 ) -> None:
-    """Recursively build named metrics from a reward PyTree (scalar array or dict)."""
-    from collections.abc import Mapping
+    """Recursively build named metrics from a metric PyTree (scalar array or dict).
 
-    if isinstance(reward, Mapping):
-        for k, v in reward.items():
-            _add_reward_metrics(out, f"{name}/{k}", v, percentile_levels)
+    For a dict, recurses per key. For a leaf array it emits ``<name>/p{N}`` when
+    ``percentile_levels`` is given, otherwise ``<name>/mean`` and ``<name>/std``.
+    """
+    if isinstance(value, Mapping):
+        for k, v in value.items():
+            _add_distribution_metrics(out, f"{name}/{k}", v, percentile_levels)
     elif percentile_levels is not None:
-        percentiles = jp.percentile(reward, jp.array(percentile_levels))
+        percentiles = jp.percentile(value, jp.array(percentile_levels))
         for pl, p in zip(percentile_levels, percentiles):
             out[f"{name}/p{int(pl)}"] = p
     else:
-        out[f"{name}/mean"] = reward.mean()
-        out[f"{name}/std"] = reward.std()
+        out[f"{name}/mean"] = value.mean()
+        out[f"{name}/std"] = value.std()
+
+
+def _mask_done(done: Shaped[Array, "batch"], x: Float[Array, "batch ..."]) -> Any:
+    """Zero out the per-env leaves whose env was already done this step."""
+    d = done.reshape(done.shape + (1,) * (x.ndim - done.ndim))
+    return jp.where(d, jp.zeros_like(x), x)
 
 
 def eval_rollout(
@@ -101,13 +110,26 @@ def eval_rollout(
     max_episode_length: int,
     key: PRNGKeyArray,
     logging_percentiles: Optional[tuple[int, ...]] = None,
+    logging_level: LoggingLevel = LoggingLevel.NONE,
 ) -> dict[str, Float[Array, ""]]:
     env_keys = jax.random.split(key, n_envs)
     env_states = jax.vmap(env.reset)(env_keys)
+    # The scan latches done as float (below); the initial state must match that
+    # dtype or the scan carry types diverge (envs whose reset done is bool).
+    env_states = env_states.replace(done=env_states.done.astype(float))
     net_states = networks.initialize_state(n_envs)
 
+    # Env metrics (env_state.metrics) and network module metrics (entropy, KL,
+    # forward-model MSE, mu/sigma, ...) are accumulated only when their flag is
+    # set. Each per-step leaf is masked by the pre-step done flag and later
+    # normalised by per-env lifespan, mirroring the reward accounting. (Full-obs
+    # logging via ROLLOUT_OBS is a training-only debug aid; an episode-averaged
+    # obs is not meaningful at eval, so it is intentionally not logged here.)
+    log_env_metrics = LoggingLevel.ENV_METRICS in logging_level
+    log_net_metrics = LoggingLevel.NETWORK_METRICS in logging_level
+
     def step(env, networks, carry):
-        env_state, network_state, cuml_reward, lifespan = carry
+        env_state, network_state, cuml_reward, lifespan, accum = carry
         out = networks(network_state, env_state.obs)
         next_network_state = out.next_state
         network_output = out.output
@@ -122,7 +144,23 @@ def eval_rollout(
         )
         cuml_reward = jax.tree.map(jp.add, cuml_reward, reward_this_step)
         lifespan += jp.where(next_env_state.done, 0.0, 1.0)
-        return next_env_state, next_network_state, cuml_reward, lifespan
+        step_metrics = {}
+        if log_net_metrics:
+            step_metrics["net"] = out.metrics
+        if log_env_metrics:
+            step_metrics["env"] = next_env_state.metrics
+        accum = jax.tree.map(
+            lambda c, m: c + _mask_done(env_state.done, m), accum, step_metrics
+        )
+        return next_env_state, next_network_state, cuml_reward, lifespan, accum
+
+    init_accum: dict[str, Any] = {}
+    if log_net_metrics:
+        # Probe the metric tree structure to seed a zeroed accumulator.
+        probe = networks(net_states, env_states.obs)
+        init_accum["net"] = jax.tree.map(jp.zeros_like, probe.metrics)
+    if log_env_metrics:
+        init_accum["env"] = jax.tree.map(jp.zeros_like, env_states.metrics)
 
     step_partial = functools.partial(step, env)
     step_scan = nnx.scan(
@@ -136,15 +174,46 @@ def eval_rollout(
         net_states,
         jax.tree.map(jp.zeros_like, env_states.reward),
         jp.zeros(n_envs),
+        init_accum,
     )
-    _, _, cuml_reward, lifespan = step_scan(networks, init_carry)
+    _, _, cuml_reward, lifespan, accum = step_scan(networks, init_carry)
 
-    metrics = dict(lifespan_mean=lifespan.mean(), lifespan_std=lifespan.std())
-    _add_reward_metrics(metrics, "episode_reward", cuml_reward, logging_percentiles)
+    # All eval metrics live under ``eval/`` so they never collide with training
+    # metrics when both are merged into one dict (train_ppo: metrics.update).
+    metrics: dict[str, Any] = {}
+
+    # Headline + "did an eval run?" sentinel: the total episode return (summed
+    # across reward keys, the quantity PPO optimises), mean/std over envs. Always
+    # emitted, independent of logging_level / logging_percentiles.
+    total_return = jax.tree.reduce(jp.add, cuml_reward)
+    metrics["eval/episode_reward/mean"] = total_return.mean()
+    metrics["eval/episode_reward/std"] = total_return.std()
     if logging_percentiles is not None:
-        percentiles = jp.percentile(lifespan, jp.array(logging_percentiles))
+        percentiles = jp.percentile(total_return, jp.array(logging_percentiles))
         for pl, p in zip(logging_percentiles, percentiles):
-            metrics[f"lifespan/p{int(pl)}"] = p
+            metrics[f"eval/episode_reward/p{int(pl)}"] = p
+    # Per-term breakdown only for multi-reward (dict) envs; for a scalar reward
+    # the headline above is already the full picture.
+    if isinstance(cuml_reward, Mapping):
+        _add_distribution_metrics(
+            metrics, "eval/episode_reward", cuml_reward, logging_percentiles
+        )
+
+    # Lifespan follows the normal percentile convention (mean/std, or p{N}).
+    _add_distribution_metrics(metrics, "eval/lifespan", lifespan, logging_percentiles)
+    if log_net_metrics or log_env_metrics:
+        # Local import avoids a circular dependency (metrics imports rollout).
+        from nnx_ppo.algorithms.metrics import _log_metric
+
+        denom = jp.maximum(lifespan, 1.0)
+        mean_accum = jax.tree.map(
+            lambda s: s / denom.reshape(denom.shape + (1,) * (s.ndim - 1)),
+            accum,
+        )
+        if log_net_metrics:
+            _log_metric(metrics, "eval/net", mean_accum["net"], logging_percentiles)
+        if log_env_metrics:
+            _log_metric(metrics, "eval/env", mean_accum["env"], logging_percentiles)
     return metrics
 
 class SlimData(NamedTuple):

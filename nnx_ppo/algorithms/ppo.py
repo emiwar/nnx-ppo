@@ -103,7 +103,7 @@ def train_ppo(
 
     # JIT compile functions
     ppo_step_jit = nnx.jit(ppo_step, static_argnums=(0, 2, 3, 6, 7, 8, 9, 10, 11, 12, 13))
-    eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3, 5))
+    eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3, 5, 6))
     eval_rollout_render_jit = nnx.jit(
         rollout.eval_rollout_for_render_scan, static_argnums=(0, 2)
     )
@@ -128,6 +128,7 @@ def train_ppo(
             config.eval.max_episode_length,
             jax.random.key(config.seed),
             config.eval.logging_percentiles,
+            config.eval.logging_level,
         )
         if measure_throughput:
             jax.block_until_ready(eval_metrics)

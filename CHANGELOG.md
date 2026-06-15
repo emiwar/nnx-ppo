@@ -4,6 +4,56 @@ All notable changes to `nnx-ppo` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-06-15
+
+### Changed
+- **Breaking:** `LoggingLevel.TRAINING_ENV_METRICS` is split into
+  `LoggingLevel.ENV_METRICS` (the `env/*` subtree from `env_state.metrics`) and
+  `LoggingLevel.NETWORK_METRICS` (the `net/*` subtree from a network module's
+  `out.metrics`, e.g. entropy, KL, `mu`/`sigma`, forward-model MSE). The old
+  flag gated both at once and was misnamed (it included network metrics and
+  carried a `TRAINING_` prefix despite now also serving eval). Migrate
+  `TRAINING_ENV_METRICS` → `ENV_METRICS | NETWORK_METRICS`. Metric key names are
+  unchanged.
+- **Breaking:** `LoggingLevel.TRAIN_ROLLOUT_STATS` renamed to
+  `LoggingLevel.ROLLOUT_STATS` (the flags serve both training and eval).
+- `EvalConfig.logging_level` now defaults to `LoggingLevel.NONE` instead of
+  `BASIC`. Eval computes no losses, so the old `LOSSES`/`BASIC` default gated
+  nothing and only implied otherwise; eval honours `NETWORK_METRICS` /
+  `ENV_METRICS` and always emits the `eval/episode_reward/*` + `eval/lifespan/*`
+  headline. Behaviour-identical for the default.
+- **Breaking:** all `eval_rollout` metrics are now `eval/`-prefixed
+  (`eval/episode_reward/*`, `eval/lifespan/*`, `eval/net/*`, `eval/env/*`), so they
+  can never collide with training metrics when merged into one dict per
+  iteration. Throughput keys are the exception and stay grouped as
+  `throughput/{train,eval,video}_sps`. Update consumers reading
+  `episode_reward/mean` etc. to the `eval/`-prefixed names.
+
+### Added
+- `LoggingLevel.ROLLOUT_OBS` is now functional: it logs the full observation
+  pytree (`rollout_batch/obs/*`) during training/distillation. It is a debug aid
+  for small-obs envs and is **excluded from `LoggingLevel.ALL`** because it is
+  costly for large-obs envs — opt in explicitly.
+- Eval now honours `EvalConfig.logging_level`: `eval_rollout` logs `eval/net/*`
+  (under `NETWORK_METRICS`) and `eval/env/*` (under `ENV_METRICS`), accumulated
+  over the episode, masked by termination and normalised by per-env lifespan.
+- `eval/episode_reward/mean` (+`/std`) is an always-on eval headline — the total
+  episode return summed across reward keys, averaged over envs — emitted
+  regardless of `logging_level`/`logging_percentiles`. It doubles as the
+  "did an eval run?" sentinel and gives multi-reward (dict) envs a single
+  comparable scalar.
+
+### Fixed
+- Eval reward/lifespan keys now use the standard `<name>/<stat>` separator and
+  the `eval/` prefix. Previously `episode_reward_mean`/`episode_reward_std` (read
+  by several scripts) were **never emitted** — the real keys were
+  `episode_reward/mean` (slash) — and `lifespan_mean`/`lifespan_std` were the
+  lone underscore-separated outliers. Multi-reward envs now also get a single
+  `eval/episode_reward/mean` instead of only per-term subtrees.
+- `eval_rollout` no longer crashes for envs whose `reset` returns a non-float
+  `done`: the initial state's `done` is cast to float so it matches the dtype the
+  scan latches (previously only float-`done` envs worked).
+
 ## [0.2.1] — 2026-06-09
 
 ### Added

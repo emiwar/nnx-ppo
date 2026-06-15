@@ -35,10 +35,11 @@ def compute_metrics(
     metrics = {}
     for k, v in loss_metrics.items():
         _log_metric(metrics, k, v, percentile_levels)
-    if LoggingLevel.TRAINING_ENV_METRICS in logging_level:
-        for k, v in rollout_data.metrics.items():
-            _log_metric(metrics, k, v, percentile_levels)
-    if LoggingLevel.TRAIN_ROLLOUT_STATS in logging_level:
+    if LoggingLevel.ENV_METRICS in logging_level:
+        _log_metric(metrics, "env", rollout_data.metrics["env"], percentile_levels)
+    if LoggingLevel.NETWORK_METRICS in logging_level:
+        _log_metric(metrics, "net", rollout_data.metrics["net"], percentile_levels)
+    if LoggingLevel.ROLLOUT_STATS in logging_level:
         _log_metric(
             metrics, "rollout_batch/reward", rollout_data.rewards, percentile_levels
         )
@@ -51,7 +52,9 @@ def compute_metrics(
         metrics["rollout_batch/done_rate"] = rollout_data.done.mean()
         metrics["rollout_batch/truncation_rate"] = rollout_data.truncated.mean()
     if LoggingLevel.ROLLOUT_OBS in logging_level:
-        pass
+        _log_metric(
+            metrics, "rollout_batch/obs", rollout_data.obs, percentile_levels
+        )
     if LoggingLevel.ACTOR_EXTRA in logging_level:
         _log_metric(
             metrics,

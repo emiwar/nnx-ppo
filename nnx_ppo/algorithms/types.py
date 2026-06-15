@@ -129,22 +129,26 @@ class LoggingLevel(enum.Flag):
     LOSSES = enum.auto()
     CRITIC_EXTRA = enum.auto()
     ACTOR_EXTRA = enum.auto()
-    TRAIN_ROLLOUT_STATS = enum.auto()
+    ROLLOUT_STATS = enum.auto()
     ROLLOUT_OBS = enum.auto()
-    TRAINING_ENV_METRICS = enum.auto()
+    ENV_METRICS = enum.auto()
+    NETWORK_METRICS = enum.auto()
     GRAD_NORM = enum.auto()
     WEIGHTS = enum.auto()
     THROUGHPUT = enum.auto()
     BASIC = LOSSES
+    # ROLLOUT_OBS dumps the full observation pytree and is intentionally left
+    # out of ALL: it is a cheap debug aid for small-obs envs but prohibitively
+    # costly for large-obs ones, so it must be opted into explicitly.
     ALL = (
         LOSSES
         | ACTOR_EXTRA
         | CRITIC_EXTRA
-        | TRAIN_ROLLOUT_STATS
-        | TRAINING_ENV_METRICS
+        | ROLLOUT_STATS
+        | ENV_METRICS
+        | NETWORK_METRICS
         | GRAD_NORM
         | WEIGHTS
-        | ROLLOUT_OBS
         | THROUGHPUT
     )
     NONE = 0

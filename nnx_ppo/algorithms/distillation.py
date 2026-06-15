@@ -330,7 +330,7 @@ def distillation_step(
     for k, v in loss_metrics.items():
         _log_metric(metrics, k, v, logging_percentiles)
 
-    if LoggingLevel.TRAIN_ROLLOUT_STATS in logging_level:
+    if LoggingLevel.ROLLOUT_STATS in logging_level:
         _log_metric(
             metrics, "rollout_batch/reward", rollout_data.rewards, logging_percentiles
         )
@@ -343,9 +343,16 @@ def distillation_step(
         metrics["rollout_batch/done_rate"] = rollout_data.done.mean()
         metrics["rollout_batch/truncation_rate"] = rollout_data.truncated.mean()
 
-    if LoggingLevel.TRAINING_ENV_METRICS in logging_level:
-        for k, v in rollout_data.metrics.items():
-            _log_metric(metrics, k, v, logging_percentiles)
+    if LoggingLevel.ROLLOUT_OBS in logging_level:
+        _log_metric(metrics, "rollout_batch/obs", rollout_data.obs, logging_percentiles)
+
+    if LoggingLevel.ENV_METRICS in logging_level:
+        _log_metric(metrics, "env", rollout_data.metrics["env"], logging_percentiles)
+    if LoggingLevel.NETWORK_METRICS in logging_level:
+        # The student is the trained network here; keep its historical key.
+        _log_metric(
+            metrics, "student", rollout_data.metrics["student"], logging_percentiles
+        )
 
     metrics["total_steps"] = total_steps
 
@@ -491,7 +498,7 @@ def train_distillation(
     distillation_step_jit = nnx.jit(
         distillation_step, static_argnums=(0, 3, 4, 5, 6, 7, 8)
     )
-    eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3, 5))
+    eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3, 5, 6))
     eval_rollout_render_jit = nnx.jit(
         rollout.eval_rollout_for_render_scan, static_argnums=(0, 2)
     )
@@ -512,6 +519,7 @@ def train_distillation(
             config.eval.max_episode_length,
             jax.random.key(config.seed),
             config.eval.logging_percentiles,
+            config.eval.logging_level,
         )
         student.train()
         return dict(eval_metrics)

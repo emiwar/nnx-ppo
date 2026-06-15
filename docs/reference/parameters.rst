@@ -88,9 +88,13 @@ training.
 ``max_episode_length`` (``1000``)
     Episode cutoff for eval. Useful for envs that do not terminate on
     their own.
-``logging_level`` (``LoggingLevel.BASIC``)
-    Which metric families to include in eval results. ``BASIC`` (the
-    default) is equivalent to ``LOSSES``.
+``logging_level`` (``LoggingLevel.NONE``)
+    Which metric families to include in eval results. Eval computes no
+    losses, so only ``NETWORK_METRICS`` and ``ENV_METRICS`` are honoured
+    (they surface ``eval/net/*`` and ``eval/env/*``); the
+    ``eval/episode_reward/*`` and ``eval/lifespan/*`` headline is always
+    emitted regardless. The default ``NONE`` therefore still reports the
+    headline. See :doc:`logging`.
 ``logging_percentiles`` (``(0, 25, 50, 75, 100)``)
     Percentile reduction for eval metrics (per-env episode reward,
     episode length).

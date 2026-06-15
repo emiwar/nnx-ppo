@@ -38,7 +38,7 @@ class EvalConfig:
     every_steps: int = 50_000
     n_envs: int = 64
     max_episode_length: int = 1000
-    logging_level: LoggingLevel = LoggingLevel.BASIC
+    logging_level: LoggingLevel = LoggingLevel.NONE
     logging_percentiles: Optional[tuple[int, ...]] = (0, 25, 50, 75, 100)
 
 
