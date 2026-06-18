@@ -216,6 +216,71 @@ def eval_rollout(
             _log_metric(metrics, "eval/env", mean_accum["env"], logging_percentiles)
     return metrics
 
+def record_activations_rollout(
+    env: RLEnv,
+    networks: StatefulModule,
+    n_envs: int,
+    max_episode_length: int,
+    key: PRNGKeyArray,
+) -> tuple[Any, Shaped[Array, "time batch"]]:
+    """Roll out a deterministic episode and return per-step unit activations.
+
+    Convenience wrapper for activation analysis. ``networks`` is made recordable
+    with :func:`~nnx_ppo.networks.recording.with_recording` (the original is left
+    untouched) and run in eval mode, so action samplers are deterministic. Each
+    step's activations are stacked over time via the scan's ``ys`` return — this
+    is *not* ``eval_rollout``, which reduces metrics to scalars and so cannot
+    expose per-unit values.
+
+    Unlike :func:`eval_rollout`, environments are **not** reset on termination:
+    each env runs a single episode for ``max_episode_length`` steps. The returned
+    ``dones`` flag is the pre-step "already terminated" mask (matching
+    ``eval_rollout``'s accounting); callers should mask out steps where it is set.
+
+    Memory cost: ``max_episode_length × n_envs × Σ units`` is materialised on the
+    device. On a small GPU prefer a modest ``n_envs`` (e.g. a handful) and/or a
+    shorter ``max_episode_length``.
+
+    Returns:
+      activations: A pytree mirroring the network's container structure, each
+        leaf an array with leading dims ``[max_episode_length, n_envs, ...]``,
+        keyed by module path (e.g. ``action/0``, ``value/...``); the population
+        graph contributes one entry per population.
+      dones: ``[max_episode_length, n_envs]`` pre-step termination mask.
+    """
+    # Local import avoids a module-load cycle (recording imports networks which
+    # may import rollout) and keeps recording out of the training import path.
+    from nnx_ppo.networks.recording import with_recording, extract_activations
+
+    rec_net = with_recording(networks)
+    rec_net.eval()
+
+    env_keys = jax.random.split(key, n_envs)
+    env_states = jax.vmap(env.reset)(env_keys)
+    # Match eval_rollout: latch done as float so the scan carry dtype is stable.
+    env_states = env_states.replace(done=env_states.done.astype(float))
+    net_states = rec_net.initialize_state(n_envs)
+
+    def step(env, networks, carry):
+        env_state, network_state = carry
+        out = networks(network_state, env_state.obs)
+        next_env_state = jax.vmap(env.step)(env_state, out.output.actions)
+        next_env_state = next_env_state.replace(  # type: ignore[attr-defined]
+            done=jp.logical_or(next_env_state.done, env_state.done).astype(float)
+        )
+        ys = (extract_activations(out.metrics), env_state.done)
+        return (next_env_state, out.next_state), ys
+
+    step_scan = nnx.scan(
+        functools.partial(step, env),
+        in_axes=(nnx.StateAxes({...: nnx.Carry}), nnx.Carry),
+        out_axes=(nnx.Carry, 0),
+        length=max_episode_length,
+    )
+    _, (activations, dones) = step_scan(rec_net, (env_states, net_states))
+    return activations, dones
+
+
 class SlimData(NamedTuple):
     """Minimal mjx.Data fields needed for rendering."""
     qpos: Any

@@ -7,7 +7,12 @@ from flax import nnx
 import mujoco_playground
 
 from nnx_ppo.networks import factories
-from nnx_ppo.algorithms.rollout import unroll_env, eval_rollout
+from nnx_ppo.algorithms.rollout import (
+    unroll_env,
+    eval_rollout,
+    record_activations_rollout,
+)
+from nnx_ppo.networks.recording import with_recording, extract_activations
 from nnx_ppo.algorithms.types import LoggingLevel
 from nnx_ppo.test_dummies import dummy_counter
 from nnx_ppo.test_dummies import stateful_nets, parrot_env, move_to_center_env
@@ -283,3 +288,55 @@ class RolloutTest(absltest.TestCase):
             + float(metrics["eval/episode_reward/arm2/mean"]),
             places=4,
         )
+
+
+class RecordActivationsRolloutTest(absltest.TestCase):
+
+    def setUp(self):
+        self.env = mujoco_playground.registry.load(
+            "CartpoleSwingup", config_overrides={"impl": "jax"}
+        )
+        self.nets = factories.make_mlp_actor_critic(
+            self.env.observation_size,  # type: ignore[arg-type]
+            self.env.action_size,
+            actor_hidden_sizes=[16, 16],
+            critic_hidden_sizes=[16, 16],
+            rngs=nnx.Rngs(0, action_sampling=0),
+        )
+
+    def test_returns_stacked_activations_and_dones(self):
+        T, N = 6, 3
+        acts, dones = record_activations_rollout(
+            self.env, self.nets, n_envs=N, max_episode_length=T,
+            key=jax.random.key(0),
+        )
+        self.assertEqual(dones.shape, (T, N))
+        # Every recorded leaf has leading dims [T, N, ...].
+        leaves = jax.tree.leaves(acts)
+        self.assertGreater(len(leaves), 0)
+        for leaf in leaves:
+            self.assertEqual(leaf.shape[:2], (T, N))
+        # The original network was not mutated into a recording one.
+        self.assertNotIsInstance(self.nets[0], type(with_recording(self.nets)[0]))
+
+    def test_first_step_matches_manual_call(self):
+        T, N = 4, 2
+        key = jax.random.key(7)
+        acts, _ = record_activations_rollout(
+            self.env, self.nets, n_envs=N, max_episode_length=T, key=key,
+        )
+        # Reproduce the rollout's first step by hand (same reset keys, eval mode).
+        rec_net = with_recording(self.nets)
+        rec_net.eval()
+        env_states = jax.vmap(self.env.reset)(jax.random.split(key, N))
+        net_states = rec_net.initialize_state(N)
+        out = rec_net(net_states, env_states.obs)
+        manual = extract_activations(out.metrics)
+        # Loose tolerance: the rollout runs jit/scan-compiled while the manual
+        # call is eager, so matmuls differ by float noise (~1e-5).
+        match = jax.tree.all(
+            jax.tree.map(
+                lambda s, m: bool(jp.allclose(s[0], m, atol=1e-3)), acts, manual
+            )
+        )
+        self.assertTrue(match)

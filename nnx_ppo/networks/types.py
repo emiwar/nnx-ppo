@@ -10,6 +10,13 @@ from nnx_ppo.jax_dataclass import JaxDataclass
 
 ModuleState = PyTree  # Any JAX pytree: (), (h, c), dict, etc.
 
+# Reserved metrics key under which a recorded module stores its forward output
+# (its activation). Lives here, rather than in ``networks.recording``, so that
+# modules needing custom recording (e.g. the population graph) can reference it
+# without importing the recording module (which would be a circular import).
+# See :mod:`nnx_ppo.networks.recording`.
+ACTIVATION_KEY = "__activation__"
+
 
 @jax.tree_util.register_pytree_node_class
 @dataclasses.dataclass(frozen=True)

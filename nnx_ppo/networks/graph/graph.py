@@ -41,6 +41,7 @@ from nnx_ppo.networks.feedforward import Dense
 from nnx_ppo.networks.graph.connection import Connection
 from nnx_ppo.networks.graph.population import Population
 from nnx_ppo.networks.types import (
+    ACTIVATION_KEY,
     ModuleState,
     StatefulModule,
     StatefulModuleOutput,
@@ -69,6 +70,14 @@ class PopulationGraph(StatefulModule):
         self._pops: dict[str, Population] = {}
         self._conns: list[Connection] = []
         self._finalized = False
+        # Eval-only activation recording. When True, ``__call__`` emits every
+        # population's post-activation output into its metrics under
+        # ``ACTIVATION_KEY``. Enabled by
+        # :func:`nnx_ppo.networks.recording.with_recording`; off by default so
+        # the forward pass and training are unaffected. The graph drops its
+        # children's metrics and its populations are not sub-modules, so it
+        # cannot be leaf-wrapped like other modules.
+        self.record_activations = False
         # Filled in by finalize().
         self._topo_order: tuple[str, ...] = ()
         self._incoming: dict[str, tuple[int, ...]] = {}
@@ -389,6 +398,12 @@ class PopulationGraph(StatefulModule):
             output_key: current_outputs[pop_name]
             for output_key, pop_name in self._output_pops
         }
+
+        if self.record_activations:
+            # The interesting units are the internal populations, which are not
+            # sub-modules and so cannot be reached by leaf-wrapping. Emit them
+            # all on the recording channel; ``extract_activations`` picks them up.
+            metrics = {ACTIVATION_KEY: dict(current_outputs)}
 
         new_state = {
             "populations": new_pop_state,

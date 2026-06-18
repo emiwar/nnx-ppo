@@ -66,6 +66,7 @@ Start with :doc:`tutorials/01_quickstart` if you just want to start training.
    reference/utils
    reference/delay_and_normalizer
    reference/ppo_adapter
+   reference/recording
 
 .. toctree::
    :maxdepth: 2

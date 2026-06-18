@@ -440,3 +440,23 @@ nnx_ppo/
 Test status at checkpoint: 79 tests pass (72 networks + 7 adapter + 44 algorithms = 123 total
 including the existing algorithms tests, all green). Zero regressions in any pre-existing
 test.
+
+---
+
+## TODO: comprehensive layer-naming review
+
+`Sequential` keys its layers (and their state and `metrics`) by **positional
+integer index**, while `Parallel` / `Concat` / `PPOAdapter` use stable string
+keys. The positional scheme is fragile: inserting or reordering a layer shifts
+every downstream index, which silently changes:
+
+- **checkpoint paths** (breaking restore against an older checkpoint),
+- **logged metric names** (`net/0/...` → `net/1/...`),
+- **activation-recording keys** (see `networks/recording.py` and
+  `docs/reference/recording.rst`).
+
+Recording was deliberately built to inherit the *current* keying so it stays
+consistent with checkpointing/logging. A future effort should review naming
+holistically — e.g. allow optional names for `Sequential` layers (falling back
+to index) — so all three concerns share stable, human-readable keys. This is
+intentionally out of scope for the recording feature.

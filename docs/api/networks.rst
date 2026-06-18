@@ -102,3 +102,11 @@ Factory Functions
 .. automodule:: nnx_ppo.networks.factories
    :members:
    :show-inheritance:
+
+Activation Recording
+--------------------
+
+.. automodule:: nnx_ppo.networks.recording
+   :members:
+   :special-members: __call__, __init__
+   :show-inheritance:

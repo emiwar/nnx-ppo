@@ -4,7 +4,7 @@ All notable changes to `nnx-ppo` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] — 2026-06-15
+## [0.3.0] — Unreleased
 
 ### Changed
 - **Breaking:** `LoggingLevel.TRAINING_ENV_METRICS` is split into
@@ -30,6 +30,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `episode_reward/mean` etc. to the `eval/`-prefixed names.
 
 ### Added
+- Activation recording (`nnx_ppo.networks.recording`): an eval/analysis-only
+  utility for capturing per-unit activations. `with_recording(net)` returns a
+  separate copy of a network (the original is untouched) in which every leaf
+  module is wrapped in a `Recorder` that injects the module's forward `output`
+  into its `metrics` under the reserved key `ACTIVATION_KEY`; the activation then
+  rides the existing `metrics` channel to the top-level call.
+  `extract_activations(out.metrics)` pulls them back out, keyed by each module's
+  structural path. No per-module code is required, and recording is "off" by
+  absence — the unwrapped network is unchanged.
+- `PopulationGraph` gains a `record_activations` flag (off by default, enabled by
+  `with_recording`): when set it emits every population's post-activation output
+  under `ACTIVATION_KEY`. The graph is a special case because its units are
+  internal populations (not sub-modules) and it drops its children's metrics.
+- `record_activations_rollout(env, networks, n_envs, max_episode_length, key)` in
+  `nnx_ppo.algorithms.rollout`: a convenience deterministic rollout that stacks
+  per-step activations into `[max_episode_length, n_envs, ...]` arrays (plus the
+  pre-step termination mask). Note: `eval_rollout` reduces metrics to scalars and
+  is *not* usable for per-unit activations.
 - `LoggingLevel.ROLLOUT_OBS` is now functional: it logs the full observation
   pytree (`rollout_batch/obs/*`) during training/distillation. It is a debug aid
   for small-obs envs and is **excluded from `LoggingLevel.ALL`** because it is
