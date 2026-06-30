@@ -3,7 +3,7 @@ name = "nnx-ppo"
 version = "0.2.1"
 description = "PPO for stateful/recurrent networks in JAX and flax.nnx."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 authors = [
