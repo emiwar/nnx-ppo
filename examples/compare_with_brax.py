@@ -59,7 +59,7 @@ config = TrainConfig(
         every_steps=ppo_params.num_timesteps // ppo_params.num_evals,
         n_envs=256,
         max_episode_length=ppo_params.episode_length,
-        logging_percentiles=None,  # emit episode_reward/mean + /std (brax-style)
+        logging_percentiles=None,  # emit eval/episode_reward/mean + /std (brax-style)
     ),
     seed=SEED,
 )
@@ -82,14 +82,14 @@ nets = make_mlp_actor_critic(
 
 def log_fn(metrics: dict, steps: int) -> None:
     # train_ppo merges eval metrics into the per-step metrics dict only on
-    # the steps an eval runs. Use the presence of `episode_reward/mean` as
+    # the steps an eval runs. Use the presence of `eval/episode_reward/mean` as
     # the signal that this step carried an eval result.
-    if "episode_reward/mean" not in metrics:
+    if "eval/episode_reward/mean" not in metrics:
         return
     times.append(datetime.now())
     x_data.append(steps)
-    y_data.append(metrics["episode_reward/mean"])
-    y_dataerr.append(metrics["episode_reward/std"])
+    y_data.append(metrics["eval/episode_reward/mean"])
+    y_dataerr.append(metrics["eval/episode_reward/std"])
     print(f"{times[-1]} ({steps}): {y_data[-1]}")
 
 

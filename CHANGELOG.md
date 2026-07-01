@@ -4,7 +4,7 @@ All notable changes to `nnx-ppo` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] — Unreleased
+## [0.3.0] — 2026-07-01
 
 ### Changed
 - **Breaking:** `LoggingLevel.TRAINING_ENV_METRICS` is split into

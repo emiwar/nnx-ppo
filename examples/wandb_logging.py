@@ -14,27 +14,11 @@ from nnx_ppo.algorithms.config import TrainConfig, PPOConfig, EvalConfig, VideoC
 from nnx_ppo.algorithms.callbacks import wandb_video_fn
 
 from nnx_ppo.wrappers import episode_wrapper
-import nnx_ppo.test_dummies.parrot_env
-import nnx_ppo.test_dummies.move_to_center_env
-import nnx_ppo.test_dummies.move_from_center_env
 
 SEED = 40
 env_name = "CartpoleBalance"
 
-# Setup environment
-if env_name == "ParrotEnv":
-    env = nnx_ppo.test_dummies.parrot_env.ParrotEnv(reward_falloff=1.0)
-elif env_name == "MoveToCenterEnv":
-    env = nnx_ppo.test_dummies.move_to_center_env.MoveToCenterEnv(
-        reward_falloff=1.0, border_radius=10.0
-    )
-elif env_name == "MoveFromCenterEnv":
-    env = nnx_ppo.test_dummies.move_from_center_env.MoveFromCenterEnv(
-        border_radius=10.0
-    )
-else:
-    env = mujoco_playground.registry.load(env_name)
-
+env = mujoco_playground.registry.load(env_name)
 train_env = episode_wrapper.EpisodeWrapper(env, 1000)
 eval_env = env
 
@@ -53,29 +37,30 @@ nets = make_mlp_actor_critic(
     std_scale=1.0,
 )
 
-# Setup config using new dataclass API
+#Training config
 config = TrainConfig(
     ppo=PPOConfig(
         n_envs=1024,
         rollout_length=30,
-        total_steps=10_000 * 1024 * 30,  # ~300M steps
+        total_steps=60_000_000,
         discounting_factor=0.99,
         normalize_advantages=True,
         n_epochs=4,
         n_minibatches=4,
-        logging_level=LoggingLevel.BASIC,
+        logging_level=LoggingLevel.BASIC | LoggingLevel.THROUGHPUT,
         logging_percentiles=(0, 25, 50, 75, 100),
     ),
     eval=EvalConfig(
         enabled=True,
-        every_steps=50 * 1024 * 30,  # Every ~1.5M steps
+        every_steps=2_500_000,
         n_envs=64,
         max_episode_length=1000,
+        logging_level=LoggingLevel.THROUGHPUT,
         logging_percentiles=(0, 25, 50, 75, 100),
     ),
     video=VideoConfig(
         enabled=True,
-        every_steps=500 * 1024 * 30,  # Every ~15M steps
+        every_steps=5_000_000,
         episode_length=1000,
         render_kwargs={"height": 240, "width": 320},
     ),
@@ -95,7 +80,7 @@ wandb.init(
     },
     name=exp_name,
     tags=(env_name,),
-    notes="Example training of CartpoleBalance.",
+    notes="Testing nnx-ppo.",
 )
 
 # Train with wandb callbacks
@@ -111,4 +96,6 @@ result = ppo.train_ppo(
 print(
     f"Training complete: {result.total_steps} steps, {result.total_iterations} iterations"
 )
-print(f"Final eval reward: {result.eval_history[-1].get('episode_reward_mean', 'N/A')}")
+print(
+    f"Final eval reward: {result.eval_history[-1].get('eval/episode_reward/mean', 'N/A')}"
+)
