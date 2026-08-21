@@ -1,9 +1,9 @@
-from absl.testing import absltest
+from absl.testing import absltest, parameterized
 import jax
 import jax.numpy as jp
 from flax import nnx
 
-from nnx_ppo.networks.recurrent import LSTM
+from nnx_ppo.networks.recurrent import GRU, LSTM, SimpleRNN
 from nnx_ppo.networks.feedforward import Dense
 from nnx_ppo.networks.factories import make_mlp
 from nnx_ppo.networks.adapter import PPOAdapter
@@ -341,6 +341,344 @@ class LSTMTest(absltest.TestCase):
         params = nnx.state(new_state.networks, nnx.Param)
         for leaf in jax.tree.leaves(params):
             self.assertFalse(jp.any(jp.isnan(leaf)))
+
+
+#: Every concrete ``RecurrentCell`` subclass, with the number of slots in its
+#: carry. Anything added to ``recurrent.py`` belongs here so it inherits the
+#: whole shared contract suite below.
+ALL_CELLS = (
+    ("lstm", LSTM, 2),
+    ("gru", GRU, 1),
+    ("simple_rnn", SimpleRNN, 1),
+)
+
+
+def _build_recurrent_actor_critic(cell_cls, obs_size, hidden_size, action_size, rngs):
+    """Actor with one recurrent layer, feedforward critic, tanh-normal sampler."""
+    actor = Sequential(
+        [
+            Dense(obs_size, hidden_size, rngs, activation=nnx.relu),
+            cell_cls(in_features=hidden_size, hidden_features=hidden_size, rngs=rngs),
+            Dense(hidden_size, action_size * 2, rngs, activation=None),
+        ]
+    )
+    critic = Sequential(
+        [
+            Dense(obs_size, hidden_size, rngs, activation=nnx.relu),
+            Dense(hidden_size, 1, rngs, activation=None),
+        ]
+    )
+    sampler = NormalTanhSampler(rngs, entropy_weight=1e-3)
+    return _make_actor_critic(actor, critic, sampler)
+
+
+class RecurrentCellContractTest(parameterized.TestCase):
+    """The ``StatefulModule`` carry contract, asserted for every cell class."""
+
+    @parameterized.named_parameters(*ALL_CELLS)
+    def test_carry_arity_and_shapes(self, cls, n_slots):
+        """A one-slot carry is a bare array; a multi-slot carry is a tuple."""
+        cell = cls(in_features=16, hidden_features=32, rngs=nnx.Rngs(42))
+        state = cell.initialize_state(batch_size=4)
+        leaves = jax.tree.leaves(state)
+        self.assertLen(leaves, n_slots)
+        self.assertLen(cell.carry_names, n_slots)
+        for leaf in leaves:
+            self.assertEqual(leaf.shape, (4, 32))
+        if n_slots == 1:
+            # Not a length-1 tuple -- flax's single-slot cells take a bare array.
+            self.assertNotIsInstance(state, tuple)
+        else:
+            self.assertIsInstance(state, tuple)
+
+    @parameterized.named_parameters(*ALL_CELLS)
+    def test_output_shape(self, cls, n_slots):
+        del n_slots
+        cell = cls(in_features=16, hidden_features=32, rngs=nnx.Rngs(42))
+        out = cell(cell.initialize_state(4), jp.ones((4, 16)))
+        self.assertEqual(out.output.shape, (4, 32))
+        self.assertEqual(out.regularization_loss.shape, (4,))
+
+    @parameterized.named_parameters(*ALL_CELLS)
+    def test_initial_state_is_zeros(self, cls, n_slots):
+        del n_slots
+        cell = cls(in_features=16, hidden_features=32, rngs=nnx.Rngs(42))
+        for leaf in jax.tree.leaves(cell.initialize_state(4)):
+            self.assertTrue(jp.allclose(leaf, jp.zeros_like(leaf)))
+
+    @parameterized.named_parameters(*ALL_CELLS)
+    def test_no_regularization_loss(self, cls, n_slots):
+        del n_slots
+        cell = cls(in_features=16, hidden_features=32, rngs=nnx.Rngs(42))
+        out = cell(cell.initialize_state(4), jp.ones((4, 16)))
+        self.assertTrue(jp.allclose(out.regularization_loss, jp.zeros(4)))
+
+    @parameterized.named_parameters(*ALL_CELLS)
+    def test_state_updates_through_timesteps(self, cls, n_slots):
+        del n_slots
+        cell = cls(in_features=16, hidden_features=32, rngs=nnx.Rngs(42))
+        state = cell.initialize_state(4)
+        out = cell(state, jp.ones((4, 16)))
+        for new, old in zip(jax.tree.leaves(out.next_state), jax.tree.leaves(state)):
+            self.assertFalse(jp.allclose(new, old))
+
+    @parameterized.named_parameters(*ALL_CELLS)
+    def test_deterministic_given_state(self, cls, n_slots):
+        del n_slots
+        cell = cls(in_features=16, hidden_features=32, rngs=nnx.Rngs(42))
+        state = cell.initialize_state(4)
+        x = jp.ones((4, 16))
+        a, b = cell(state, x), cell(state, x)
+        self.assertTrue(jp.allclose(a.output, b.output))
+        for la, lb in zip(jax.tree.leaves(a.next_state), jax.tree.leaves(b.next_state)):
+            self.assertTrue(jp.allclose(la, lb))
+
+    @parameterized.named_parameters(*ALL_CELLS)
+    def test_reset_state_returns_zeros_and_keeps_structure(self, cls, n_slots):
+        del n_slots
+        cell = cls(in_features=16, hidden_features=32, rngs=nnx.Rngs(42))
+        state = cell.initialize_state(4)
+        for _ in range(3):
+            state = cell(state, jp.ones((4, 16))).next_state
+        reset = cell.reset_state(state)
+        self.assertEqual(jax.tree.structure(reset), jax.tree.structure(state))
+        for leaf in jax.tree.leaves(reset):
+            self.assertTrue(jp.allclose(leaf, jp.zeros_like(leaf)))
+
+    @parameterized.named_parameters(*ALL_CELLS)
+    def test_reset_state_under_vmap_on_single_env_slice(self, cls, n_slots):
+        """``reset_state`` must work batched *and* per-env.
+
+        ``rollout.unroll_env`` calls it on the whole batch and selects with
+        ``tree_where``, while ``ppo_loss`` calls it under
+        ``vmap(cond(done, reset_state, id))`` — i.e. on a single-env slice with no
+        leading batch axis. Both paths must agree.
+        """
+        del n_slots
+        cell = cls(in_features=16, hidden_features=32, rngs=nnx.Rngs(42))
+        state = cell(cell.initialize_state(4), jp.ones((4, 16))).next_state
+
+        batched = cell.reset_state(state)
+        per_env = jax.vmap(cell.reset_state)(state)
+
+        self.assertEqual(jax.tree.structure(per_env), jax.tree.structure(batched))
+        for a, b in zip(jax.tree.leaves(per_env), jax.tree.leaves(batched)):
+            self.assertEqual(a.shape, b.shape)
+            self.assertTrue(jp.allclose(a, b))
+
+    @parameterized.named_parameters(*ALL_CELLS)
+    def test_trainable_initial_state_params(self, cls, n_slots):
+        del n_slots
+        cell = cls(
+            in_features=16,
+            hidden_features=32,
+            rngs=nnx.Rngs(42),
+            trainable_initial_state=True,
+        )
+        self.assertTrue(cell.trainable_initial_state)
+        for name in cell.carry_names:
+            param = getattr(cell, f"initial_{name}")
+            self.assertIsInstance(param, nnx.Param)
+            self.assertEqual(param[...].shape, (32,))
+
+    @parameterized.named_parameters(*ALL_CELLS)
+    def test_trainable_initial_state_broadcasts_and_resets(self, cls, n_slots):
+        del n_slots
+        cell = cls(
+            in_features=16,
+            hidden_features=32,
+            rngs=nnx.Rngs(42),
+            trainable_initial_state=True,
+        )
+        # A distinct value per slot, so a slot mix-up would show up.
+        expected = []
+        for i, name in enumerate(cell.carry_names):
+            value = jp.ones(32) * (0.5 + 0.1 * i)
+            getattr(cell, f"initial_{name}")[...] = value
+            expected.append(value)
+
+        state = cell.initialize_state(4)
+        for leaf, value in zip(jax.tree.leaves(state), expected):
+            self.assertEqual(leaf.shape, (4, 32))
+            self.assertTrue(jp.allclose(leaf, jp.broadcast_to(value, (4, 32))))
+
+        for _ in range(3):
+            state = cell(state, jp.ones((4, 16))).next_state
+        for leaf, value in zip(jax.tree.leaves(cell.reset_state(state)), expected):
+            self.assertTrue(jp.allclose(leaf, jp.broadcast_to(value, (4, 32))))
+
+    @parameterized.named_parameters(*ALL_CELLS)
+    def test_trainable_initial_state_receives_gradient(self, cls, n_slots):
+        """``reset_state`` runs inside the loss-replay scan, so these must train."""
+        del n_slots
+        cell = cls(
+            in_features=16,
+            hidden_features=32,
+            rngs=nnx.Rngs(42),
+            trainable_initial_state=True,
+        )
+
+        def loss(module):
+            state = module.reset_state(module.initialize_state(4))
+            return jp.sum(module(state, jp.ones((4, 16))).output ** 2)
+
+        grads = nnx.grad(loss)(cell)
+        flat, _ = jax.tree_util.tree_flatten_with_path(nnx.state(grads, nnx.Param))
+        initial_grads = [
+            leaf
+            for path, leaf in flat
+            if any("initial_" in str(getattr(k, "key", k)) for k in path)
+        ]
+        self.assertLen(initial_grads, len(cell.carry_names))
+        for g in initial_grads:
+            self.assertTrue(jp.any(g != 0.0))
+
+    @parameterized.named_parameters(*ALL_CELLS)
+    def test_sequential_integration(self, cls, n_slots):
+        del n_slots
+        rngs = nnx.Rngs(42)
+        seq = Sequential(
+            [
+                make_mlp([16, 24], rngs),
+                cls(in_features=24, hidden_features=32, rngs=rngs),
+                make_mlp([32, 8], rngs),
+            ]
+        )
+        state = seq.initialize_state(4)
+        out = seq(state, jp.ones((4, 16)))
+        self.assertEqual(out.output.shape, (4, 8))
+
+    @parameterized.named_parameters(*ALL_CELLS)
+    def test_minibatch_slicing(self, cls, n_slots):
+        """Per-env carry slicing must be exact -- ``ppo_step`` relies on it."""
+        del n_slots
+        cell = cls(in_features=16, hidden_features=32, rngs=nnx.Rngs(42))
+        state = cell(cell.initialize_state(8), jp.ones((8, 16))).next_state
+
+        x2 = jp.ones((8, 16)) * 2
+        full = cell(state, x2)
+        first = cell(jax.tree.map(lambda v: v[:4], state), x2[:4])
+        second = cell(jax.tree.map(lambda v: v[4:], state), x2[4:])
+
+        self.assertTrue(jp.allclose(full.output[:4], first.output))
+        self.assertTrue(jp.allclose(full.output[4:], second.output))
+
+    @parameterized.named_parameters(*ALL_CELLS)
+    def test_rollout_with_resets(self, cls, n_slots):
+        """Mid-rollout episode boundaries must not produce NaNs."""
+        del n_slots
+        rngs = nnx.Rngs(42)
+        obs_size, hidden_size, action_size, batch_size = 16, 32, 4, 8
+
+        env = MockEnv(obs_size, action_size, max_steps=5)
+        networks = _build_recurrent_actor_critic(
+            cls, obs_size, hidden_size, action_size, rngs
+        )
+
+        env_states = jax.vmap(env.reset)(jax.random.split(jax.random.key(0), batch_size))
+        network_states = networks.initialize_state(batch_size)
+
+        _, _, rollout_data = rollout.unroll_env(
+            env, env_states, networks, network_states, 20, jax.random.key(1)
+        )
+
+        self.assertGreater(
+            float(jp.sum(rollout_data.done)), 0, "Expected at least one reset to occur"
+        )
+        self.assertFalse(jp.any(jp.isnan(rollout_data.network_output.actions)))
+        self.assertFalse(jp.any(jp.isnan(rollout_data.network_output.value_estimates)))
+        self.assertFalse(jp.any(jp.isnan(rollout_data.network_output.loglikelihoods)))
+
+    @parameterized.named_parameters(*ALL_CELLS)
+    def test_ppo_step(self, cls, n_slots):
+        """A full PPO step, i.e. BPTT through the carry, stays finite."""
+        del n_slots
+        rngs = nnx.Rngs(42)
+        obs_size, hidden_size, action_size, n_envs = 16, 32, 4, 8
+
+        env = MockEnv(obs_size, action_size, max_steps=5)
+        networks = _build_recurrent_actor_critic(
+            cls, obs_size, hidden_size, action_size, rngs
+        )
+        training_state = new_training_state(
+            env, networks, n_envs, seed=42, learning_rate=1e-4, gradient_clipping=1.0
+        )
+
+        new_state, metrics = ppo_step(
+            env,
+            training_state,
+            n_envs=n_envs,
+            rollout_length=20,
+            gae_lambda=0.95,
+            discounting_factor=0.99,
+            clip_range=0.2,
+            normalize_advantages=True,
+            combine_advantages=False,
+            n_epochs=2,
+            n_minibatches=2,
+            logging_level=LoggingLevel.LOSSES,
+        )
+
+        for key in ("losses/actor/mean", "losses/critic/mean",
+                    "losses/regularization/mean"):
+            self.assertFalse(jp.any(jp.isnan(metrics[key])), key)
+        for leaf in jax.tree.leaves(nnx.state(new_state.networks, nnx.Param)):
+            self.assertFalse(jp.any(jp.isnan(leaf)))
+
+
+class GRUTest(absltest.TestCase):
+
+    def test_wraps_gru_cell(self):
+        gru = GRU(in_features=16, hidden_features=32, rngs=nnx.Rngs(42))
+        self.assertIsInstance(gru.cell, nnx.GRUCell)
+        self.assertEqual(gru.in_features, 16)
+        self.assertEqual(gru.hidden_features, 32)
+        self.assertFalse(gru.trainable_initial_state)
+
+    def test_fewer_params_than_lstm(self):
+        """A GRU has three gates' worth of weights against the LSTM's four."""
+        def n_params(module):
+            return sum(
+                leaf.size for leaf in jax.tree.leaves(nnx.state(module, nnx.Param))
+            )
+
+        gru = GRU(in_features=16, hidden_features=32, rngs=nnx.Rngs(42))
+        lstm = LSTM(in_features=16, hidden_features=32, rngs=nnx.Rngs(42))
+        self.assertLess(n_params(gru), n_params(lstm))
+
+
+class SimpleRNNTest(absltest.TestCase):
+
+    def test_wraps_simple_cell(self):
+        rnn = SimpleRNN(in_features=16, hidden_features=32, rngs=nnx.Rngs(42))
+        self.assertIsInstance(rnn.cell, nnx.SimpleCell)
+
+    def test_activation_fn_is_honoured(self):
+        """An Elman cell has no gates, so the activation is the whole nonlinearity."""
+        rnn = SimpleRNN(
+            in_features=16,
+            hidden_features=32,
+            rngs=nnx.Rngs(42),
+            activation_fn=nnx.relu,
+        )
+        out = rnn(rnn.initialize_state(4), jp.ones((4, 16)))
+        self.assertTrue(jp.all(out.output >= 0.0))
+
+    def test_residual_flag(self):
+        rnn = SimpleRNN(
+            in_features=16, hidden_features=32, rngs=nnx.Rngs(42), residual=True
+        )
+        self.assertTrue(rnn.cell.residual)
+
+    def test_fewer_params_than_gru(self):
+        def n_params(module):
+            return sum(
+                leaf.size for leaf in jax.tree.leaves(nnx.state(module, nnx.Param))
+            )
+
+        rnn = SimpleRNN(in_features=16, hidden_features=32, rngs=nnx.Rngs(42))
+        gru = GRU(in_features=16, hidden_features=32, rngs=nnx.Rngs(42))
+        self.assertLess(n_params(rnn), n_params(gru))
 
 
 if __name__ == "__main__":

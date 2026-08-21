@@ -118,7 +118,8 @@ When you can ignore this
 ------------------------
 
 If your module is not stochastic — :class:`Dense`, :class:`LSTM`,
-:class:`Concat`, anything that does no sampling inside
+:class:`GRU`, :class:`SimpleRNN`, :class:`Concat`, anything that does
+no sampling inside
 :meth:`__call__` — there is no RNG to manage and nothing to do.
 
 If your module's only randomness is in **parameter initialisation**

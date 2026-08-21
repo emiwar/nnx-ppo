@@ -4,6 +4,40 @@ All notable changes to `nnx-ppo` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `nnx_ppo.networks.recurrent.GRU`: a gated recurrent unit wrapping
+  `nnx.GRUCell`. Its carry is a single `[batch, hidden]` array — the GRU merges
+  the LSTM's cell and hidden state into one — so it costs about three quarters of
+  an `LSTM`'s parameters and half its carry.
+- `nnx_ppo.networks.recurrent.SimpleRNN`: a vanilla (Elman) RNN wrapping
+  `nnx.SimpleCell`, `h' = activation_fn(W x + U h + b)`. No gating, single-slot
+  carry, and an optional `residual` flag. Intended as the baseline you compare a
+  gated cell against, not as a policy you would ship.
+- `nnx_ppo.networks.recurrent.RecurrentCell`: the shared base class the three
+  recurrent layers are now built from. It implements the whole `StatefulModule`
+  carry contract — `__call__`, `initialize_state`, `reset_state`, and the
+  optional learned initial state — once, driven by a subclass's `carry_names`
+  declaration (one name per slot of the wrapped cell's carry, in the cell's own
+  order). Wrapping any other `nnx.RNNCellBase` is now a ~10-line subclass; see
+  its docstring.
+
+### Changed
+- `LSTM` is now a `RecurrentCell` subclass. Its public signature, forward
+  behaviour, carry structure and parameter paths (`cell/…`, `initial_h`,
+  `initial_c`) are unchanged, so existing checkpoints restore as before — this is
+  a refactor, not a behaviour change.
+
+### Fixed
+- `LSTM`'s carry ordering is now documented accurately. The carry is a two-tuple
+  in flax's order, which is `(c, h)` — cell state first (see
+  `nnx.LSTMCell.__call__`) — so the historically-named `initial_h` parameter in
+  fact seeds the *cell* state and `initial_c` the *hidden* state. Both are
+  zero-initialised and symmetric in the API, so this is a naming wart rather than
+  a behavioural bug, and the names are kept because renaming them would
+  invalidate existing checkpoints. Documentation only; no code change.
+
 ## [0.3.0] — 2026-07-01
 
 ### Changed

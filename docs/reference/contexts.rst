@@ -61,7 +61,8 @@ each child, and reassembles the emitted extras into a tree mirroring
 Leaf modules either:
 
 - ignore ``rollout_extras`` and emit ``None`` (most layers — Dense,
-  LSTM, Filter, Flattener, Scale, Splitter, Delay, VariationalBottleneck),
+  LSTM, GRU, SimpleRNN, Filter, Flattener, Scale, Splitter, Delay,
+  VariationalBottleneck),
 - or use it (Normalizer, ActionSampler).
 
 Sampler replay rule
@@ -115,7 +116,7 @@ Per-module behaviour table
    * - ``VariationalBottleneck`` / ``AR1VariationalBottleneck``
      - ignored — RNG is in carry state; reparameterised gradient
      - ``None``
-   * - everything else (``Dense``, ``LSTM``, containers, ``Delay``,
-       ``PopulationGraph``)
+   * - everything else (``Dense``, ``LSTM`` / ``GRU`` / ``SimpleRNN``,
+       containers, ``Delay``, ``PopulationGraph``)
      - threaded to children
      - ``None`` at leaves; assembled tree at containers
