@@ -626,6 +626,82 @@ class RecurrentCellContractTest(parameterized.TestCase):
             self.assertFalse(jp.any(jp.isnan(leaf)))
 
 
+class StackedRecurrentTest(absltest.TestCase):
+    """Multi-layer stacks. Each cell owns its carry, so widths may differ."""
+
+    def test_non_uniform_stack_forward(self):
+        rngs = nnx.Rngs(42)
+        stack = Sequential(
+            [LSTM(24, 16, rngs), GRU(16, 8, rngs), SimpleRNN(8, 12, rngs)]
+        )
+        state = stack.initialize_state(4)
+        # LSTM contributes two leaves, GRU and SimpleRNN one each.
+        self.assertEqual(
+            [leaf.shape for leaf in jax.tree.leaves(state)],
+            [(4, 16), (4, 16), (4, 8), (4, 12)],
+        )
+        out = stack(state, jp.ones((4, 24)))
+        self.assertEqual(out.output.shape, (4, 12))
+        self.assertEqual(
+            jax.tree.structure(out.next_state), jax.tree.structure(state)
+        )
+
+    def test_non_uniform_stack_resets(self):
+        rngs = nnx.Rngs(42)
+        stack = Sequential([LSTM(24, 16, rngs), GRU(16, 8, rngs)])
+        state = stack(stack.initialize_state(4), jp.ones((4, 24))).next_state
+        batched = stack.reset_state(state)
+        per_env = jax.vmap(stack.reset_state)(state)
+        for a, b in zip(jax.tree.leaves(per_env), jax.tree.leaves(batched)):
+            self.assertEqual(a.shape, b.shape)
+            self.assertTrue(jp.allclose(a, b))
+
+    def test_ppo_step_through_tapered_stack(self):
+        """BPTT must flow through a stack whose layers have different widths."""
+        rngs = nnx.Rngs(42)
+        obs_size, action_size, n_envs = 16, 4, 8
+        env = MockEnv(obs_size, action_size, max_steps=5)
+
+        actor = Sequential(
+            [
+                Dense(obs_size, 32, rngs, activation=nnx.relu),
+                LSTM(32, 24, rngs),
+                GRU(24, 12, rngs),
+                Dense(12, action_size * 2, rngs, activation=None),
+            ]
+        )
+        critic = Sequential(
+            [
+                Dense(obs_size, 32, rngs, activation=nnx.relu),
+                Dense(32, 1, rngs, activation=None),
+            ]
+        )
+        networks = _make_actor_critic(
+            actor, critic, NormalTanhSampler(rngs, entropy_weight=1e-3)
+        )
+        training_state = new_training_state(
+            env, networks, n_envs, seed=42, learning_rate=1e-4, gradient_clipping=1.0
+        )
+        new_state, metrics = ppo_step(
+            env,
+            training_state,
+            n_envs=n_envs,
+            rollout_length=20,
+            gae_lambda=0.95,
+            discounting_factor=0.99,
+            clip_range=0.2,
+            normalize_advantages=True,
+            combine_advantages=False,
+            n_epochs=2,
+            n_minibatches=2,
+            logging_level=LoggingLevel.LOSSES,
+        )
+        for key in ("losses/actor/mean", "losses/critic/mean"):
+            self.assertFalse(jp.any(jp.isnan(metrics[key])), key)
+        for leaf in jax.tree.leaves(nnx.state(new_state.networks, nnx.Param)):
+            self.assertFalse(jp.any(jp.isnan(leaf)))
+
+
 class GRUTest(absltest.TestCase):
 
     def test_wraps_gru_cell(self):
