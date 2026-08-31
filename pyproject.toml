@@ -32,7 +32,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pyright", "beartype", "absl-py", "playground>=0.2.0", "warp-lang<1.13"]
+dev = ["pytest", "pyright", "beartype", "absl-py", "playground>=0.2.0", "warp-lang<1.13", "mujoco-mjx<=3.9.0", "mujoco<=3.9.0"]
 examples = ["brax", "wandb", "playground>=0.2.0", "warp-lang<1.13"]
 docs = [
     "sphinx>=7.0",
