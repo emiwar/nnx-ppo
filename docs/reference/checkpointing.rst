@@ -37,6 +37,28 @@ Disk layout per checkpoint::
         optimizer/         # orbax: optimizer state
         metadata.pkl       # RngKey vars + TrainingState fields + step + config
 
+Each checkpoint is assembled in a ``.tmp-step_…`` directory and renamed
+into place once complete, so a process killed mid-write leaves nothing
+that looks like a finished checkpoint.
+:func:`~nnx_ppo.algorithms.checkpointing.latest_checkpoint` returns the
+newest complete one (and skips the temporaries).
+
+Light checkpoints
+-----------------
+
+For an environment with a large per-env state, ``env_states`` can be
+almost all of a checkpoint's size and write time. Pass
+``include_env_state=False`` to leave ``env_states`` and
+``network_states`` out::
+
+    make_checkpoint_fn("/tmp/my_run", config=config, include_env_state=False)
+
+What remains — params, non-param variables, optimizer state, RNGs and
+``steps_taken`` — is small and quick to write, which makes frequent
+checkpointing cheap and a save under a deadline safe. The trade is that
+resuming needs fresh env and carry states of its own (see below);
+anything that only loads weights is unaffected.
+
 Saving during training
 ----------------------
 
@@ -99,6 +121,62 @@ itself is not reconstructed from disk.
 The returned dict also contains ``ckpt["step"]`` (int) and
 ``ckpt["config"]`` (the persisted :class:`TrainConfig`, or ``None``
 if none was stored).
+
+Resuming from a light checkpoint
+--------------------------------
+
+A light checkpoint (``include_env_state=False``) restores with
+``env_states`` and ``network_states`` set to ``None``, so supply your
+own before passing it to :func:`train_ppo`::
+
+    import dataclasses, jax
+    from flax import nnx
+
+    ckpt = load_checkpoint(step_dir, template.networks, template.optimizer)
+    resumed = dataclasses.replace(
+        ckpt["training_state"],
+        env_states=nnx.vmap(env.reset)(jax.random.split(key, n_envs)),
+        network_states=nets.initialize_state(n_envs),
+    )
+
+Because the number of envs is no longer baked into the checkpoint, this
+is also how you resume at a different ``n_envs``. Beware that resetting
+every env at once *synchronises* them: if episodes have a similar
+length, they then all begin and end together, which is not the
+distribution steady-state training sees. Where that matters, reset each
+env at a randomly chosen point in the episode instead of at the start.
+
+Resuming an interrupted run
+---------------------------
+
+Two more arguments let a run be stopped and restarted, e.g. under a job
+scheduler that may kill it at any time:
+
+- ``stop_fn(steps) -> bool`` is called once per iteration; when it
+  returns True the loop writes a checkpoint (unless one was just
+  written at that step) and returns. Point it at a flag set by a
+  ``SIGTERM`` handler and an interrupted run saves at the next iteration
+  boundary instead of losing everything since the last scheduled
+  checkpoint. To tell a stop from a completion, compare
+  ``TrainResult.total_steps`` against the total you asked for: the loop
+  exits on its own only once ``steps_taken`` has reached it.
+- ``initial_eval=False`` skips the eval, video and checkpoint that
+  otherwise run before the first iteration. Pass it when resuming: that
+  work was already done at the step being restored, and it also keeps
+  the interval trackers from firing again immediately after it.
+
+::
+
+    watcher = ...   # sets .triggered on SIGTERM
+    result = ppo.train_ppo(
+        env, nets, config,
+        initial_state=resumed,
+        checkpoint_fn=make_checkpoint_fn(run_dir, config,
+                                         include_env_state=False),
+        stop_fn=lambda steps: watcher.triggered,
+        initial_eval=False,
+    )
+    interrupted = result.total_steps < config.ppo.total_steps
 
 Loading for inference only
 --------------------------

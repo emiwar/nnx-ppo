@@ -50,6 +50,8 @@ def train_ppo(
     checkpoint_fn: Optional[Callable[[TrainingState, int], None]] = None,
     eval_env: Optional[RLEnv] = None,
     initial_state: Optional[TrainingState] = None,
+    stop_fn: Optional[Callable[[int], bool]] = None,
+    initial_eval: bool = True,
 ) -> TrainResult:
     """Train a PPO agent.
 
@@ -69,6 +71,14 @@ def train_ppo(
         eval_env: Environment for evaluation rollouts. If None, uses env.
         initial_state: Resume training from an existing TrainingState.
                        If None, creates a new TrainingState.
+        stop_fn: Called with the step count once per iteration; when it returns
+                 True the loop writes a checkpoint (if checkpoint_fn is set and
+                 one was not just written at this step) and returns.
+        initial_eval: Whether to run the eval/video/checkpoint block before the
+                      first iteration. Pass False when resuming: that work was
+                      already done at the step being restored, and skipping it
+                      also keeps the interval trackers from firing again on the
+                      first iteration after it.
 
     Returns:
         TrainResult containing final TrainingState, metrics, and eval history.
@@ -110,9 +120,16 @@ def train_ppo(
 
     # Training loop state
     eval_history: list[dict[str, Any]] = []
-    last_eval_step = -config.eval.every_steps  # Ensure eval at step 0
-    last_video_step = -config.video.every_steps  # Ensure video at step 0
-    last_checkpoint_step = -config.checkpoint_every_steps  # Ensure checkpoint at step 0
+    steps = int(training_state.steps_taken)
+    if initial_eval:
+        last_eval_step = -config.eval.every_steps  # Ensure eval at step 0
+        last_video_step = -config.video.every_steps  # Ensure video at step 0
+        last_checkpoint_step = -config.checkpoint_every_steps  # Ensure checkpoint at step 0
+    else:
+        # Resuming: the intervals start *from* the resumed step. With the
+        # negative sentinels, the first iteration after it would trigger all
+        # three again.
+        last_eval_step = last_video_step = last_checkpoint_step = steps
     metrics: dict[str, Any] = {}
     n_iterations = 0
     measure_throughput = LoggingLevel.THROUGHPUT in config.ppo.logging_level
@@ -167,24 +184,24 @@ def train_ppo(
             return {"throughput/video_sps": config.video.episode_length / elapsed}
         return {}
 
-    # Initial eval/video/checkpoint at step 0
-    steps = int(training_state.steps_taken)
-    if config.eval.enabled:
-        eval_metrics = run_eval(steps)
-        metrics.update(eval_metrics)
-        eval_history.append({"step": steps, **eval_metrics})
-        last_eval_step = steps
-    if config.video.enabled:
-        video_metrics = run_video(steps, n_iterations)
-        metrics.update(video_metrics)
-        last_video_step = steps
-    if checkpoint_fn is not None and _should_run(
-        steps, last_checkpoint_step, config.checkpoint_every_steps
-    ):
-        checkpoint_fn(training_state, steps)
-        last_checkpoint_step = steps
-    if log_fn is not None and metrics:
-        log_fn(metrics, steps)
+    # Initial eval/video/checkpoint at the starting step
+    if initial_eval:
+        if config.eval.enabled:
+            eval_metrics = run_eval(steps)
+            metrics.update(eval_metrics)
+            eval_history.append({"step": steps, **eval_metrics})
+            last_eval_step = steps
+        if config.video.enabled:
+            video_metrics = run_video(steps, n_iterations)
+            metrics.update(video_metrics)
+            last_video_step = steps
+        if checkpoint_fn is not None and _should_run(
+            steps, last_checkpoint_step, config.checkpoint_every_steps
+        ):
+            checkpoint_fn(training_state, steps)
+            last_checkpoint_step = steps
+        if log_fn is not None and metrics:
+            log_fn(metrics, steps)
 
     # Main training loop
     while int(training_state.steps_taken) < config.ppo.total_steps:
@@ -241,6 +258,14 @@ def train_ppo(
         # Logging
         if log_fn is not None:
             log_fn(metrics, steps)
+
+        # Early stop. Checked after the interval callbacks so a stop landing on
+        # the checkpoint grid does not write the same step twice.
+        if stop_fn is not None and stop_fn(steps):
+            if checkpoint_fn is not None and last_checkpoint_step != steps:
+                checkpoint_fn(training_state, steps)
+                last_checkpoint_step = steps
+            break
 
     # Return result
     return TrainResult(

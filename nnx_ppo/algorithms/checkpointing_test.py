@@ -1,6 +1,8 @@
 """Tests for checkpointing utilities."""
 
+import dataclasses
 import os
+import pickle
 import shutil
 import tempfile
 
@@ -16,7 +18,11 @@ from nnx_ppo.networks.feedforward import Dense
 from nnx_ppo.networks.sampling_layers import NormalTanhSampler
 from nnx_ppo.networks.variational import AR1VariationalBottleneck
 from nnx_ppo.algorithms import ppo
-from nnx_ppo.algorithms.checkpointing import make_checkpoint_fn, load_checkpoint
+from nnx_ppo.algorithms.checkpointing import (
+    latest_checkpoint,
+    load_checkpoint,
+    make_checkpoint_fn,
+)
 from nnx_ppo.algorithms.config import PPOConfig, EvalConfig, TrainConfig
 from nnx_ppo.algorithms.types import TrainingState
 
@@ -496,6 +502,171 @@ class CheckpointFnInvocationTest(absltest.TestCase):
             checkpoint_fn=lambda s, t: calls.append(t),
         )
         self.assertEqual(calls, [0])
+
+
+class LightCheckpointTest(absltest.TestCase):
+    """``include_env_state=False``: everything needed to resume except the
+    environment and carry states, which a resuming caller supplies itself."""
+
+    def setUp(self):
+        self.env = mujoco_playground.registry.load(
+            "CartpoleBalance", config_overrides={"impl": "jax"}
+        )
+        self.nets = _make_nets(self.env, seed=17)
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir, True)
+
+    def _state(self, n_envs=4, seed=42):
+        return ppo.new_training_state(self.env, self.nets, n_envs, seed)
+
+    def test_env_and_network_states_omitted(self):
+        state = self._state()
+        make_checkpoint_fn(self.tmpdir, include_env_state=False)(state, step=700)
+
+        with open(os.path.join(self.tmpdir, "step_0000000700", "metadata.pkl"), "rb") as f:
+            meta = pickle.load(f)
+        self.assertIsNone(meta["env_states"])
+        self.assertIsNone(meta["network_states"])
+        # The small fields a resume cannot reconstruct are still there.
+        self.assertIsNotNone(meta["networks_rng_key_state"])
+        self.assertIsNotNone(meta["rng_key"])
+        self.assertEqual(meta["step"], 700)
+
+    def test_much_smaller_than_full_checkpoint(self):
+        state = self._state(n_envs=16)
+        make_checkpoint_fn(os.path.join(self.tmpdir, "full"))(state, step=1)
+        make_checkpoint_fn(
+            os.path.join(self.tmpdir, "light"), include_env_state=False
+        )(state, step=1)
+
+        def size(kind):
+            path = os.path.join(self.tmpdir, kind, "step_0000000001", "metadata.pkl")
+            return os.path.getsize(path)
+
+        self.assertLess(size("light"), size("full"))
+
+    def test_weights_optimizer_and_steps_preserved(self):
+        state = self._state()
+        state = dataclasses.replace(state, steps_taken=jp.array(4242.0))
+        make_checkpoint_fn(self.tmpdir, include_env_state=False)(state, step=4242)
+
+        fresh_nets = _make_nets(self.env, seed=99)
+        template = ppo.new_training_state(self.env, fresh_nets, 4, 99)
+        ckpt = load_checkpoint(
+            os.path.join(self.tmpdir, "step_0000004242"),
+            template.networks,
+            template.optimizer,
+        )
+        loaded = ckpt["training_state"]
+
+        self.assertEqual(ckpt["step"], 4242)
+        self.assertEqual(int(loaded.steps_taken), 4242)
+        self.assertIsNone(loaded.env_states)
+        self.assertIsNone(loaded.network_states)
+
+        obs = jp.zeros((4, self.env.observation_size))
+        out_orig = state.networks(state.network_states, obs).output
+        out_loaded = loaded.networks(self.nets.initialize_state(4), obs).output
+        self.assertTrue(
+            jp.allclose(out_orig.value_estimates, out_loaded.value_estimates),
+            "Value estimates differ after light-checkpoint round-trip.",
+        )
+
+    def test_resumes_training_with_spliced_states(self):
+        """A light checkpoint plus fresh env/carry states is a valid initial_state."""
+        state = self._state()
+        make_checkpoint_fn(self.tmpdir, include_env_state=False)(state, step=0)
+
+        template = ppo.new_training_state(self.env, _make_nets(self.env, seed=99), 4, 99)
+        ckpt = load_checkpoint(
+            os.path.join(self.tmpdir, "step_0000000000"),
+            template.networks,
+            template.optimizer,
+        )
+        resumed = dataclasses.replace(
+            ckpt["training_state"],
+            env_states=template.env_states,
+            network_states=template.network_states,
+        )
+        config = TrainConfig(
+            ppo=PPOConfig(n_envs=4, rollout_length=5, total_steps=2 * 4 * 5),
+            eval=EvalConfig(enabled=False),
+        )
+        result = ppo.train_ppo(
+            self.env, ckpt["training_state"].networks, config,
+            initial_state=resumed, initial_eval=False,
+        )
+        self.assertGreaterEqual(result.total_steps, 2 * 4 * 5)
+
+
+class AtomicWriteTest(absltest.TestCase):
+
+    def setUp(self):
+        self.env = mujoco_playground.registry.load(
+            "CartpoleBalance", config_overrides={"impl": "jax"}
+        )
+        self.nets = _make_nets(self.env, seed=17)
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir, True)
+
+    def test_no_temp_directory_left_behind(self):
+        state = ppo.new_training_state(self.env, self.nets, 4, 42)
+        make_checkpoint_fn(self.tmpdir)(state, step=10)
+        leftovers = [d for d in os.listdir(self.tmpdir) if not d.startswith("step_")]
+        self.assertEqual(leftovers, [])
+
+    def test_rewriting_the_same_step_replaces_it(self):
+        """A resumed run checkpoints at the step it restored from."""
+        state = ppo.new_training_state(self.env, self.nets, 4, 42)
+        fn = make_checkpoint_fn(self.tmpdir)
+        fn(state, step=10)
+        fn(state, step=10)
+        self.assertEqual(os.listdir(self.tmpdir), ["step_0000000010"])
+        self.assertTrue(
+            os.path.isfile(
+                os.path.join(self.tmpdir, "step_0000000010", "metadata.pkl")
+            )
+        )
+
+
+class LatestCheckpointTest(absltest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir, True)
+
+    def test_missing_directory(self):
+        self.assertIsNone(latest_checkpoint(os.path.join(self.tmpdir, "nope")))
+
+    def test_empty_directory(self):
+        self.assertIsNone(latest_checkpoint(self.tmpdir))
+
+    def test_highest_step_wins(self):
+        for step in (0, 5000, 200, 1_000_000):
+            os.makedirs(os.path.join(self.tmpdir, f"step_{step:010d}"))
+        self.assertEqual(
+            latest_checkpoint(self.tmpdir),
+            os.path.join(self.tmpdir, "step_0001000000"),
+        )
+
+    def test_ignores_incomplete_write(self):
+        """A save killed mid-write must not shadow the last complete checkpoint."""
+        os.makedirs(os.path.join(self.tmpdir, "step_0000000100"))
+        os.makedirs(os.path.join(self.tmpdir, ".tmp-step_0000000200"))
+        os.makedirs(os.path.join(self.tmpdir, "config.json.d"))
+        self.assertEqual(
+            latest_checkpoint(self.tmpdir),
+            os.path.join(self.tmpdir, "step_0000000100"),
+        )
+
+    def test_ignores_files_and_unparsable_names(self):
+        os.makedirs(os.path.join(self.tmpdir, "step_0000000100"))
+        os.makedirs(os.path.join(self.tmpdir, "step_final"))
+        open(os.path.join(self.tmpdir, "step_0000009999"), "w").close()
+        self.assertEqual(
+            latest_checkpoint(self.tmpdir),
+            os.path.join(self.tmpdir, "step_0000000100"),
+        )
 
 
 if __name__ == "__main__":

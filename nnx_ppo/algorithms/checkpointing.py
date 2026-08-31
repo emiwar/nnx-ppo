@@ -2,6 +2,7 @@
 
 import os
 import pickle
+import shutil
 from collections.abc import Callable
 from typing import Any, Optional, Protocol, runtime_checkable
 
@@ -39,9 +40,18 @@ def _split_net_state(networks):
     return non_key_state, rng_key_state, abstract_non_key
 
 
+#: Prefix of the directory a checkpoint is assembled in before being renamed
+#: into place. Deliberately does not start with ``step_`` (and is hidden), so
+#: that neither :func:`latest_checkpoint` nor a caller's own ``step_*`` glob can
+#: mistake a half-written checkpoint for a complete one.
+_TMP_PREFIX = ".tmp-"
+
+
 def make_checkpoint_fn(
     directory: str,
     config: Optional[TrainConfig] = None,
+    *,
+    include_env_state: bool = True,
 ) -> CheckpointCallback:
     """Create a checkpoint callback that saves TrainingState to disk.
 
@@ -55,6 +65,10 @@ def make_checkpoint_fn(
       ``rng_key``, ``steps_taken``), the step count, and the optional
       TrainConfig.
 
+    The checkpoint is assembled in a temporary directory and renamed into place,
+    so a process killed mid-write leaves no directory that looks like a complete
+    checkpoint.
+
     To resume training from a checkpoint, use :func:`load_checkpoint`.
 
     Args:
@@ -62,6 +76,14 @@ def make_checkpoint_fn(
             created.
         config: Optional TrainConfig to store alongside each checkpoint, useful
             for reproducing training runs.
+        include_env_state: Whether to pickle ``env_states`` and
+            ``network_states``. They are what makes a checkpoint bit-exactly
+            resumable, and for environments with a large per-env state they can
+            dominate its size and write time. Pass False for a *light*
+            checkpoint (weights, optimizer, ``rng_key`` and ``steps_taken``
+            only), at the cost of a resume having to supply fresh environment
+            and carry states of its own. Anything that only loads weights
+            (offline evaluation, inference) is unaffected either way.
 
     Returns:
         A callback compatible with train_ppo's ``checkpoint_fn`` parameter.
@@ -78,8 +100,12 @@ def make_checkpoint_fn(
     def checkpoint_fn(training_state: TrainingState, step: int) -> None:
         import orbax.checkpoint as ocp
 
-        step_dir = os.path.join(abs_directory, f"step_{step:010d}")
-        os.makedirs(step_dir, exist_ok=True)
+        step_name = f"step_{step:010d}"
+        step_dir = os.path.join(abs_directory, step_name)
+        tmp_dir = os.path.join(abs_directory, f"{_TMP_PREFIX}{step_name}")
+        if os.path.exists(tmp_dir):
+            shutil.rmtree(tmp_dir)
+        os.makedirs(tmp_dir)
 
         # Split network state: everything except RngKey → orbax, RngKey → pickle.
         # orbax cannot handle JAX new-style PRNG key arrays.
@@ -92,8 +118,8 @@ def make_checkpoint_fn(
         # call and immediately closed to ensure all async writes complete.
         checkpointer = ocp.StandardCheckpointer()
         try:
-            checkpointer.save(os.path.join(step_dir, "networks"), non_key_state)
-            checkpointer.save(os.path.join(step_dir, "optimizer"), opt_state)
+            checkpointer.save(os.path.join(tmp_dir, "networks"), non_key_state)
+            checkpointer.save(os.path.join(tmp_dir, "optimizer"), opt_state)
         finally:
             checkpointer.close()
 
@@ -101,17 +127,49 @@ def make_checkpoint_fn(
         # pickle-safe).
         metadata = {
             "networks_rng_key_state": rng_key_state,
-            "network_states": training_state.network_states,
-            "env_states": training_state.env_states,
+            "network_states": (
+                training_state.network_states if include_env_state else None
+            ),
+            "env_states": training_state.env_states if include_env_state else None,
             "rng_key": training_state.rng_key,
             "steps_taken": training_state.steps_taken,
             "step": step,
             "config": config,
         }
-        with open(os.path.join(step_dir, "metadata.pkl"), "wb") as f:
+        with open(os.path.join(tmp_dir, "metadata.pkl"), "wb") as f:
             pickle.dump(metadata, f)
 
+        # Publish atomically. Re-checkpointing a step that already exists (a
+        # resumed run saving at the step it restored from) replaces it.
+        if os.path.exists(step_dir):
+            shutil.rmtree(step_dir)
+        os.rename(tmp_dir, step_dir)
+
     return checkpoint_fn
+
+
+def latest_checkpoint(directory: str) -> Optional[str]:
+    """Path of the highest-numbered complete checkpoint in ``directory``.
+
+    Returns None when ``directory`` does not exist or holds no checkpoint.
+    Directories still being written are skipped: they are named
+    ``.tmp-step_*`` until the save completes (see :func:`make_checkpoint_fn`).
+    """
+    if not os.path.isdir(directory):
+        return None
+    steps = []
+    for name in os.listdir(directory):
+        if not name.startswith("step_"):
+            continue
+        if not os.path.isdir(os.path.join(directory, name)):
+            continue
+        try:
+            steps.append((int(name[len("step_"):]), name))
+        except ValueError:
+            continue
+    if not steps:
+        return None
+    return os.path.join(directory, max(steps)[1])
 
 
 def load_checkpoint(
@@ -140,6 +198,17 @@ def load_checkpoint(
         - ``"training_state"`` — restored :class:`TrainingState`
         - ``"step"`` — training step at which the checkpoint was saved (int)
         - ``"config"`` — :class:`TrainConfig` if one was stored, else ``None``
+
+    For a light checkpoint (written with ``include_env_state=False``) the
+    returned ``training_state`` has ``env_states`` and ``network_states`` set to
+    None; it cannot be passed to ``train_ppo(initial_state=...)`` as-is. Build
+    fresh ones and splice them in, e.g.::
+
+        state = dataclasses.replace(
+            ckpt["training_state"],
+            env_states=nnx.vmap(env.reset)(jax.random.split(key, n_envs)),
+            network_states=networks.initialize_state(n_envs),
+        )
 
     Example:
         >>> networks = factories.make_mlp_actor_critic(...)

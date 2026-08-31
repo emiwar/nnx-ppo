@@ -353,6 +353,145 @@ class PPOTest(absltest.TestCase):
                 self.assertGreater(metrics["episode_reward_mean"].max(), 95.0)
 
 
+class EarlyStopTest(absltest.TestCase):
+    """``stop_fn`` and ``initial_eval``: stopping the loop between iterations,
+    and not redoing the eval, video and checkpoint of a resumed step."""
+
+    def setUp(self):
+        self.env = mujoco_playground.registry.load(
+            "CartpoleBalance", config_overrides={"impl": "jax"}
+        )
+        self.nets = factories.make_mlp_actor_critic(
+            self.env.observation_size,  # type: ignore[arg-type]
+            self.env.action_size,
+            actor_hidden_sizes=[8, 8],
+            critic_hidden_sizes=[8, 8],
+            rngs=nnx.Rngs(17),
+            normalize_obs=False,
+        )
+
+    def _tiny_config(self, **kwargs):
+        n_envs, rollout_length = 4, 5
+        defaults = dict(
+            ppo=PPOConfig(
+                n_envs=n_envs,
+                rollout_length=rollout_length,
+                total_steps=100 * n_envs * rollout_length,
+                n_minibatches=2,
+            ),
+            eval=EvalConfig(enabled=False),
+        )
+        defaults.update(kwargs)
+        return TrainConfig(**defaults)
+
+    def test_stop_fn_ends_the_loop(self):
+        calls = []
+
+        def stop_fn(steps):
+            calls.append(steps)
+            return len(calls) >= 3
+
+        result = ppo.train_ppo(
+            self.env, self.nets, self._tiny_config(), stop_fn=stop_fn
+        )
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(result.total_iterations, 3)
+        # Cut short: the loop only ever exits on its own at or past total_steps,
+        # which is how a caller tells "stopped" from "finished".
+        self.assertLess(result.total_steps, self._tiny_config().ppo.total_steps)
+
+    def test_stop_fn_checkpoints_at_the_stopping_step(self):
+        """Wherever the checkpoint grid falls, a stop must leave a saved state."""
+        saved = []
+        result = ppo.train_ppo(
+            self.env, self.nets,
+            self._tiny_config(checkpoint_every_steps=10_000_000),
+            checkpoint_fn=lambda s, t: saved.append(t),
+            stop_fn=lambda steps: True,
+        )
+        self.assertLess(result.total_steps,
+                        self._tiny_config().ppo.total_steps)
+        # Step 0 from the initial block, then the stop save one iteration later.
+        self.assertEqual(saved, [0, result.total_steps])
+
+    def test_stop_fn_does_not_double_checkpoint_on_the_grid(self):
+        """A stop landing on the checkpoint grid writes that step once."""
+        saved = []
+        every = 4 * 5  # exactly one iteration
+        ppo.train_ppo(
+            self.env, self.nets,
+            self._tiny_config(checkpoint_every_steps=every),
+            checkpoint_fn=lambda s, t: saved.append(t),
+            stop_fn=lambda steps: True,
+        )
+        self.assertEqual(saved, [0, every])
+
+    def test_no_stop_fn_runs_to_completion(self):
+        config = self._tiny_config(
+            ppo=PPOConfig(n_envs=4, rollout_length=5, total_steps=2 * 4 * 5,
+                          n_minibatches=2),
+        )
+        result = ppo.train_ppo(self.env, self.nets, config)
+        self.assertEqual(result.total_steps, config.ppo.total_steps)
+
+    def test_initial_eval_false_skips_the_step_zero_block(self):
+        evals, saved, videos = [], [], []
+        config = self._tiny_config(
+            ppo=PPOConfig(n_envs=4, rollout_length=5, total_steps=2 * 4 * 5,
+                          n_minibatches=2),
+            eval=EvalConfig(enabled=True, every_steps=10_000_000, n_envs=2,
+                            max_episode_length=5),
+            checkpoint_every_steps=10_000_000,
+        )
+        result = ppo.train_ppo(
+            self.env, self.nets, config,
+            log_fn=lambda m, s: evals.append(s) if "eval/episode_reward/mean" in m
+            else None,
+            checkpoint_fn=lambda s, t: saved.append(t),
+            video_fn=lambda d: videos.append(d.step),
+            initial_eval=False,
+        )
+        self.assertEqual(result.eval_history, [])
+        self.assertEqual(evals, [])
+        self.assertEqual(saved, [])
+        self.assertEqual(videos, [])
+
+    def test_initial_eval_false_does_not_defer_the_callbacks(self):
+        """The interval trackers must start from the resumed step.
+
+        With the negative sentinels left in place, the first iteration after a
+        resume fires eval, video and checkpoint all over again.
+        """
+        saved = []
+        config = self._tiny_config(
+            ppo=PPOConfig(n_envs=4, rollout_length=5, total_steps=3 * 4 * 5,
+                          n_minibatches=2),
+            eval=EvalConfig(enabled=True, every_steps=10_000_000, n_envs=2,
+                            max_episode_length=5),
+            checkpoint_every_steps=10_000_000,
+        )
+        result = ppo.train_ppo(
+            self.env, self.nets, config,
+            checkpoint_fn=lambda s, t: saved.append(t),
+            initial_eval=False,
+        )
+        self.assertEqual(saved, [])
+        self.assertEqual(result.eval_history, [])
+
+    def test_initial_eval_true_is_the_default(self):
+        saved = []
+        config = self._tiny_config(
+            ppo=PPOConfig(n_envs=4, rollout_length=5, total_steps=4 * 5,
+                          n_minibatches=2),
+            checkpoint_every_steps=10_000_000,
+        )
+        ppo.train_ppo(
+            self.env, self.nets, config,
+            checkpoint_fn=lambda s, t: saved.append(t),
+        )
+        self.assertEqual(saved, [0])
+
+
 class DictObsActTest(absltest.TestCase):
 
     def test_ppo_step_dict_obs_act(self):
