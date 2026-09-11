@@ -13,6 +13,7 @@ from jaxtyping import Array, Float, Bool, ScalarLike, Integer
 import optax
 
 from nnx_ppo.networks.types import ModuleState, StatefulModule
+from nnx_ppo.algorithms import metrics as metrics_lib
 from nnx_ppo.algorithms import rollout
 from nnx_ppo.algorithms.types import TrainingState, LoggingLevel, RLEnv, EnvState
 from nnx_ppo.algorithms.config import (
@@ -23,7 +24,11 @@ from nnx_ppo.algorithms.config import (
     VideoData,
     TrainResult,
 )
-from nnx_ppo.algorithms.metrics import compute_metrics, log_weight_stats
+from nnx_ppo.algorithms.metrics import (
+    check_diagnostics,
+    compute_metrics,
+    log_weight_stats,
+)
 
 
 def default_config() -> TrainConfig:
@@ -225,6 +230,15 @@ def train_ppo(
         )
         n_iterations += 1
         steps = int(training_state.steps_taken)  # host-sync barrier
+        # Before the eval / video / checkpoint callbacks, so a corrupt update is
+        # never written to disk and the last checkpoint stays loadable.
+        check_diagnostics(metrics, steps)
+        if LoggingLevel.DIAGNOSTICS not in config.ppo.logging_level:
+            metrics = {
+                k: v
+                for k, v in metrics.items()
+                if not k.startswith(metrics_lib.DIAGNOSTICS_PREFIX)
+            }
         if measure_throughput:
             elapsed = time.perf_counter() - t0
             metrics["throughput/train_sps"] = (
@@ -339,8 +353,9 @@ def ppo_step(
         if LoggingLevel.GRAD_NORM in logging_level:
             grad_norm = jp.sqrt(sum(jp.sum(g**2) for g in jax.tree.leaves(grads)))
             loss_metrics["grad_norm"] = grad_norm
+        grad_nonfinite = metrics_lib.count_nonfinite(grads)
         optimizer.update(networks, grads)
-        return loss_metrics
+        return loss_metrics, grad_nonfinite
 
     scan_update = nnx.scan(
         update_step,
@@ -349,12 +364,19 @@ def ppo_step(
         length=total_iterations,
     )
 
-    loss_metrics = scan_update(
+    loss_metrics, grad_nonfinite = scan_update(
         training_state.networks, training_state.optimizer, all_indices
     )
     total_steps = training_state.steps_taken + rollout_length * n_envs
     metrics = compute_metrics(
         loss_metrics, rollout_data, logging_level, logging_percentiles
+    )
+    metrics.update(
+        metrics_lib.compute_diagnostics(
+            rollout_data,
+            rollout_data.network_output.actions,
+            jp.sum(grad_nonfinite),
+        )
     )
     metrics["total_steps"] = total_steps
     if LoggingLevel.WEIGHTS in logging_level:

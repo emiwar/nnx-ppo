@@ -56,7 +56,13 @@ from nnx_ppo.algorithms.config import (
     VideoData,
     DistillationTrainResult,
 )
-from nnx_ppo.algorithms.metrics import _log_metric
+from nnx_ppo.algorithms.metrics import (
+    DIAGNOSTICS_PREFIX,
+    _log_metric,
+    check_diagnostics,
+    compute_diagnostics,
+    count_nonfinite,
+)
 from nnx_ppo.algorithms.ppo import _should_run
 
 
@@ -306,8 +312,9 @@ def distillation_step(
             rollout_data=minibatch_data,
             logging_level=logging_level,
         )
+        grad_nonfinite = count_nonfinite(grads)
         optimizer.update(student, grads)
-        return loss_metrics
+        return loss_metrics, grad_nonfinite
 
     scan_update = nnx.scan(
         update_step,
@@ -315,7 +322,7 @@ def distillation_step(
         out_axes=0,
         length=total_iterations,
     )
-    loss_metrics = scan_update(
+    loss_metrics, grad_nonfinite = scan_update(
         distillation_state.student, distillation_state.optimizer, all_indices
     )
 
@@ -329,6 +336,14 @@ def distillation_step(
     metrics: dict[str, Any] = {}
     for k, v in loss_metrics.items():
         _log_metric(metrics, k, v, logging_percentiles)
+
+    metrics.update(
+        compute_diagnostics(
+            rollout_data,
+            rollout_data.student_output.actions,
+            jp.sum(grad_nonfinite),
+        )
+    )
 
     if LoggingLevel.ROLLOUT_STATS in logging_level:
         _log_metric(
@@ -578,6 +593,15 @@ def train_distillation(
         )
         n_iterations += 1
         steps = int(distillation_state.steps_taken)
+        # Before the eval / video / checkpoint callbacks, so a corrupt update is
+        # never written to disk and the last checkpoint stays loadable.
+        check_diagnostics(metrics, steps)
+        if LoggingLevel.DIAGNOSTICS not in config.distillation.logging_level:
+            metrics = {
+                k: v
+                for k, v in metrics.items()
+                if not k.startswith(DIAGNOSTICS_PREFIX)
+            }
 
         if config.eval.enabled and _should_run(
             steps, last_eval_step, config.eval.every_steps

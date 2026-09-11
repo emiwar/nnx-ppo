@@ -82,16 +82,63 @@ combine families with the ``|`` operator
     each ``nnx.Param``).
 ``THROUGHPUT``
     Adds wall-clock steps-per-second metrics (``throughput/train_sps``).
+``DIAGNOSTICS``
+    Adds ``diagnostics/nonfinite_{reward,obs,action,grad,next_obs}`` —
+    per-iteration counts of NaN/Inf elements. See
+    :ref:`non-finite-values` below; note that the *check* those counts
+    drive runs whether or not this flag is set.
 ``ALL``
     Equivalent to ``LOSSES | CRITIC_EXTRA | ACTOR_EXTRA |
     ROLLOUT_STATS | ENV_METRICS | NETWORK_METRICS | GRAD_NORM |
-    WEIGHTS | THROUGHPUT``. Note ``ROLLOUT_OBS`` is **not** included
-    (it can be expensive); opt into it explicitly.
+    WEIGHTS | THROUGHPUT | DIAGNOSTICS``. Note ``ROLLOUT_OBS`` is
+    **not** included (it can be expensive); opt into it explicitly.
 ``NONE``
     No metrics. ``log_fn`` is still called with an empty dict.
 
 Set the training level on :class:`PPOConfig.logging_level` and the
 eval level on :class:`EvalConfig.logging_level`.
+
+.. _non-finite-values:
+
+Non-finite values
+-----------------
+
+Every iteration, :func:`~nnx_ppo.algorithms.ppo.train_ppo` and
+:func:`~nnx_ppo.algorithms.distillation.train_distillation` count the
+NaN/Inf elements in the rollout's rewards, observations and actions,
+and in the gradients. A non-zero count in any of those four raises
+:class:`~nnx_ppo.algorithms.types.NonFiniteError`.
+
+This is a **runtime check, not a logging feature**: it runs regardless
+of ``logging_level``. ``DIAGNOSTICS`` only decides whether the counts
+are also placed in the metrics dict. The check is host-side, but it
+reads scalars in the device sync the loop already performs once per
+iteration, so it costs nothing measurable.
+
+The check is deliberately not recoverable. Both the actor and critic
+losses reduce over the batch with ``jp.mean``, so a single non-finite
+reward or observation *anywhere* in the batch turns **every** gradient
+non-finite, and Adam's moments then make the corruption permanent.
+Sanitising it silently would hide the cause; continuing would train on
+corrupt weights. The error is raised before the eval / video /
+checkpoint callbacks, so the corrupt update is never written to disk
+and the last checkpoint stays loadable. ``NonFiniteError`` carries
+``.counts`` and ``.step``, and is a distinct type so that a run manager
+can classify it as fatal rather than retrying it.
+
+The counts localise the cause: a non-finite ``reward`` or ``obs`` with
+finite ``action`` points at the environment, while a non-finite
+``action`` with finite ``reward`` and ``obs`` points at the network.
+
+``diagnostics/nonfinite_next_obs`` is reported but is **not** fatal. An
+environment that flags its own divergence (``done=1``) has its next
+state replaced by a reset in
+:func:`~nnx_ppo.algorithms.rollout.unroll_env`, and GAE drops the
+bootstrap through ``jp.where(done, 0.0, next_value)``, so a non-finite
+``next_obs`` on a terminated step never reaches a gradient. It is worth
+watching as a simulator-divergence rate: it is an integer that stays at
+0, so unlike a NaN-valued metric it survives loggers that drop
+non-finite rows.
 
 Percentile summaries
 --------------------

@@ -136,6 +136,7 @@ class LoggingLevel(enum.Flag):
     GRAD_NORM = enum.auto()
     WEIGHTS = enum.auto()
     THROUGHPUT = enum.auto()
+    DIAGNOSTICS = enum.auto()
     BASIC = LOSSES
     # ROLLOUT_OBS dumps the full observation pytree and is intentionally left
     # out of ALL: it is a cheap debug aid for small-obs envs but prohibitively
@@ -150,5 +151,24 @@ class LoggingLevel(enum.Flag):
         | GRAD_NORM
         | WEIGHTS
         | THROUGHPUT
+        | DIAGNOSTICS
     )
     NONE = 0
+
+class NonFiniteError(RuntimeError):
+    """A NaN or Inf reached the training loop.
+
+    Raised by ``train_ppo`` as soon as an iteration produces a non-finite reward,
+    observation, action or gradient. The training state is left as it was *before*
+    the offending iteration's optimizer update is published, so the last checkpoint
+    is still usable.
+
+    This is deliberately not recoverable: Adam's moments make a single non-finite
+    gradient permanent, so continuing would train on corrupt weights. A run manager
+    should treat it as fatal rather than retrying it.
+    """
+
+    def __init__(self, message: str, counts: dict[str, int], step: int):
+        super().__init__(message)
+        self.counts = counts
+        self.step = step

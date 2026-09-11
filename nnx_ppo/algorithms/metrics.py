@@ -10,7 +10,7 @@ from flax import nnx
 from jaxtyping import Array, Float, PyTree
 
 from nnx_ppo.networks.types import StatefulModule
-from nnx_ppo.algorithms.types import LoggingLevel
+from nnx_ppo.algorithms.types import LoggingLevel, NonFiniteError
 from nnx_ppo.algorithms.rollout import Transition
 
 
@@ -70,6 +70,91 @@ def compute_metrics(
             percentile_levels,
         )
     return metrics
+
+
+#: Prefix for every key :func:`compute_diagnostics` produces.
+DIAGNOSTICS_PREFIX = "diagnostics/"
+
+#: Diagnostics that mean the update is already corrupt. A non-finite reward,
+#: observation, action or gradient all reach the batch-mean reductions in
+#: `ppo_loss`, so one of them anywhere turns *every* gradient non-finite, and
+#: Adam's moments then make it permanent.
+FATAL_DIAGNOSTICS = (
+    f"{DIAGNOSTICS_PREFIX}nonfinite_reward",
+    f"{DIAGNOSTICS_PREFIX}nonfinite_obs",
+    f"{DIAGNOSTICS_PREFIX}nonfinite_action",
+    f"{DIAGNOSTICS_PREFIX}nonfinite_grad",
+)
+
+
+def count_nonfinite(tree: Any) -> Array:
+    """Number of NaN/Inf elements across a pytree's floating-point leaves."""
+    leaves = [
+        x for x in jax.tree.leaves(tree)
+        if hasattr(x, "dtype") and jp.issubdtype(x.dtype, jp.inexact)
+    ]
+    if not leaves:
+        return jp.array(0, jp.int32)
+    return sum(jp.sum(~jp.isfinite(x)).astype(jp.int32) for x in leaves)
+
+
+def compute_diagnostics(
+    rollout_data: Union[Transition, Any],
+    actions: Any,
+    grad_nonfinite: Array,
+) -> dict[str, Array]:
+    """Non-finite element counts for one iteration, as int scalars.
+
+    ``actions`` is passed separately rather than read off ``rollout_data`` so
+    that this serves both `Transition` (``network_output``) and
+    `DistillationTransition` (``student_output``).
+
+    ``next_obs`` is reported but is *not* fatal: an env that flags its own
+    divergence (``done=1``) has its next state replaced by a reset in
+    `unroll_env`, and GAE drops the bootstrap through
+    ``jp.where(done, 0.0, next_value)``, so a non-finite ``next_obs`` on a
+    terminated step never reaches a gradient.
+    """
+    return {
+        f"{DIAGNOSTICS_PREFIX}nonfinite_reward": count_nonfinite(rollout_data.rewards),
+        f"{DIAGNOSTICS_PREFIX}nonfinite_obs": count_nonfinite(rollout_data.obs),
+        f"{DIAGNOSTICS_PREFIX}nonfinite_action": count_nonfinite(actions),
+        f"{DIAGNOSTICS_PREFIX}nonfinite_grad": jp.asarray(grad_nonfinite, jp.int32),
+        f"{DIAGNOSTICS_PREFIX}nonfinite_next_obs": count_nonfinite(
+            rollout_data.next_obs
+        ),
+    }
+
+
+def check_diagnostics(metrics: Mapping[str, Any], step: int) -> None:
+    """Raise :class:`NonFiniteError` if this iteration produced a fatal non-finite.
+
+    Host-side, so it forces a device sync — but the training loop already syncs
+    on ``steps_taken`` once per iteration, so reading these scalars in the same
+    barrier costs nothing measurable.
+    """
+    counts = {
+        k: int(metrics[k]) for k in FATAL_DIAGNOSTICS if k in metrics
+    }
+    hit = {k: v for k, v in counts.items() if v > 0}
+    if not hit:
+        return
+    reported = dict(counts)
+    for k, v in metrics.items():
+        if k.startswith(DIAGNOSTICS_PREFIX) and k not in reported:
+            reported[k] = int(v)
+    where = ", ".join(
+        f"{k[len(DIAGNOSTICS_PREFIX):]}={v}" for k, v in sorted(hit.items())
+    )
+    raise NonFiniteError(
+        f"non-finite values at step {step}: {where}. "
+        f"All counts: {reported}. Training stopped before the corrupt update was "
+        f"checkpointed; the previous checkpoint is unaffected. A single non-finite "
+        f"reward or observation anywhere in the batch turns every gradient non-finite, "
+        f"so this is not recoverable by continuing.",
+        counts=reported,
+        step=step,
+    )
 
 
 def _log_metric(

@@ -7,6 +7,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `LoggingLevel.DIAGNOSTICS`: adds
+  `diagnostics/nonfinite_{reward,obs,action,grad,next_obs}` to the metrics
+  dict — per-iteration counts of NaN/Inf elements in the rollout and the
+  gradients. Included in `ALL`. The counts localise a failure that was
+  previously invisible: non-finite `reward`/`obs` with finite `action` points
+  at the environment, the reverse points at the network.
+- `nnx_ppo.algorithms.types.NonFiniteError`: raised by `train_ppo` and
+  `train_distillation` as soon as an iteration produces a non-finite reward,
+  observation, action or gradient. Both losses reduce over the batch with
+  `jp.mean`, so one non-finite value anywhere turns *every* gradient
+  non-finite and Adam's moments make it permanent — previously a run would
+  train on corrupt weights to completion, silently, and (because loggers drop
+  non-finite rows) look as though it had merely stopped logging. The check runs
+  **regardless of `logging_level`** — `DIAGNOSTICS` only controls whether the
+  counts are also reported — and fires before the eval / video / checkpoint
+  callbacks, so the corrupt update is never checkpointed. It is host-side but
+  reads scalars in the device sync the loop already performs each iteration.
+  `diagnostics/nonfinite_next_obs` is reported but deliberately *not* fatal: an
+  env that flags its own divergence has its next state replaced by a reset in
+  `unroll_env`, and GAE drops the bootstrap via `jp.where(done, 0.0,
+  next_value)`, so it never reaches a gradient.
 - `nnx_ppo.networks.recurrent.GRU`: a gated recurrent unit wrapping
   `nnx.GRUCell`. Its carry is a single `[batch, hidden]` array — the GRU merges
   the LSTM's cell and hidden state into one — so it costs about three quarters of
