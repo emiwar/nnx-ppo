@@ -20,10 +20,21 @@ updated; the teacher is not passed to the loss function — only its
 pre-computed rollout_extras (stored in DistillationTransition) is used
 there as the student's loss-replay channel.
 
-Constraint: teacher and student must have isomorphic state / rollout_extras
-trees (i.e. the same architectural skeleton with samplers at matching
-positions), because the teacher's rollout_extras is fed directly into the
-student's __call__ during loss replay.
+Teacher and student trees. During loss replay the stored target is passed
+to the student as its own ``rollout_extras``, and containers route extras by
+position (layer index, dict key). By default the target *is* the teacher's
+rollout_extras, so the two networks must have isomorphic rollout_extras trees
+(the same skeleton, with samplers at matching positions). Their *state* trees
+may differ freely: each carries its own.
+
+When the skeletons differ -- e.g. an undelayed teacher distilled into a student
+with an extra observation-delay layer -- pass ``target_fn``. It is called once
+per rollout step as ``target_fn(teacher_extras, student_extras)`` and must
+return a tree shaped like ``student_extras``, typically the student's own
+extras with the sampler leaves replaced by the teacher's. The mapping is then
+the caller's responsibility: a target routed to the wrong position trains the
+student against the wrong quantity without any error, so a ``target_fn`` should
+assert what it relies on.
 """
 
 from typing import Any, Optional
@@ -70,8 +81,13 @@ def default_distillation_config() -> DistillationTrainConfig:
     return DistillationTrainConfig()
 
 
+#: ``target_fn(teacher_extras, student_extras) -> student-shaped extras``.
+TargetFn = Callable[[Any, Any], Any]
+
+
 def distillation_single_transition(
     env: RLEnv,
+    target_fn: Optional[TargetFn],
     teacher: StatefulModule,
     student: StatefulModule,
     carry: tuple[ModuleState, ModuleState, Any],
@@ -81,7 +97,8 @@ def distillation_single_transition(
 
     Runs both teacher and student on the current observation.
     The student's actions drive the environment forward.
-    The teacher's output is stored as the distillation target.
+    The teacher's output is stored as the distillation target, mapped onto the
+    student's rollout_extras tree by ``target_fn`` when one is given.
     """
     student_state, teacher_state, env_state = carry
 
@@ -107,7 +124,11 @@ def distillation_single_transition(
             "student": student_out.metrics,
         },
         student_rollout_extras=student_out.rollout_extras,
-        teacher_rollout_extras=teacher_out.rollout_extras,
+        teacher_rollout_extras=(
+            teacher_out.rollout_extras
+            if target_fn is None
+            else target_fn(teacher_out.rollout_extras, student_out.rollout_extras)
+        ),
     )
 
     done = transition.done
@@ -132,11 +153,13 @@ def distillation_unroll_env(
     teacher_state: ModuleState,
     unroll_length: int,
     rng_key_for_env_reset: PRNGKeyArray,
+    target_fn: Optional[TargetFn] = None,
 ) -> tuple[ModuleState, ModuleState, Any, DistillationTransition]:
     """Roll out the environment for distillation training.
 
     Runs both teacher and student at every step. The student drives the env;
-    the teacher produces the target distributions stored in the returned rollout.
+    the teacher produces the target distributions stored in the returned rollout
+    (mapped onto the student's rollout_extras tree by ``target_fn``, if given).
 
     Returns:
         (final_student_state, final_teacher_state, final_env_state, rollout_data)
@@ -146,7 +169,7 @@ def distillation_unroll_env(
         rng_key_for_env_reset, (unroll_length, batch_size)
     )
 
-    step = functools.partial(distillation_single_transition, env)
+    step = functools.partial(distillation_single_transition, env, target_fn)
 
     (final_student_state, final_teacher_state, final_env_state), rollout_data = nnx.scan(
         step,
@@ -249,6 +272,7 @@ def distillation_step(
     n_minibatches: int,
     logging_level: LoggingLevel = LoggingLevel.LOSSES,
     logging_percentiles: Optional[tuple[int, ...]] = None,
+    target_fn: Optional[TargetFn] = None,
 ) -> tuple[DistillationState, dict[str, Any]]:
     """Single distillation training step: rollout + multi-epoch gradient updates.
 
@@ -262,6 +286,8 @@ def distillation_step(
         n_minibatches: Number of minibatches per epoch.
         logging_level: Controls which metrics to log.
         logging_percentiles: Percentile levels for metric aggregation.
+        target_fn: Maps ``(teacher_extras, student_extras)`` to the student-shaped
+            target. None uses the teacher's extras as-is (isomorphic trees).
 
     Returns:
         (updated_distillation_state, metrics)
@@ -279,6 +305,7 @@ def distillation_step(
             distillation_state.teacher_states,
             rollout_length,
             reset_key,
+            target_fn,
         )
     )
 
@@ -454,6 +481,9 @@ def train_distillation(
     checkpoint_fn: Optional[Callable[[DistillationState, int], None]] = None,
     eval_env: Optional[RLEnv] = None,
     initial_state: Optional[DistillationState] = None,
+    target_fn: Optional[TargetFn] = None,
+    stop_fn: Optional[Callable[[int], bool]] = None,
+    initial_eval: bool = True,
 ) -> DistillationTrainResult:
     """Train a student network by distillation from a frozen teacher.
 
@@ -470,6 +500,19 @@ def train_distillation(
         eval_env: Environment for evaluation rollouts. If None, uses env.
         initial_state: Resume training from an existing DistillationState.
                        If None, creates a new DistillationState.
+        target_fn: Maps ``(teacher_extras, student_extras)`` to a target tree
+                   shaped like the student's rollout_extras. Needed when the
+                   teacher and student skeletons differ; None feeds the
+                   teacher's extras to the student unchanged. Must be hashable
+                   (it is a static argument of the jitted step), so pass a
+                   module-level function rather than a fresh lambda per call.
+        stop_fn: Called with the step count once per iteration; when it returns
+                 True the loop writes a checkpoint (if checkpoint_fn is set and
+                 one was not just written at this step) and returns. Same
+                 contract as ``train_ppo``'s.
+        initial_eval: Whether to run the eval/video/checkpoint block before the
+                      first iteration. Pass False when resuming, as for
+                      ``train_ppo``.
 
     Returns:
         DistillationTrainResult with final state, metrics, and eval history.
@@ -508,10 +551,11 @@ def train_distillation(
 
     # JIT compile inner functions.
     # static_argnums: env (0), n_envs (3), rollout_length (4), n_epochs (5),
-    # n_minibatches (6), logging_level (7), logging_percentiles (8).
+    # n_minibatches (6), logging_level (7), logging_percentiles (8),
+    # target_fn (9).
     # teacher (1) is an NNX module — handled dynamically by nnx.jit, not static.
     distillation_step_jit = nnx.jit(
-        distillation_step, static_argnums=(0, 3, 4, 5, 6, 7, 8)
+        distillation_step, static_argnums=(0, 3, 4, 5, 6, 7, 8, 9)
     )
     eval_rollout_jit = nnx.jit(rollout.eval_rollout, static_argnums=(0, 2, 3, 5, 6))
     eval_rollout_render_jit = nnx.jit(
@@ -519,9 +563,14 @@ def train_distillation(
     )
 
     eval_history: list[dict[str, Any]] = []
-    last_eval_step = -config.eval.every_steps  # ensure eval at step 0
-    last_video_step = -config.video.every_steps
-    last_checkpoint_step = -config.checkpoint_every_steps
+    steps = int(distillation_state.steps_taken)
+    if initial_eval:
+        last_eval_step = -config.eval.every_steps  # ensure eval at step 0
+        last_video_step = -config.video.every_steps
+        last_checkpoint_step = -config.checkpoint_every_steps
+    else:
+        # Resuming: the intervals start *from* the resumed step (see train_ppo).
+        last_eval_step = last_video_step = last_checkpoint_step = steps
     metrics: dict[str, Any] = {}
     n_iterations = 0
 
@@ -560,23 +609,23 @@ def train_distillation(
         video_fn(video_data)
         student.train()
 
-    # Initial eval/video/checkpoint at step 0
-    steps = int(distillation_state.steps_taken)
-    if config.eval.enabled:
-        eval_metrics = run_eval(steps)
-        metrics.update(eval_metrics)
-        eval_history.append({"step": steps, **eval_metrics})
-        last_eval_step = steps
-    if config.video.enabled:
-        run_video(steps, n_iterations)
-        last_video_step = steps
-    if checkpoint_fn is not None and _should_run(
-        steps, last_checkpoint_step, config.checkpoint_every_steps
-    ):
-        checkpoint_fn(distillation_state, steps)
-        last_checkpoint_step = steps
-    if log_fn is not None and metrics:
-        log_fn(metrics, steps)
+    # Initial eval/video/checkpoint at the starting step
+    if initial_eval:
+        if config.eval.enabled:
+            eval_metrics = run_eval(steps)
+            metrics.update(eval_metrics)
+            eval_history.append({"step": steps, **eval_metrics})
+            last_eval_step = steps
+        if config.video.enabled:
+            run_video(steps, n_iterations)
+            last_video_step = steps
+        if checkpoint_fn is not None and _should_run(
+            steps, last_checkpoint_step, config.checkpoint_every_steps
+        ):
+            checkpoint_fn(distillation_state, steps)
+            last_checkpoint_step = steps
+        if log_fn is not None and metrics:
+            log_fn(metrics, steps)
 
     # Main training loop
     while int(distillation_state.steps_taken) < config.distillation.total_steps:
@@ -590,6 +639,7 @@ def train_distillation(
             config.distillation.n_minibatches,
             config.distillation.logging_level,
             config.distillation.logging_percentiles,
+            target_fn,
         )
         n_iterations += 1
         steps = int(distillation_state.steps_taken)
@@ -625,6 +675,14 @@ def train_distillation(
 
         if log_fn is not None:
             log_fn(metrics, steps)
+
+        # Early stop. Checked after the interval callbacks so a stop landing on
+        # the checkpoint grid does not write the same step twice.
+        if stop_fn is not None and stop_fn(steps):
+            if checkpoint_fn is not None and last_checkpoint_step != steps:
+                checkpoint_fn(distillation_state, steps)
+                last_checkpoint_step = steps
+            break
 
     return DistillationTrainResult(
         training_state=distillation_state,

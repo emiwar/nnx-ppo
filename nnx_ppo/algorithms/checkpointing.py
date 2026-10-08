@@ -10,7 +10,7 @@ import jax
 from flax import nnx
 
 from nnx_ppo.algorithms.config import TrainConfig
-from nnx_ppo.algorithms.types import TrainingState
+from nnx_ppo.algorithms.types import DistillationState, TrainingState
 
 
 @runtime_checkable
@@ -18,6 +18,28 @@ class CheckpointCallback(Protocol):
     """Protocol for checkpoint callbacks with named parameters."""
 
     def __call__(self, training_state: TrainingState, step: int) -> None: ...
+
+
+def _as_training_state(state: TrainingState | DistillationState) -> TrainingState:
+    """View a :class:`DistillationState` as the :class:`TrainingState` it saves as.
+
+    A distillation checkpoint is a checkpoint of the *student*: its weights,
+    optimizer and carry take the places of the PPO network's, and the result is
+    loadable by :func:`load_checkpoint` exactly like one written by
+    ``train_ppo``. ``teacher_states`` is not saved -- the teacher is frozen and
+    supplied by the caller on resume, and its carry is rebuilt with
+    ``teacher.initialize_state``.
+    """
+    if isinstance(state, DistillationState):
+        return TrainingState(
+            networks=state.student,
+            network_states=state.student_states,
+            env_states=state.env_states,
+            optimizer=state.optimizer,
+            rng_key=state.rng_key,
+            steps_taken=state.steps_taken,
+        )
+    return state
 
 
 def _split_net_state(networks):
@@ -54,6 +76,10 @@ def make_checkpoint_fn(
     include_env_state: bool = True,
 ) -> CheckpointCallback:
     """Create a checkpoint callback that saves TrainingState to disk.
+
+    The callback also accepts a :class:`DistillationState`, which is saved as
+    the student's TrainingState (see :func:`_as_training_state`), so it can be
+    passed as ``train_distillation``'s ``checkpoint_fn`` too.
 
     Each checkpoint is written to ``{directory}/step_{step:010d}/``, containing:
 
@@ -97,8 +123,12 @@ def make_checkpoint_fn(
 
     abs_directory = os.path.abspath(directory)
 
-    def checkpoint_fn(training_state: TrainingState, step: int) -> None:
+    def checkpoint_fn(
+        training_state: TrainingState | DistillationState, step: int
+    ) -> None:
         import orbax.checkpoint as ocp
+
+        training_state = _as_training_state(training_state)
 
         step_name = f"step_{step:010d}"
         step_dir = os.path.join(abs_directory, step_name)

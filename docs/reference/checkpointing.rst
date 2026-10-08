@@ -150,7 +150,10 @@ Resuming an interrupted run
 ---------------------------
 
 Two more arguments let a run be stopped and restarted, e.g. under a job
-scheduler that may kill it at any time:
+scheduler that may kill it at any time. Both
+:func:`~nnx_ppo.algorithms.ppo.train_ppo` and
+:func:`~nnx_ppo.algorithms.distillation.train_distillation` accept them,
+with the same meaning:
 
 - ``stop_fn(steps) -> bool`` is called once per iteration; when it
   returns True the loop writes a checkpoint (unless one was just
@@ -177,6 +180,43 @@ scheduler that may kill it at any time:
         initial_eval=False,
     )
     interrupted = result.total_steps < config.ppo.total_steps
+
+Distillation checkpoints
+------------------------
+
+The callback returned by :func:`make_checkpoint_fn` also accepts a
+:class:`~nnx_ppo.algorithms.types.DistillationState`, so it can be passed
+as ``train_distillation``'s ``checkpoint_fn`` directly. What is saved is
+the *student*: its weights, optimizer and carry take the places of
+``networks``, ``optimizer`` and ``network_states``, and the on-disk
+layout is the same as above. The teacher's carry (``teacher_states``) is
+not saved -- the teacher is frozen and supplied by the caller -- so a
+resume rebuilds it with ``teacher.initialize_state(n_envs)``.
+
+Because the layout is shared, :func:`load_checkpoint` restores a
+distilled student into a :class:`~nnx_ppo.algorithms.types.TrainingState`
+like any PPO checkpoint, and anything that only loads weights treats the
+two the same. To resume distillation, build the template with
+``new_distillation_state(..., n_envs=1)``, restore into
+``template.student`` / ``template.optimizer``, and assemble a
+``DistillationState`` from the result::
+
+    template = distillation.new_distillation_state(env, teacher, student, 1, seed)
+    ckpt = load_checkpoint(step_dir, template.student, template.optimizer)
+    ts = ckpt["training_state"]
+    resumed = DistillationState(
+        student=ts.networks,
+        student_states=ts.network_states or student.initialize_state(n_envs),
+        teacher_states=teacher.initialize_state(n_envs),
+        env_states=ts.env_states or fresh_env_states,
+        optimizer=ts.optimizer,
+        rng_key=ts.rng_key,
+        steps_taken=ts.steps_taken,
+    )
+
+The pickled ``config`` is then a
+:class:`~nnx_ppo.algorithms.config.DistillationTrainConfig`, whose
+optimizer settings live under ``.distillation`` rather than ``.ppo``.
 
 Loading for inference only
 --------------------------

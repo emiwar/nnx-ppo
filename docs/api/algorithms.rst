@@ -24,6 +24,13 @@ Training
    :members:
    :show-inheritance:
 
+Distillation
+------------
+
+.. automodule:: nnx_ppo.algorithms.distillation
+   :members:
+   :show-inheritance:
+
 Rollout
 -------
 

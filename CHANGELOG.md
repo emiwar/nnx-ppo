@@ -7,6 +7,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `train_distillation(..., target_fn=)`: maps `(teacher_extras,
+  student_extras)` to the student-shaped target stored for the loss replay.
+  This lifts the requirement that teacher and student have isomorphic
+  `rollout_extras` trees, so e.g. an undelayed teacher can be distilled into a
+  student with an extra delay layer. The caller then owns the mapping. Default
+  `None` keeps the previous behaviour (teacher extras used as-is). See
+  `docs/reference/distillation.rst`.
+- `train_distillation(..., stop_fn=, initial_eval=)`: the same preemption
+  support `train_ppo` has, with the same semantics.
+- `make_checkpoint_fn` accepts a `DistillationState` as well as a
+  `TrainingState`. The student is saved in the usual layout (`teacher_states`
+  is not), so `load_checkpoint` restores it into a `TrainingState` like any PPO
+  checkpoint.
+- Docs: a distillation reference page, and `nnx_ppo.algorithms.distillation` in
+  the API reference.
 - `LoggingLevel.DIAGNOSTICS`: adds
   `diagnostics/nonfinite_{reward,obs,action,grad,next_obs}` to the metrics
   dict — per-iteration counts of NaN/Inf elements in the rollout and the
@@ -45,6 +60,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   its docstring.
 
 ### Changed
+- `distillation_single_transition` takes `target_fn` as its second positional
+  argument (after `env`), and `distillation_unroll_env` / `distillation_step`
+  take it as a trailing optional one. Only the first is a breaking change for
+  direct callers of that internal helper; `train_distillation` is unaffected.
 - `LSTM` is now a `RecurrentCell` subclass. Its public signature, forward
   behaviour, carry structure and parameter paths (`cell/…`, `initial_h`,
   `initial_c`) are unchanged, so existing checkpoints restore as before — this is

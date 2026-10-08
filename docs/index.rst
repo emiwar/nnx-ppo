@@ -59,6 +59,7 @@ Start with :doc:`tutorials/01_quickstart` if you just want to start training.
    reference/parameters   
    reference/logging
    reference/checkpointing
+   reference/distillation
    reference/contexts
    reference/batching
    reference/randomness
